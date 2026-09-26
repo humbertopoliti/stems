@@ -1,0 +1,51 @@
+---
+source: crates/stems-cli/tests/help.rs
+expression: help
+---
+Print the resolved workspace config (or one stem's).
+
+The resolved model after merging stems.local.yaml, includes and extends, applying defaults and
+substituting `${…}` (every field is present; disabled stems are listed with `enabled: false`). With
+a stem name, `data` is that stem. `--effective` adds `defaults`: the table of default values applied
+to unset fields.
+
+Usage: stems show [OPTIONS] [STEM]
+
+Arguments:
+  [STEM]
+          Only this stem
+
+Options:
+      --effective
+          Also print the table of defaults applied to unset fields
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Global options:
+      --workspace <PATH>
+          Workspace directory or stems.yaml path (default: $STEMS_WORKSPACE, else walk up from the
+          current directory)
+
+      --json
+          Emit the JSON envelope (the default when stdout is not a terminal)
+
+      --human
+          Emit human text even when stdout is not a terminal
+
+      --no-color
+          Disable colours in human output
+          
+          [env: STEMS_NO_COLOR]
+
+  -q, --quiet
+          Print only errors in human mode
+
+  -v, --verbose...
+          More detail (repeat for more: -vv)
+
+      --home <PATH>
+          Root for daemon state, sockets, locks and logs (default: ~/Library/Application
+          Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
+          
+          [env: STEMS_HOME]

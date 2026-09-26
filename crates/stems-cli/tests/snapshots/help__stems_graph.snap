@@ -1,0 +1,65 @@
+---
+source: crates/stems-cli/tests/help.rs
+expression: help
+---
+Draw the dependency graph
+
+Usage: stems graph [OPTIONS]
+
+Options:
+      --format <FORMAT>
+          Output format
+
+          Possible values:
+          - text:    Layered box drawing
+          - mermaid: Mermaid flowchart
+          - dot:     Graphviz dot
+          - json:    JSON nodes and edges
+          
+          [default: text]
+
+      --status
+          Colour nodes by live status (default when the daemon runs)
+
+      --watch
+          Redraw on every state change
+
+      --focus <STEM>
+          Only this stem and its neighbours
+
+      --profile <PROFILE>
+          Only the stems of this profile
+
+      --edges
+          Label edges with their protocol/via metadata
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Global options:
+      --workspace <PATH>
+          Workspace directory or stems.yaml path (default: $STEMS_WORKSPACE, else walk up from the
+          current directory)
+
+      --json
+          Emit the JSON envelope (the default when stdout is not a terminal)
+
+      --human
+          Emit human text even when stdout is not a terminal
+
+      --no-color
+          Disable colours in human output
+          
+          [env: STEMS_NO_COLOR]
+
+  -q, --quiet
+          Print only errors in human mode
+
+  -v, --verbose...
+          More detail (repeat for more: -vv)
+
+      --home <PATH>
+          Root for daemon state, sockets, locks and logs (default: ~/Library/Application
+          Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
+          
+          [env: STEMS_HOME]

@@ -391,6 +391,18 @@ impl E2eWorld {
         }
     }
 
+    /// Uses a new empty directory `<root>/new-ws` as the workspace dir (for
+    /// `stems init`): commands run there and `${ws}` / file steps refer to it.
+    pub fn use_empty_dir(&mut self) {
+        assert!(
+            self.ws_dir.is_none(),
+            "a workspace was already chosen for this scenario"
+        );
+        let dir = self.root.join("new-ws");
+        std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("creating {}: {e}", dir.display()));
+        self.ws_dir = Some(dir);
+    }
+
     /// Replaces the `examples/repos` symlink with a private copy.
     pub fn private_repos(&mut self) {
         let _ = self.ws();

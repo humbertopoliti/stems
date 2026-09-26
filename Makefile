@@ -81,5 +81,8 @@ trace:
 	$(PYTHON) -m unittest discover -s scripts/tests
 	$(PYTHON) scripts/trace.py --quiet
 
+# API docs, plus docs/cli.md generated from the clap tree (`stems __docs`);
+# crates/stems-cli/tests/docs.rs fails when docs/cli.md drifts.
 docs:
 	$(CARGO) doc --workspace --no-deps
+	$(CARGO) run -q -p stems-cli -- __docs > docs/cli.md

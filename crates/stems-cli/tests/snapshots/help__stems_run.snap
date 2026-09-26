@@ -1,0 +1,58 @@
+---
+source: crates/stems-cli/tests/help.rs
+expression: help
+---
+Run a stem or workspace script
+
+Usage: stems run [OPTIONS] [STEM] [SCRIPT] [-- <ARGS>...]
+
+Arguments:
+  [STEM]
+          Stem whose script to run
+
+  [SCRIPT]
+          Script name
+
+  [ARGS]...
+          Script arguments (after `--`), e.g. `-- --email a@b.c`
+
+Options:
+      --workspace-script <SCRIPT>
+          Run a workspace-level script instead of a stem script
+
+      --start-deps
+          Start the script's `requires:` stems if they are not healthy
+
+      --wait <DURATION>
+          How long to wait for a starting stem (e.g. 30s)
+
+  -h, --help
+          Print help
+
+Global options:
+      --workspace <PATH>
+          Workspace directory or stems.yaml path (default: $STEMS_WORKSPACE, else walk up from the
+          current directory)
+
+      --json
+          Emit the JSON envelope (the default when stdout is not a terminal)
+
+      --human
+          Emit human text even when stdout is not a terminal
+
+      --no-color
+          Disable colours in human output
+          
+          [env: STEMS_NO_COLOR]
+
+  -q, --quiet
+          Print only errors in human mode
+
+  -v, --verbose...
+          More detail (repeat for more: -vv)
+
+      --home <PATH>
+          Root for daemon state, sockets, locks and logs (default: ~/Library/Application
+          Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
+          
+          [env: STEMS_HOME]

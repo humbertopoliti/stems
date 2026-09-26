@@ -52,6 +52,10 @@ step!(given_fixture_workspace(w, m) {
     w.use_fixture_workspace(&m[1], true);
 });
 
+step!(given_fixture_workspace_original_ports(w, m) {
+    w.use_fixture_workspace(&m[1], false);
+});
+
 step!(given_workspace_original_ports(w, m) {
     w.use_workspace(&m[1], false);
 });
@@ -63,6 +67,10 @@ step!(given_workspace_with_override(w, m) {
 
 step!(given_local_override(w, m) {
     w.set_override(&m[1], &m[2]);
+});
+
+step!(given_empty_dir(w, m) {
+    w.use_empty_dir();
 });
 
 step!(given_private_repos(w, m) {
@@ -272,6 +280,15 @@ step!(then_stderr_contains(w, m) {
     assert!(last.stderr.contains(&text), "stderr does not contain {text:?}\n{}", last.describe());
 });
 
+step!(then_stdout_not_json(w, m) {
+    let last = w.last();
+    assert!(
+        last.json.is_none() && !last.stdout.trim_start().starts_with('{'),
+        "stdout is JSON (expected human text)\n{}",
+        last.describe()
+    );
+});
+
 step!(then_golden(w, m) {
     let ignore: Vec<String> = m[2].split(',').map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()).collect();
     let dir = world::repo_root().join("tests/features/goldens");
@@ -459,6 +476,10 @@ pub const STEPS: &[(&str, Step<E2eWorld>)] = &[
         given_workspace_original_ports,
     ),
     (
+        r#"^the fixture workspace "([^"]+)" with its original ports$"#,
+        given_fixture_workspace_original_ports,
+    ),
+    (
         r#"^the "([^"]+)" workspace with a local override setting ([^=\s]+)=(.*)$"#,
         given_workspace_with_override,
     ),
@@ -470,6 +491,7 @@ pub const STEPS: &[(&str, Step<E2eWorld>)] = &[
         r#"^the workspace has a private copy of the repos$"#,
         given_private_repos,
     ),
+    (r#"^an empty directory$"#, given_empty_dir),
     (
         r#"^the "([^"]+)" workspace is up( in detached mode)?(?: with profile "([^"]+)")?$"#,
         given_workspace_up,
@@ -520,6 +542,7 @@ pub const STEPS: &[(&str, Step<E2eWorld>)] = &[
     ),
     (r#"^stdout contains "(.*)"$"#, then_stdout_contains),
     (r#"^stderr contains "(.*)"$"#, then_stderr_contains),
+    (r#"^stdout is not JSON$"#, then_stdout_not_json),
     (
         r#"^the output matches golden "([^"]+)"(?: ignoring columns (.+))?$"#,
         then_golden,
@@ -578,9 +601,11 @@ mod tests {
             r#"the broken workspace "cycle""#,
             r#"the "minimal" workspace with its original ports"#,
             r#"the fixture workspace "include-demo""#,
+            r#"the fixture workspace "two-errors" with its original ports"#,
             r#"the "minimal" workspace with a local override setting stems.echo-svc.enabled=false"#,
             r#"a local override setting profiles.default=backend"#,
             r#"the workspace has a private copy of the repos"#,
+            r#"an empty directory"#,
             r#"the "minimal" workspace is up"#,
             r#"the "hello-shop" workspace is up in detached mode with profile "backend""#,
             r#"a stray process "sleep 300" is running in a new process group"#,
@@ -604,6 +629,7 @@ mod tests {
             r#"the error message contains "a -> b -> a""#,
             r#"stdout contains "pong""#,
             r#"stderr contains "warning""#,
+            r#"stdout is not JSON"#,
             r#"the output matches golden "status-table""#,
             r#"the output matches golden "status-table" ignoring columns PID,UPTIME"#,
             r#"within 5s the stem "echo-svc" is "healthy""#,

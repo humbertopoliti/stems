@@ -1,0 +1,55 @@
+---
+source: crates/stems-cli/tests/help.rs
+expression: help
+---
+Scaffold a new integration repo in the current (or --workspace) directory.
+
+Creates stems.yaml (with a `yaml-language-server` schema reference), .gitignore, scripts/, env/ and
+overlays/. Refuses to overwrite an existing stems.yaml (ALREADY_INITIALISED) unless --force.
+
+Usage: stems init [OPTIONS]
+
+Options:
+      --name <NAME>
+          Workspace name (default: the directory name)
+
+      --from <FROM>
+          Start from an example workspace instead of an empty template
+
+          Possible values:
+          - minimal:    One process stem, no Docker
+          - hello-shop: The full example: docker, compose, process and external stems
+
+      --force
+          Overwrite an existing stems.yaml
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Global options:
+      --workspace <PATH>
+          Workspace directory or stems.yaml path (default: $STEMS_WORKSPACE, else walk up from the
+          current directory)
+
+      --json
+          Emit the JSON envelope (the default when stdout is not a terminal)
+
+      --human
+          Emit human text even when stdout is not a terminal
+
+      --no-color
+          Disable colours in human output
+          
+          [env: STEMS_NO_COLOR]
+
+  -q, --quiet
+          Print only errors in human mode
+
+  -v, --verbose...
+          More detail (repeat for more: -vv)
+
+      --home <PATH>
+          Root for daemon state, sockets, locks and logs (default: ~/Library/Application
+          Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
+          
+          [env: STEMS_HOME]

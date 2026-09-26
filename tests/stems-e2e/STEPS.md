@@ -163,6 +163,13 @@ such scenarios must not bind them).
 Given the "minimal" workspace with its original ports
 ```
 
+**`Given the fixture workspace "<name>" with its original ports`** — the
+fixture without port remapping (for validation-only scenarios whose error
+locations must all be in the fixture's own `stems.yaml`).
+```gherkin
+Given the fixture workspace "two-errors" with its original ports
+```
+
 **`Given the "<name>" workspace with a local override setting <dotted.path>=<value>`**
 — workspace plus a value merged into the generated `stems.local.yaml`. The
 value is parsed as YAML (`false`, `18080`, `"0"`, `[a, b]`).
@@ -180,6 +187,15 @@ And a local override setting profiles.default=backend
 `examples/repos` symlink with a copy (after the workspace step).
 ```gherkin
 And the workspace has a private copy of the repos
+```
+
+**`Given an empty directory`** — a new empty dir `<tmp>/new-ws` becomes the
+workspace dir (cwd for commands, `${ws}`, `the file ... exists`), for
+`stems init`. No `stems.local.yaml`, no port block.
+```gherkin
+Given an empty directory
+When I run "stems init --from minimal --json"
+Then the file "stems.yaml" exists
 ```
 
 **`Given the "<name>" workspace is up [in detached mode] [with profile "<p>"]`**
@@ -315,6 +331,12 @@ raw text; prefer JSON assertions (DECISIONS.md), use these for NDJSON logs or
 completions.
 ```gherkin
 Then stdout contains "pong"
+```
+
+**`Then stdout is not JSON`** — stdout does not parse as JSON and does not
+start with `{` (e.g. `--human` forced text on a pipe).
+```gherkin
+Then stdout is not JSON
 ```
 
 **`Then the output matches golden "<name>"[ ignoring columns <A,B>]`** —

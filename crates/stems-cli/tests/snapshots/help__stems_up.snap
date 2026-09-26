@@ -1,0 +1,67 @@
+---
+source: crates/stems-cli/tests/help.rs
+expression: help
+---
+Start stems (and their dependencies), attached or detached
+
+Usage: stems up [OPTIONS] [STEMS]...
+
+Arguments:
+  [STEMS]...
+          Stems to start (default: the profile's stems, or all)
+
+Options:
+      --profile <PROFILE>
+          Profile to start
+
+  -d, --detach
+          Return once stems are up instead of staying attached
+
+      --fresh
+          Ignore stamps: run reset, setup and seed again
+
+      --timeout <DURATION>
+          Overall deadline (e.g. 90s)
+
+      --fail-fast
+          Stop starting further layers after the first failure
+
+      --no-watch
+          Do not start watchdogs
+
+      --sync
+          Fetch git codebases before starting
+
+      --force-overlays
+          Back up conflicting overlay destinations and proceed
+
+  -h, --help
+          Print help
+
+Global options:
+      --workspace <PATH>
+          Workspace directory or stems.yaml path (default: $STEMS_WORKSPACE, else walk up from the
+          current directory)
+
+      --json
+          Emit the JSON envelope (the default when stdout is not a terminal)
+
+      --human
+          Emit human text even when stdout is not a terminal
+
+      --no-color
+          Disable colours in human output
+          
+          [env: STEMS_NO_COLOR]
+
+  -q, --quiet
+          Print only errors in human mode
+
+  -v, --verbose...
+          More detail (repeat for more: -vv)
+
+      --home <PATH>
+          Root for daemon state, sockets, locks and logs (default: ~/Library/Application
+          Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
+          
+          [env: STEMS_HOME]

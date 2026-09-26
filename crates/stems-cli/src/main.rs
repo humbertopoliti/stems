@@ -1,23 +1,8 @@
-//! The `stems` command-line entry point.
-
-use clap::Parser;
-
-/// Local environment management toolkit for running multi-process systems.
-#[derive(Debug, Parser)]
-#[command(name = "stems", version, about)]
-struct Cli {}
+//! The `stems` command-line entry point. Everything lives in the library
+//! (`stems_cli::run`); `main` only wires the process and exits with the code.
 
 fn main() {
-    let _cli = Cli::parse();
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Cli;
-    use clap::CommandFactory;
-
-    #[test]
-    fn cli_definition_is_valid() {
-        Cli::command().debug_assert();
-    }
+    let inv = stems_cli::Invocation::from_process();
+    let code = stems_cli::run(&inv, &mut std::io::stdout(), &mut std::io::stderr());
+    std::process::exit(code);
 }

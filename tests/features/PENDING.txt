@@ -8,13 +8,3 @@
 # Entries: `path` (whole file), `dir/` (every feature under it) or
 # `path:LINE` (one scenario). Paths are relative to the repository root.
 # Always say which deliverable removes the entry.
-
-# 07 makes `stems --version --json` print the JSON envelope.
-tests/features/harness/smoke.feature
-
-# 05 scenarios drive `stems show`/`validate`, which land in 06/07.
-tests/features/config/
-
-# 06 delivers validation semantics (stems_core::validate); 07 adds the
-# `stems validate` command that these scenarios drive.
-tests/features/validate/

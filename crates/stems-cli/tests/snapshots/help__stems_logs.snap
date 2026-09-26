@@ -1,0 +1,70 @@
+---
+source: crates/stems-cli/tests/help.rs
+expression: help
+---
+Show or follow stem and script logs
+
+Usage: stems logs [OPTIONS] [STEMS]...
+
+Arguments:
+  [STEMS]...
+          Only these stems
+
+Options:
+  -f, --follow
+          Keep streaming new lines
+
+      --since <SINCE>
+          Start at this age or timestamp (e.g. 10m)
+
+      --until <UNTIL>
+          Stop at this age or timestamp
+
+      --grep <REGEX>
+          Only lines matching this regex
+
+      --level <LEVEL>
+          Minimum level (e.g. warn, or warn+)
+
+      --script <NAME>
+          Logs of this script run instead of the stem's process
+
+      --tail <N>
+          Last N lines
+
+      --export
+          Write a log bundle (.tar.gz) instead of printing
+
+  -o, --output <FILE>
+          Output file for --export
+
+  -h, --help
+          Print help
+
+Global options:
+      --workspace <PATH>
+          Workspace directory or stems.yaml path (default: $STEMS_WORKSPACE, else walk up from the
+          current directory)
+
+      --json
+          Emit the JSON envelope (the default when stdout is not a terminal)
+
+      --human
+          Emit human text even when stdout is not a terminal
+
+      --no-color
+          Disable colours in human output
+          
+          [env: STEMS_NO_COLOR]
+
+  -q, --quiet
+          Print only errors in human mode
+
+  -v, --verbose...
+          More detail (repeat for more: -vv)
+
+      --home <PATH>
+          Root for daemon state, sockets, locks and logs (default: ~/Library/Application
+          Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
+          
+          [env: STEMS_HOME]
