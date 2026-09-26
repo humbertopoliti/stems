@@ -31,7 +31,8 @@ FR_RE = re.compile(r"\*\*(FR-[A-Z]+-\d+)\s*\((P[012])\)\*\*")
 NFR_RE = re.compile(r"\*\*(NFR-\d+)\b")
 ID_RE = re.compile(r"\b(NFR-\d+|FR-[A-Z]+-\d+)\b")
 TAG_ID_RE = re.compile(r"^@(NFR-\d+|FR-[A-Z]+-\d+)$")
-STATUS_ROW_RE = re.compile(r"^\|\s*(\d{2})\s*\|.*\|\s*([A-Za-z-]+)\s*\|\s*$")
+# The status cell may carry a note: `done (pipeline unexercised: no remote)`.
+STATUS_ROW_RE = re.compile(r"^\|\s*(\d{2})\s*\|.*\|\s*([A-Za-z-]+)(?:\s*\([^)|]*\))?\s*\|\s*$")
 
 
 @dataclass

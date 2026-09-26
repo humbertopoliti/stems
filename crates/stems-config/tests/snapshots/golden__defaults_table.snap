@@ -13,6 +13,7 @@ logs.keep                                     3
 logs.ring                                     10000
 metrics.interval                              2s
 metrics.persist                               false
+config.reload.auto_apply                      false
 repos_dir                                     .stems/repos
 stems.<n>.enabled                             true
 stems.<n>.stop_grace                          10s
@@ -24,7 +25,7 @@ stems.<n>.stdin (process)                     false
 stems.<n>.build.context (docker)              <codebase, else workspace root>
 stems.<n>.build.dockerfile (docker)           Dockerfile
 stems.<n>.service (compose)                   <stem name>
-stems.<n>.project_name (compose)              <workspace name>
+stems.<n>.project_name (compose)              stems-<workspace name>
 stems.<n>.adopt (compose)                     false
 stems.<n>.depends_on[].condition              healthy
 stems.<n>.depends_on[].soft                   false

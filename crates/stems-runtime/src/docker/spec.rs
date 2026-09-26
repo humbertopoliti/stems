@@ -351,14 +351,16 @@ pub fn default_network(workspace: &str) -> String {
     format!("{workspace}_net")
 }
 
-/// `<ws>_<name>`, unless `name` already carries the prefix.
+/// `<ws>_<name>`. A leading `<ws>_` or `<ws>-` in `name` is dropped first,
+/// so the prefix is never doubled: `hello-shop-pgdata` and
+/// `hello-shop_pgdata` both become `hello-shop_pgdata`, like `pgdata`.
 pub fn volume_name(workspace: &str, name: &str) -> String {
-    let prefix = format!("{workspace}_");
-    if name.starts_with(&prefix) {
-        name.to_string()
-    } else {
-        format!("{prefix}{name}")
-    }
+    let bare = name
+        .strip_prefix(&format!("{workspace}_"))
+        .or_else(|| name.strip_prefix(&format!("{workspace}-")))
+        .filter(|b| !b.is_empty())
+        .unwrap_or(name);
+    format!("{workspace}_{bare}")
 }
 
 fn hex(bytes: &[u8]) -> String {

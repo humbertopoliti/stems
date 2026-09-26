@@ -16,7 +16,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeSet;
 
 use serde::Serialize;
-use stems_config::{Condition, Protocol, StemType, Workspace};
+use stems_config::{Condition, Dependency, Protocol, StemType, Workspace};
 
 use crate::error::Error;
 use crate::graph::start_order;
@@ -124,6 +124,35 @@ pub fn layout(ws: &Workspace) -> Result<Layout, Error> {
     Ok(build(stems, edges))
 }
 
+/// Lay out stems known only by name, type and `depends_on` (e.g. from the
+/// daemon's `stem_config`, in the TUI): `deps` are `(dependant, edge)`
+/// pairs; edges naming an unknown stem are dropped. Unlike [`layout`] there
+/// is no cycle check: a hard cycle (which a loaded workspace cannot have)
+/// still lays out, with the cycle's back edge undrawn.
+pub fn from_parts(
+    stems: impl IntoIterator<Item = (String, StemType)>,
+    deps: &[(String, Dependency)],
+) -> Layout {
+    let mut stems: Vec<(String, StemType)> = stems.into_iter().collect();
+    stems.sort_by(|a, b| a.0.cmp(&b.0));
+    stems.dedup_by(|a, b| a.0 == b.0);
+    let id = |n: &str| stems.binary_search_by(|(s, _)| s.as_str().cmp(n)).ok();
+    let edges = deps
+        .iter()
+        .filter_map(|(from, d)| {
+            Some(Edge {
+                from: id(from)?,
+                to: id(&d.stem)?,
+                condition: d.condition,
+                soft: d.soft,
+                protocol: d.protocol,
+                via: d.via.clone(),
+            })
+        })
+        .collect();
+    build(stems, edges)
+}
+
 impl Layout {
     /// The node called `name`.
     pub fn node(&self, name: &str) -> Option<NodeId> {
@@ -177,7 +206,21 @@ impl Layout {
         };
         let mut keep = self.neighbours(center);
         keep.push(center);
+        self.subset(&keep)
+    }
+
+    /// The sub-layout of the stems named in `names` (unknown names are
+    /// ignored), with every edge among them, laid out afresh (`stems graph
+    /// --profile`).
+    pub fn restrict<S: AsRef<str>>(&self, names: &[S]) -> Layout {
+        let keep: Vec<NodeId> = names.iter().filter_map(|n| self.node(n.as_ref())).collect();
+        self.subset(&keep)
+    }
+
+    fn subset(&self, keep: &[NodeId]) -> Layout {
+        let mut keep = keep.to_vec();
         keep.sort_by(|a, b| self.nodes[*a].name.cmp(&self.nodes[*b].name));
+        keep.dedup();
         let stems = keep
             .iter()
             .map(|&n| (self.nodes[n].name.clone(), self.nodes[n].kind))

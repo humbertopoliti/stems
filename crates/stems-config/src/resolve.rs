@@ -186,6 +186,7 @@ pub(crate) fn resolve_workspace(
             .collect(),
         default_profile: raw.default_profile,
         strict_profiles: raw.strict_profiles.unwrap_or(d::STRICT_PROFILES),
+        profile: raw.profile,
         agent: Agent {
             allow_destructive: agent
                 .allow_destructive
@@ -201,6 +202,16 @@ pub(crate) fn resolve_workspace(
         metrics: Metrics {
             interval: metrics.interval.unwrap_or(d::METRICS_INTERVAL),
             persist: metrics.persist.unwrap_or(d::METRICS_PERSIST),
+        },
+        config: ConfigSettings {
+            reload: ReloadSettings {
+                auto_apply: raw
+                    .config
+                    .as_ref()
+                    .and_then(|c| c.reload.as_ref())
+                    .and_then(|r| r.auto_apply)
+                    .unwrap_or(d::RELOAD_AUTO_APPLY),
+            },
         },
         repos_dir: ctx.repos_dir.clone(),
         scripts,
@@ -432,8 +443,10 @@ fn resolve_stem(
         .limits
         .clone()
         .map(|l| Limits {
-            memory: l.memory,
-            cpu: l.cpu,
+            memory: l.memory.map(|m| m.size),
+            cpu: l.cpu.map(|c| c.cores),
+            memory_for: l.memory.and_then(|m| m.for_),
+            cpu_for: l.cpu.and_then(|c| c.for_),
         })
         .unwrap_or_default();
 
@@ -506,7 +519,7 @@ fn resolve_stem(
             project_name: rs
                 .project_name
                 .clone()
-                .unwrap_or_else(|| ctx.ws_name.clone()),
+                .unwrap_or_else(|| format!("stems-{}", ctx.ws_name)),
             adopt: rs.adopt.unwrap_or(d::COMPOSE_ADOPT),
         }),
         StemType::External => StemRuntime::External,
@@ -534,11 +547,45 @@ fn resolve_stem(
         watch,
         restart,
         limits,
-        outputs: rs.outputs.clone(),
+        outputs: resolve_outputs(&rs.outputs, &p.key("outputs"), ctx),
         overlays,
         tags: rs.tags.clone().unwrap_or_default(),
         stop_grace: rs.stop_grace.unwrap_or(d::STOP_GRACE),
     })
+}
+
+/// Outputs (FR-ST-6): names must be identifiers (they become env var
+/// suffixes, `STEMS_<STEM>_OUTPUT_<NAME>`); invalid ones are `SCHEMA_INVALID`.
+fn resolve_outputs(
+    raw: &IndexMap<String, RawOutput>,
+    p: &ConfigPath,
+    ctx: &mut Ctx<'_>,
+) -> IndexMap<String, Output> {
+    let mut out = IndexMap::new();
+    for (name, o) in raw {
+        if !is_output_name(name) {
+            ctx.diagnostics.push(
+                Diagnostic::new(
+                    codes::SCHEMA_INVALID,
+                    format!("output name `{name}` is not an identifier"),
+                )
+                .with_path(p.key(name))
+                .with_hint(
+                    "use letters, digits and `_` (not starting with a digit), e.g. `API_URL`",
+                ),
+            );
+            continue;
+        }
+        let o = match o {
+            RawOutput::Value(v) => Output::Value(v.clone()),
+            RawOutput::Command(c) => Output::Command {
+                command: c.command.clone(),
+                secret: c.secret.unwrap_or(false),
+            },
+        };
+        out.insert(name.clone(), o);
+    }
+    out
 }
 
 fn resolve_health(
@@ -607,7 +654,10 @@ fn resolve_health(
         url: h.url,
         status: h.status,
         body_contains: h.body_contains,
+        headers: h.headers.unwrap_or_default().into_iter().collect(),
+        insecure: h.insecure.unwrap_or(false),
         command: h.command,
+        cwd: h.cwd,
         interval: h.interval.unwrap_or(d::HEALTH_INTERVAL),
         timeout: h.timeout.unwrap_or(d::HEALTH_TIMEOUT),
         retries: h.retries.unwrap_or(d::HEALTH_RETRIES),

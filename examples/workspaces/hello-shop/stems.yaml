@@ -41,10 +41,10 @@ profiles:
   backend: [postgres, redis, shop-api, shop-worker]
   # process-only omits postgres/redis on purpose to demonstrate that a
   # profile is just a *starting set*: shop-api's depends_on still names
-  # postgres and redis in the stem definitions below. Whether `up` pulls
-  # those dependencies into the closure automatically is a later
-  # deliverable's problem (profile-closure semantics); for now the
-  # depends_on edges stay declared exactly as they would in any profile.
+  # postgres and redis, so `up --profile process-only` pulls them in as
+  # hard dependencies (event `profile.expanded`), unless
+  # `strict_profiles: true`, which refuses the profile instead
+  # (PROFILE_MISSING_DEPENDENCY). See docs/config.md.
   process-only: [shop-api, shop-worker, shop-web]
 
 # ---------------------------------------------------------------------------
@@ -83,7 +83,10 @@ stems:
       start_period: 1s
     stop_grace: 2s
     scripts:
-      reset: docker volume rm hello-shop-pgdata
+      # Named volumes are prefixed `<ws>_` by stems (`hello-shop-pgdata` →
+      # `hello-shop_pgdata`). `reset` stops and removes the container first;
+      # the `docker rm` covers one left stopped by `stems stop`.
+      reset: "docker rm -f hello-shop-postgres >/dev/null 2>&1; docker volume rm -f hello-shop_pgdata"
       seed:
         file: scripts/postgres/seed.sh
         description: Apply migrations and insert a handful of sample rows
@@ -102,6 +105,10 @@ stems:
     file: compose/redis.yml
     service: redis
     project_name: hello-shop
+    # Stem env is compose's interpolation input: the file publishes
+    # ${REDIS_PORT:-16379}, so pass the stem's (possibly overridden) port.
+    env:
+      REDIS_PORT: "${stem.self.port}"
     ports: [{ name: redis, port: 16379, container_port: 6379 }]
     health:
       type: command
@@ -196,13 +203,15 @@ stems:
   # -------------------------------------------------------------------------
   # shop-web — type: process
   # Demonstrates: port: auto, ${stem.shop-api.port} substitution, depends
-  # on shop-api.
+  # on shop-api with edge metadata (`protocol: http`, shown by
+  # `stems graph --edges` and the TUI graph's `e` key; FR-GR-5).
   # -------------------------------------------------------------------------
   shop-web:
     type: process
     description: Static site + tiny dev server that renders the product list
     codebase: ../../repos/shop-web
-    depends_on: [shop-api]
+    depends_on:
+      - { stem: shop-api, protocol: http }
     env:
       API_URL: "http://localhost:${stem.shop-api.port}"
     ports: [{ name: http, port: auto }]

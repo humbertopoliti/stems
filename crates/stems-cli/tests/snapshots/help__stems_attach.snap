@@ -2,7 +2,12 @@
 source: crates/stems-cli/tests/help.rs
 expression: help
 ---
-Follow the workspace daemon (plain event stream until the TUI lands)
+Open the dashboard (TUI) on the workspace daemon.
+
+Keys: j/k move, Enter detail, Tab cycles views, / filter, s sort, ? help, q quit (leaves the stems
+running). STEMS_TUI=0, a non-terminal stdout or --json give the plain event stream instead.
+--headless --script 'wait:healthy;frame;j;Enter;frame' replays keys and prints each frame as text
+(see docs/tui.md).
 
 Usage: stems attach [OPTIONS]
 
@@ -13,15 +18,20 @@ Options:
           Possible values:
           - table:  The stem table
           - detail: The selected stem's detail pane
+          - graph:  The dependency graph
 
       --headless
           Render frames as text without a terminal (for tests)
 
-      --script <FILE>
-          Key script to replay (with --headless)
+      --script <SPEC>
+          Key script to replay (implies --headless): tokens separated by `;`
+          (`wait:healthy;frame;j;Enter;frame`), or `@FILE` to read them from a file
 
       --frames-out <DIR>
           Write rendered frames into this directory (with --headless)
+
+      --size <WxH>
+          Frame size with --headless (default 80x24)
 
   -h, --help
           Print help (see a summary with '-h')

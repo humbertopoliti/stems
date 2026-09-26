@@ -2,13 +2,13 @@
 source: crates/stems-cli/tests/help.rs
 expression: help
 ---
-Resume watchdogs
+Resume watchdogs (all, clearing per-stem pauses too, or some stems')
 
-Usage: stems watch resume [OPTIONS] [STEM]
+Usage: stems watch resume [OPTIONS] [STEMS]...
 
 Arguments:
-  [STEM]
-          Only this stem
+  [STEMS]...
+          Only these stems (default: every watchdog)
 
 Options:
   -h, --help

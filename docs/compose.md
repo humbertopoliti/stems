@@ -65,9 +65,10 @@ and the API client always talk to the same engine.
 
 ## Project naming
 
-`project_name` defaults to `stems-<ws>` (lower-cased; characters compose
-rejects become `-`). Every compose stem of a workspace shares that project
-unless it sets its own `project_name`.
+`project_name` defaults to `stems-<ws>` (the config default; the daemon
+lower-cases it and turns characters compose rejects into `-`). Every
+compose stem of a workspace shares that project unless it sets its own
+`project_name` (hello-shop's `redis` sets `hello-shop`).
 
 ## Env overrides and precedence
 
@@ -146,5 +147,71 @@ reported twice.
 - `wait` reports the container exit; compose `restart:` policies inside the
   file still apply and can fight stems' own restart policy, so leave
   `restart:` unset in wrapped services.
-- `docker compose` must be v2 and on the daemon's `PATH`; `requires`
-  auto-check of the binary is the daemon's job (not in this crate).
+- `docker compose` must be v2 and on the daemon's `PATH`. With compose
+  stems in the workspace, `stems doctor` checks it (`compose.version`,
+  fail) and `stems validate` warns (`TOOL_VERSION` in `data.warnings`,
+  `details.tool: "docker compose"`; skipped by `--skip-requires`); a
+  warning, not an error, so process-only CI can still validate
+  hello-shop.
+
+## Daemon wiring (deliverable 15)
+
+`crates/stems-daemon/src/supervisor/containers.rs` (shared with docker
+stems, see `docs/docker.md`):
+
+- The compose runtime is created lazily with the Docker connection, the
+  first time a compose stem starts: `ComposeOptions { workspace, env_dir:
+  <STEMS_HOME>/<ws-hash>/compose }` (the directory `doctor` uses too, so
+  ownership markers agree).
+- `compose_spec(ws, stem, run_id, env)`: the file (absolute, resolved
+  against the integration repo), `service`, `project_name`, `adopt`,
+  `stop_grace`, and the env stems resolves for the stem (config env,
+  `env_files`, local overrides, `--pass-env`, `PORT` = the primary host
+  port, `STEMS_*`; not the daemon's own environment). Golden:
+  `hello_shop_redis`. hello-shop's `redis` passes
+  `REDIS_PORT: "${stem.self.port}"` so a local port override reaches the
+  file's `${REDIS_PORT:-16379}`.
+- Errors: `COMPOSE_FAILED` (`details.tail`, `command`, `exit`),
+  `COMPOSE_PROJECT_IN_USE` (`details.project`), `DOCKER_UNAVAILABLE` for
+  a missing/v1 compose or an unreachable engine; every one carries
+  `details.stem`.
+- `down` (and daemon shutdown, `reset`) runs `rm -f -s <service>` for the
+  stem's handle; a compose stem left stopped by `stems stop` is removed by
+  `down` through `ComposeRuntime::remove_service(spec)`. `restart` is
+  `compose stop` + `up -d --no-deps` (compose itself recreates the
+  container when the service definition changed). `down --volumes` does
+  not touch compose volumes.
+- Crash recovery calls `adopt_service(record, spec)` with the spec built
+  from the current config (the trait-level `adopt` when the stem is gone
+  from the config). Orphans: `doctor` and `doctor --orphans` include the
+  compose scan; `up` includes running ones when the selection needs Docker.
+
+## Verifying with Docker (checklist)
+
+Not run on the development machine (no Docker). With Docker and compose
+v2:
+
+```sh
+STEMS_TEST_DOCKER=1 cargo test -p stems-runtime compose_live_roundtrip -- --ignored
+make e2e-docker FEATURE=tests/features/compose
+```
+
+and check:
+
+1. `stems up` in `tests/fixtures/workspaces/compose-redis`: `docker
+   compose -p stems-compose-redis ps` shows `redis` running, published on
+   the stem's port; `<STEMS_HOME>/<hash>/compose/cache.env` holds
+   `REDIS_PORT`.
+2. A `REDIS_ARGS` local override is visible in the container's command.
+3. `stems logs cache` shows redis's start-up lines (followed from one
+   second before `up`).
+4. `kill -9` of the daemon + `stems up` adopts the same container.
+5. `stems.cache.service=broken` fails with `COMPOSE_FAILED` and the pull
+   error in `details.tail`.
+6. A project started by hand under the stem's `project_name` is refused
+   (`COMPOSE_PROJECT_IN_USE`) and co-managed with `adopt: true`; `down`
+   leaves the foreign service running.
+7. `stems down` removes the service container; the project network is
+   left (`docker compose -p <project> down` removes it).
+8. `stems validate --json` with and without `docker` on `PATH`: a
+   `TOOL_VERSION` warning only without it.

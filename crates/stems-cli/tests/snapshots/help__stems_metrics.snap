@@ -2,7 +2,16 @@
 source: crates/stems-cli/tests/help.rs
 expression: help
 ---
-Show CPU, memory and disk usage per stem
+Show CPU, memory and disk usage per stem.
+
+The table has STEM CPU% MEM CHILDREN UPTIME RESTARTS and CPU/MEM sparklines over the last 30
+samples, plus a TOTAL row. CPU% is percent of one core (can exceed 100); MEM is resident memory of
+the whole process tree (containers: usage minus cache). `--sort cpu|mem` puts the heaviest first
+("what is eating my laptop"); `--history 5m` adds the samples of that window to --json; `--disk`
+also measures build outputs (target, dist, build, node_modules, .venv) and docker volumes (slow,
+cached 60 s). --json gives `{interval_ms, stems: [{name, type, state, latest: {ts, cpu_pct,
+rss_bytes, children, uptime_s, restarts}, history?, open_ports, limits, disk?}], totals: {cpu_pct,
+rss_bytes, children}}`. See docs/metrics.md.
 
 Usage: stems metrics [OPTIONS] [STEMS]...
 
@@ -11,8 +20,8 @@ Arguments:
           Only these stems
 
 Options:
-      --watch
-          Refresh continuously
+      --watch [<INTERVAL>]
+          Redraw until Ctrl-C, every INTERVAL (seconds or a duration such as `500ms`; default 2s)
 
       --history <DURATION>
           Include samples from this window (e.g. 5m)

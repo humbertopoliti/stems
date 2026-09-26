@@ -1,0 +1,28 @@
+---
+source: crates/stems-tui/src/tests.rs
+expression: text
+---
+ stems · process-chain                     [Graph] Table  Detail  Logs  Events
+┌─────┐      ┌─────┐           ┌─────┐
+│ d · ├─────▶│ c ↻ ├─── http ─▶│ a ✗ │
+└─────┘      └─────┘           └─────┘
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ✓ healthy  ! degraded  ✗ failed  · stopped  ? unknown  ↻ transitioning
+ process-chain · profile - · daemon pid 4242 · ✓1 !0 ✗1 ·1 ?0 ↻1 ? help · q qui…

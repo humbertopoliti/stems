@@ -346,6 +346,8 @@ pub struct E2eWorld {
     pub background: Option<Background>,
     /// Values saved with `When I save the JSON at ... as "<name>"` (`${var:name}`).
     pub vars: BTreeMap<String, String>,
+    /// The MCP test client and its `stems mcp` server (31).
+    pub mcp: Option<crate::mcp::McpSession>,
 }
 
 impl cucumber::World for E2eWorld {
@@ -385,6 +387,7 @@ impl E2eWorld {
             deadline: Instant::now() + scenario_timeout(),
             background: None,
             vars: BTreeMap::new(),
+            mcp: None,
         })
     }
 
@@ -484,6 +487,56 @@ impl E2eWorld {
         let _ = self.ws();
         let raw = self.expand(raw);
         remap::set_dotted(&mut self.local, dotted, &raw).unwrap_or_else(|e| panic!("{e}"));
+        self.write_local();
+    }
+
+    /// Deep-merges a YAML mapping (placeholders expanded) into the
+    /// generated `stems.local.yaml` (33: mapping keys merge recursively,
+    /// anything else replaces).
+    pub fn merge_override(&mut self, yaml: &str) {
+        let _ = self.ws();
+        let text = self.expand(yaml);
+        let add: Mapping = serde_yaml_ng::from_str(&text)
+            .unwrap_or_else(|e| panic!("the override is not a YAML mapping: {e}\n{text}"));
+        fn merge(into: &mut Mapping, add: Mapping) {
+            for (k, v) in add {
+                match (into.get_mut(&k), v) {
+                    (Some(serde_yaml_ng::Value::Mapping(a)), serde_yaml_ng::Value::Mapping(b)) => {
+                        merge(a, b)
+                    }
+                    (_, v) => {
+                        into.insert(k, v);
+                    }
+                }
+            }
+        }
+        merge(&mut self.local, add);
+        self.write_local();
+    }
+
+    /// Removes `dotted` (and mappings left empty above it) from the
+    /// generated `stems.local.yaml` (33).
+    pub fn remove_override(&mut self, dotted: &str) {
+        let _ = self.ws();
+        fn remove(m: &mut Mapping, path: &[&str]) -> bool {
+            let key = serde_yaml_ng::Value::String(path[0].to_owned());
+            if path.len() == 1 {
+                return m.remove(&key).is_some();
+            }
+            let Some(serde_yaml_ng::Value::Mapping(child)) = m.get_mut(&key) else {
+                return false;
+            };
+            let removed = remove(child, &path[1..]);
+            if child.is_empty() {
+                m.remove(&key);
+            }
+            removed
+        }
+        let path: Vec<&str> = dotted.split('.').collect();
+        assert!(
+            remove(&mut self.local, &path),
+            "the local override has no `{dotted}`"
+        );
         self.write_local();
     }
 

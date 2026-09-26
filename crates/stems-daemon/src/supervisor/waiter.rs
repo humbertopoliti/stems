@@ -1,15 +1,14 @@
-//! The one place that decides when a started stem satisfies a `depends_on`
-//! condition. Deliverable 21 replaces [`AliveWaiter`] with real probes.
+//! When a started stem satisfies a `depends_on` condition.
 //!
-//! [`AliveWaiter`] today:
+//! Since deliverable 21 the production [`ProbeWaiter`] hands readiness to
+//! the health probes ([`super::probes`]): the per-stem probe task moves the
+//! stem `starting → healthy` on the first passing probe (or `failed` with
+//! `START_TIMEOUT`), and the scheduler waits on the stem's real state:
 //!
-//! * `started` — the process is alive;
-//! * `healthy` — the process stayed alive for `health.start_period` and, for
-//!   `tcp`/`http` checks, its port accepts TCP connections; bounded by
-//!   `health.start_timeout` (`HEALTH_TIMEOUT`);
-//! * `seeded` — same as `healthy` here: the stem actor runs the `seed`
-//!   script after `healthy` (16) and the scheduler waits for it (the phase's
-//!   `pending` flag), so this waiter never sees `seeded` on its own.
+//! * `started` — the process is alive (spawned and not exited);
+//! * `healthy` — the stem's health check passed (state `healthy`);
+//! * `seeded` — `healthy` and the start sequence (`post_start`, `seed`, 16)
+//!   finished (the phase's `pending` flag is clear).
 //!
 //! A process that exits while waited on fails with `START_FAILED` (exit code
 //! and signal in details).
@@ -23,7 +22,9 @@ use stems_core::{Error, ErrorCode};
 use stems_runtime::{ExitStatus, Handle, Runtime};
 use tokio::time::Instant;
 
-/// Poll interval for liveness and port checks.
+use super::probes::{DockerProber, HttpProber, Prober, ProcessProber, TcpProber};
+
+/// Shortest poll interval of the stand-alone wait.
 const POLL: Duration = Duration::from_millis(50);
 
 /// What is waited on.
@@ -45,13 +46,27 @@ pub struct WaitTarget {
 #[async_trait::async_trait]
 pub trait Waiter: Send + Sync {
     /// Resolve once `target` satisfies `condition`, or fail (`START_FAILED`,
-    /// `HEALTH_TIMEOUT`, ...).
+    /// `START_TIMEOUT`, ...). Only used when [`Waiter::probes`] is `false`.
     async fn wait_condition(&self, target: &WaitTarget, condition: Condition) -> Result<(), Error>;
+
+    /// `true`: the supervisor runs the health probes of deliverable 21
+    /// ([`super::probes`]) for readiness *and* afterwards (`healthy ⇄
+    /// unhealthy`), and never calls [`Waiter::wait_condition`]. Test fakes
+    /// keep the default (`false`): a one-shot readiness wait, no probes.
+    fn probes(&self) -> bool {
+        false
+    }
+
+    /// A prober to use instead of the one built from the stem's health
+    /// config (tests script probe outcomes with it). `None`: build it.
+    fn prober(&self, _target: &WaitTarget) -> Option<Arc<dyn Prober>> {
+        None
+    }
 }
 
-/// "Alive for `start_period`" (plus a TCP connect for tcp/http checks).
+/// The production waiter: readiness and health come from the probes.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct AliveWaiter;
+pub struct ProbeWaiter;
 
 /// `START_FAILED` for a process that exited while starting.
 pub fn exited_error(stem: &str, status: ExitStatus) -> Error {
@@ -85,19 +100,11 @@ async fn dead(target: &WaitTarget) -> Option<Error> {
     Some(exited_error(&target.stem, status))
 }
 
-async fn port_open(port: u16) -> bool {
-    matches!(
-        tokio::time::timeout(
-            Duration::from_millis(200),
-            tokio::net::TcpStream::connect(("127.0.0.1", port))
-        )
-        .await,
-        Ok(Ok(_))
-    )
-}
-
 #[async_trait::async_trait]
-impl Waiter for AliveWaiter {
+impl Waiter for ProbeWaiter {
+    /// Stand-alone use (no supervisor probe task): `started` = alive;
+    /// `healthy`/`seeded` = the `tcp`/`http`/`process`/`docker` probe passes
+    /// once (other types: alive), bounded by `health.start_timeout`.
     async fn wait_condition(&self, target: &WaitTarget, condition: Condition) -> Result<(), Error> {
         if let Some(e) = dead(target).await {
             return Err(e);
@@ -105,62 +112,54 @@ impl Waiter for AliveWaiter {
         if condition == Condition::Started {
             return Ok(());
         }
-        let (start_period, start_timeout) = target
-            .health
-            .as_ref()
-            .map_or((Duration::ZERO, Duration::from_secs(60)), |h| {
-                (h.start_period.as_duration(), h.start_timeout.as_duration())
-            });
-        let now = Instant::now();
-        let alive_until = now + start_period;
-        let deadline = now + start_timeout.max(start_period);
-        let check_port = target.health.as_ref().is_some_and(|h| {
-            matches!(
-                h.kind,
-                HealthType::Tcp | HealthType::Http | HealthType::Grpc
-            )
-        });
+        let Some(h) = &target.health else {
+            return Ok(());
+        };
+        let prober: Arc<dyn Prober> = match (h.kind, target.probe_port) {
+            (HealthType::Tcp, Some(port)) => Arc::new(TcpProber::new(
+                h.host.clone(),
+                port,
+                h.timeout.as_duration(),
+            )),
+            (HealthType::Http, _) if h.url.is_some() => {
+                Arc::new(HttpProber::new(h.url.as_deref().unwrap_or_default(), h)?)
+            }
+            (HealthType::Docker, _) => Arc::new(DockerProber {
+                runtime: target.runtime.clone(),
+                handle: target.handle.clone(),
+            }),
+            _ => Arc::new(ProcessProber {
+                runtime: target.runtime.clone(),
+                handle: target.handle.clone(),
+            }),
+        };
+        let deadline = Instant::now() + h.start_timeout.as_duration();
+        let every = h.interval.as_duration().max(POLL);
         loop {
             if let Some(e) = dead(target).await {
                 return Err(e);
             }
-            let now = Instant::now();
-            if now >= alive_until {
-                match (check_port, target.probe_port) {
-                    (true, Some(p)) => {
-                        if port_open(p).await {
-                            return Ok(());
-                        }
-                    }
-                    _ => return Ok(()),
-                }
+            let r = prober.probe().await;
+            if r.ok {
+                return Ok(());
             }
-            if now >= deadline {
-                let what = target
-                    .probe_port
-                    .filter(|_| check_port)
-                    .map(|p| format!(" (port {p} not accepting connections)"))
-                    .unwrap_or_default();
+            if Instant::now() >= deadline {
                 return Err(Error::new(
-                    ErrorCode::HealthTimeout,
+                    ErrorCode::StartTimeout,
                     format!(
-                        "`{}` did not become healthy within {}s{what}",
+                        "`{}` did not become healthy within {}s (last probe: {})",
                         target.stem,
-                        start_timeout.as_secs_f64()
+                        h.start_timeout.as_duration().as_secs_f64(),
+                        r.detail
                     ),
                 )
-                .with_hint(format!(
-                    "check `stems logs {}`; raise `health.start_timeout` if it is just slow to boot",
-                    target.stem
-                ))
                 .with_details(json!({ "stem": target.stem, "port": target.probe_port })));
             }
-            let next = if now < alive_until {
-                (alive_until - now).min(POLL)
-            } else {
-                POLL
-            };
-            tokio::time::sleep(next).await;
+            tokio::time::sleep(every).await;
         }
+    }
+
+    fn probes(&self) -> bool {
+        true
     }
 }

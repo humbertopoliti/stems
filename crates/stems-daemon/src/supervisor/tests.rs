@@ -702,7 +702,7 @@ async fn unknown_stems_and_profiles_are_refused() {
         )
         .await
         .unwrap_err();
-    assert_eq!(e.code, ErrorCode::NotImplemented);
+    assert_eq!(e.code, ErrorCode::UnknownProfile);
 }
 
 #[tokio::test]
@@ -1059,3 +1059,317 @@ async fn down_during_setup_kills_the_script_at_once() {
         && e.data["script"] == "setup"
         && e.data["cancelled"] == true));
 }
+
+// --- health probes (21) ------------------------------------------------------
+
+/// A prober answering from a script, then `ok` forever.
+struct ScriptedProber(Mutex<std::collections::VecDeque<bool>>);
+
+#[async_trait::async_trait]
+impl probes::Prober for ScriptedProber {
+    async fn probe(&self) -> probes::ProbeResult {
+        let t0 = std::time::Instant::now();
+        let ok = self.0.lock().unwrap().pop_front().unwrap_or(true);
+        if ok {
+            probes::ProbeResult::pass(t0, "scripted ok")
+        } else {
+            probes::ProbeResult::fail(t0, "scripted failure")
+        }
+    }
+}
+
+/// Readiness and health from the probe loop, with scripted probers.
+#[derive(Default)]
+struct ScriptedWaiter(Mutex<HashMap<String, Vec<bool>>>);
+
+#[async_trait::async_trait]
+impl Waiter for ScriptedWaiter {
+    async fn wait_condition(&self, _t: &WaitTarget, _c: Condition) -> Result<(), Error> {
+        Err(Error::internal("probes() is true: never called"))
+    }
+    fn probes(&self) -> bool {
+        true
+    }
+    fn prober(&self, t: &WaitTarget) -> Option<Arc<dyn probes::Prober>> {
+        let seq = self.0.lock().unwrap().remove(&t.stem).unwrap_or_default();
+        Some(Arc::new(ScriptedProber(Mutex::new(seq.into()))))
+    }
+}
+
+fn probe_rig(
+    yaml: &str,
+    scripts: &[(&str, Vec<bool>)],
+) -> (Arc<Supervisor>, Arc<EventBus>, Arc<FakeRuntime>) {
+    let events = Arc::new(EventBus::default());
+    let rt = Arc::new(FakeRuntime::default());
+    let mut reg = RuntimeRegistry::default();
+    reg.register(StemType::Process, rt.clone());
+    let w = ScriptedWaiter(Mutex::new(
+        scripts
+            .iter()
+            .map(|(s, v)| ((*s).to_string(), v.clone()))
+            .collect(),
+    ));
+    let sup = Supervisor::new(events.clone(), host(yaml), reg, Arc::new(w));
+    (sup, events, rt)
+}
+
+async fn until_state(sup: &Supervisor, stem: &str, want: StemState) -> stems_api::StatusResult {
+    let t0 = std::time::Instant::now();
+    loop {
+        let st = sup.status(&StatusParams::default(), "t").unwrap();
+        if st.stems.iter().any(|s| s.name == stem && s.state == want) {
+            return st;
+        }
+        assert!(
+            t0.elapsed() < Duration::from_secs(5),
+            "{stem} never {want}: {st:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[tokio::test]
+async fn probes_drive_health_transitions_and_degraded_dependants() {
+    let yaml = "  db: { type: process, command: run, health: { type: tcp, port: 1, interval: 20ms, retries: 2 } }\n  api: { type: process, command: run, depends_on: [db], health: { type: tcp, port: 2, interval: 20ms, retries: 2 } }\n";
+    // db: fails once while starting, passes, then fails long enough to be
+    // seen unhealthy, then passes forever.
+    let mut db = vec![false, true, true, true, false, false];
+    db.extend(std::iter::repeat_n(false, 30));
+    let (sup, events, _rt) = probe_rig(yaml, &[("db", db)]);
+    let res = sup.up(UpParams::default(), "cli:test").await.unwrap();
+    assert!(res.ok, "{res:?}");
+    let st = until_state(&sup, "db", StemState::Unhealthy).await;
+    let db_st = st.stems.iter().find(|s| s.name == "db").unwrap();
+    assert_eq!(db_st.reason.as_deref(), Some("scripted failure"));
+    assert!(db_st.health.as_ref().unwrap().consecutive_failures >= 2);
+    let api = st.stems.iter().find(|s| s.name == "api").unwrap();
+    assert_eq!(api.state, StemState::Healthy);
+    assert!(api.degraded);
+    assert_eq!(api.glyph, stems_core::Glyph::Degraded);
+    assert_eq!(api.reason.as_deref(), Some("dependency db unhealthy"));
+    assert_eq!(st.summary.degraded, 1);
+    let st = until_state(&sup, "db", StemState::Healthy).await;
+    let api = st.stems.iter().find(|s| s.name == "api").unwrap();
+    assert!(!api.degraded);
+    assert_eq!(api.reason, None);
+    let db_st = st.stems.iter().find(|s| s.name == "db").unwrap();
+    assert_eq!(db_st.reason, None, "a plain healthy stem has no reason");
+    // One stem.health event per transition, none per probe.
+    let health: Vec<(String, String)> = events
+        .replay(0)
+        .iter()
+        .filter(|e| e.kind == EventKind::STEM_HEALTH && e.stem.as_deref() == Some("db"))
+        .map(|e| {
+            (
+                e.from.clone().unwrap_or_default(),
+                e.to.clone().unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        health,
+        [
+            ("healthy".to_string(), "unhealthy".to_string()),
+            ("unhealthy".to_string(), "healthy".to_string())
+        ]
+    );
+    assert_eq!(
+        states(&events.replay(0), "db"),
+        ["starting", "healthy", "unhealthy", "healthy"]
+    );
+    let h = sup
+        .health(&stems_api::HealthParams::default(), "t")
+        .unwrap();
+    let dbh = h.stems.iter().find(|s| s.name == "db").unwrap();
+    assert_eq!(dbh.kind.as_deref(), Some("tcp"));
+    assert_eq!(dbh.results.len(), 10);
+    assert!(dbh.results.iter().all(|r| r.latency_ms < 1000));
+    sup.down(DownParams::default(), "t").await.unwrap();
+}
+
+#[tokio::test]
+async fn never_healthy_is_start_timeout_and_the_process_is_stopped() {
+    let yaml = "  slow: { type: process, command: run, health: { type: tcp, port: 1, interval: 20ms, start_timeout: 200ms } }\n";
+    let (sup, _events, rt) = probe_rig(yaml, &[("slow", vec![false; 1000])]);
+    let res = sup.up(UpParams::default(), "cli:test").await.unwrap();
+    assert!(!res.ok);
+    assert_eq!(res.failed[0].error.code, ErrorCode::StartTimeout);
+    assert!(
+        res.failed[0].error.message.contains("scripted failure"),
+        "{:?}",
+        res.failed[0].error
+    );
+    let st = sup.status(&StatusParams::default(), "t").unwrap();
+    assert_eq!(st.stems[0].state, StemState::Failed);
+    assert_eq!(st.stems[0].pid, None);
+    assert!(
+        rt.actions
+            .lock()
+            .unwrap()
+            .contains(&"stop slow".to_string())
+    );
+}
+
+// ------------------------------------------------------------------ outputs (26)
+
+const WITH_OUTPUTS: &str = "  api:
+    type: process
+    command: run
+    ports: [18181]
+    outputs:
+      URL: \"http://localhost:${stem.self.port}\"
+      TOKEN: { command: \"echo tok\", secret: true }
+  web:
+    type: process
+    command: run
+    depends_on: [api]
+    env:
+      API_URL: \"${stem.api.outputs.URL}/v1\"
+";
+
+#[tokio::test]
+async fn dependants_start_after_outputs_and_see_them() {
+    let mut w = FakeWaiter::default();
+    w.delay.insert("api".into(), 60);
+    let r = rig(WITH_OUTPUTS, FakeRuntime::default(), w);
+    let res = r.sup.up(UpParams::default(), "cli:t").await.unwrap();
+    assert!(res.ok, "{res:?}");
+
+    // The output command ran before `api` became healthy and before `web`
+    // was started.
+    let actions = r.rt.actions.lock().unwrap().clone();
+    let pos = |a: &str| {
+        actions
+            .iter()
+            .position(|x| x == a)
+            .unwrap_or_else(|| panic!("{a}: {actions:?}"))
+    };
+    assert!(pos("script api:outputs") < pos("start web"), "{actions:?}");
+    let ev = r.events.replay(0);
+    let outputs_seq = ev
+        .iter()
+        .find(|e| e.kind == EventKind::STEM_OUTPUTS)
+        .expect("stem.outputs event")
+        .seq;
+    assert!(outputs_seq < seq_of(&ev, "api", "healthy"));
+    assert!(outputs_seq < seq_of(&ev, "web", "starting"));
+    let data = &ev
+        .iter()
+        .find(|e| e.kind == EventKind::STEM_OUTPUTS)
+        .unwrap()
+        .data;
+    assert_eq!(data["names"], serde_json::json!(["TOKEN", "URL"]));
+    assert!(!data.to_string().contains("tok"), "never values: {data}");
+
+    // web's env: the rendered reference and STEMS_API_OUTPUT_*; secrets are
+    // redacted in status.
+    let st = r
+        .sup
+        .status(
+            &StatusParams {
+                verbose: true,
+                ..StatusParams::default()
+            },
+            "t",
+        )
+        .unwrap();
+    let web = st.stems.iter().find(|s| s.name == "web").unwrap();
+    let env = web.env.as_ref().unwrap();
+    assert_eq!(env["API_URL"], "http://localhost:18181/v1");
+    assert_eq!(env["STEMS_API_OUTPUT_URL"], "http://localhost:18181");
+    // The fake runtime's scripts print nothing: TOKEN is "", still redacted.
+    assert_eq!(env["STEMS_API_OUTPUT_TOKEN"], stems_api::REDACTED);
+    let api = st.stems.iter().find(|s| s.name == "api").unwrap();
+    assert_eq!(api.outputs["URL"], "http://localhost:18181");
+    assert_eq!(api.outputs["TOKEN"], stems_api::REDACTED);
+
+    let o = r
+        .sup
+        .outputs(&stems_api::OutputsParams::default(), "t")
+        .unwrap();
+    assert_eq!(o.stems.len(), 1);
+    assert_eq!(o.stems[0].outputs[0].name, "URL");
+    assert_eq!(
+        o.stems[0].outputs[1].value.as_deref(),
+        Some(stems_api::REDACTED)
+    );
+    assert!(o.stems[0].outputs[1].secret);
+
+    // Stopping drops them.
+    r.sup
+        .stop(
+            StopParams {
+                stems: vec!["api".into()],
+                cascade: true,
+                ..StopParams::default()
+            },
+            "t",
+        )
+        .await
+        .unwrap();
+    let st = r.sup.status(&StatusParams::default(), "t").unwrap();
+    assert!(st.stems[0].outputs.is_empty());
+    r.sup.stop_all("t", "test").await;
+}
+
+#[tokio::test]
+async fn failing_output_command_fails_the_stem_and_skips_dependants() {
+    let mut rt = FakeRuntime::default();
+    rt.script_exit.insert("api:outputs".into(), 2);
+    let r = rig(WITH_OUTPUTS, rt, FakeWaiter::default());
+    let res = r.sup.up(UpParams::default(), "cli:t").await.unwrap();
+    assert!(!res.ok);
+    assert_eq!(res.failed[0].stem, "api");
+    let e = &res.failed[0].error;
+    assert_eq!(e.code, ErrorCode::ScriptFailed);
+    assert_eq!(e.details["output"], "TOKEN");
+    assert_eq!(e.details["tail"], serde_json::json!([]), "secret: no tail");
+    assert!(res.skipped.contains(&"web".to_string()));
+    assert_eq!(r.sup.cell("api").state(), StemState::Failed);
+    assert!(
+        r.rt.actions
+            .lock()
+            .unwrap()
+            .contains(&"stop api".to_string())
+    );
+    r.sup.stop_all("t", "test").await;
+}
+
+#[tokio::test]
+async fn output_reference_without_value_is_unresolved_at_start() {
+    let yaml = "  api: { type: process, command: run }
+  web:
+    type: process
+    command: run
+    depends_on: [api]
+    env: { X: \"${stem.api.outputs.NOPE}\" }
+";
+    let r = rig(yaml, FakeRuntime::default(), FakeWaiter::default());
+    let res = r.sup.up(UpParams::default(), "cli:t").await.unwrap();
+    assert!(!res.ok);
+    assert_eq!(res.failed[0].stem, "web");
+    let e = &res.failed[0].error;
+    assert_eq!(e.code, ErrorCode::UnresolvedVariable);
+    assert!(
+        e.hint
+            .as_deref()
+            .unwrap_or_default()
+            .starts_with("outputs are available only from dependencies with condition: healthy"),
+        "{e:?}"
+    );
+    assert!(!r.rt.starts.lock().unwrap().contains(&"web".to_string()));
+    r.sup.stop_all("t", "test").await;
+}
+
+// --- restart policies (22) -------------------------------------------------
+
+mod restart;
+
+// --- watchdogs (24) ----------------------------------------------------------
+
+mod watchdogs;
+
+// --- config reload (33) -----------------------------------------------------
+
+mod reload;

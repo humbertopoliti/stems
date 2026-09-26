@@ -1,0 +1,10 @@
+---
+source: crates/stems-tui/src/logs.rs
+expression: text
+---
+┌ Logs: echo-svc · following · wrap ───┐
+│›  12:00:00.000 xxxxxxxxxxxxxxxxxxxxxx│
+│   xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx│
+│   xxxxxxxxxxxxxxxxxxxxxxx            │
+│                                      │
+└──────────────────────────────────────┘

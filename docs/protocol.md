@@ -121,16 +121,24 @@ the connection stays usable. For a stream:
 | `ping` | `{}` | `{"pong": true}` |
 | `info` | `{}` | `DaemonInfo {version, api_version, workspace, pid, start_time, uptime_s, started_at}` |
 | `daemon_status` | `{}` | `DaemonInfo` fields + `{workspace_name, stem_count, last_seq, subscribers, debug_rpc}` |
-| `events` | `{since_seq?, limit?}` | `{events: [Event], last_seq}` — buffered events with `seq > since_seq`, oldest first |
+| `events` | `{since_seq?, limit?, kinds?, actor?}` | `{events: [Event], last_seq}` — buffered events with `seq > since_seq`, oldest first; `kinds` (exact, or a prefix ending in `*`) and `actor` filter before `limit` applies (31) |
 | `subscribe_events` | `{since_seq?}` | ack `{subscribed: true, last_seq}`, then `event` notifications (see below) |
 | `load_workspace` | `{path}` | `{root, name, stems: [name], sources: [path]}`; emits `workspace.loaded`; config errors are returned as the first error with all of them in `details.errors` |
 | `shutdown` | `{}` | `{stopping: true}`, then the orderly shutdown path runs |
-| `up` | `UpParams {stems?, profile?, detach?, timeout_ms?, fail_fast? (true), max_parallel? (4), pass_env? {K: V}, daemon_auto_started?, fresh?, force_overlays?, sync?}` | `UpResult {ok, requested, ready: [stem], failed: [{stem, error}], skipped: [stem]}` — long-running; progress is the event stream (see [lifecycle.md](lifecycle.md)) |
-| `down` | `DownParams {stems?, all?, timeout_ms?}` | `DownResult {ok, stopped, skipped, failed: [{stem, error}], daemon_stopping}`; with `daemon_stopping` the daemon shuts down right after replying |
+| `up` | `UpParams {stems?, profile?, detach?, timeout_ms?, fail_fast? (true), max_parallel? (4), pass_env? {K: V}, daemon_auto_started?, fresh?, force_overlays?, sync?, no_watch?}` | `UpResult {ok, requested, ready: [stem], failed: [{stem, error}], skipped: [stem]}` — long-running; progress is the event stream (see [lifecycle.md](lifecycle.md)) |
+| `down` | `DownParams {stems?, all?, timeout_ms?, volumes?}` | `DownResult {ok, stopped, skipped, failed: [{stem, error}], daemon_stopping, volumes_removed?}`; with `daemon_stopping` the daemon shuts down right after replying; `volumes` removes the selected docker stems' named volumes (14) |
 | `start` | `StartParams {stems, no_deps?, timeout_ms?}` | `UpResult`; external stems: `NOT_MANAGED` |
 | `stop` | `StopParams {stems, cascade?, timeout_ms?}` | `DownResult`; running dependants without `cascade`: `HAS_DEPENDANTS` (`details.dependants`) |
 | `restart` | `RestartParams {stems, no_deps?, build?, timeout_ms?}` | `UpResult` (ports kept); `build: true` runs each stem's `build` script between stop and start ([scripts.md](scripts.md)) |
-| `status` | `StatusParams {stems?, verbose?}` | `StatusResult {stems: [StemStatus], summary: {healthy, degraded, failed, stopped, unknown, starting}}` |
+| `status` | `StatusParams {stems?, verbose?}` | `StatusResult {stems: [StemStatus], summary: {healthy, degraded, failed, stopped, unknown, starting}}`; `StemStatus` has `degraded` and `health {type, last: {ts, ok, outcome, latency_ms, detail}, consecutive_failures, transitions_60s, container?}` ([health.md](health.md)) |
+| `health` | `HealthParams {stems?, last? (10, max 50)}` | `HealthResult {stems: [{name, type, state, consecutive_failures, transitions_60s, results: [{ts, ok, outcome: ok\|fail\|unknown, latency_ms, detail}]}]}` — the last probe results per stem, oldest first ([health.md](health.md)) |
+| `metrics` | `MetricsParams {stems?, history_ms?, last?, sort?: cpu\|mem, disk?}` | `MetricsResult {interval_ms, stems: [{name, type, state, latest: Sample \| null, history?: [Sample], open_ports, limits: [{metric, limit, for_s, crossed}], disk?: {codebase_build_bytes, dirs: [{path, bytes}], volumes_bytes, truncated}}], totals: {cpu_pct, rss_bytes, children, disk_bytes?}}`; `Sample = {ts, cpu_pct, rss_bytes, children, uptime_s, restarts}`. `history_ms` returns that window, `last` the last N samples; `sort` orders highest first; `disk` measures build outputs and volumes (cached 60 s). Unknown stem: `UNKNOWN_STEM` ([metrics.md](metrics.md)) |
+| `outputs` | `OutputsParams {stems?, reveal?}` | `OutputsResult {stems: [{name, outputs: [{name, value, secret}]}]}` — evaluated stem outputs (26); `value` `null` until healthy, `"<redacted>"` for secrets unless `reveal` ([config.md](config.md#outputs-fr-st-6)) |
+| `watch_pause` | `WatchPauseParams {stems?}` | `WatchPauseResult {stems, global_paused}` — pause watchdogs (24): no stems = global; event `watch.paused` ([watchdogs.md](watchdogs.md)) |
+| `watch_resume` | `WatchPauseParams {stems?}` | `WatchPauseResult` — resume; no stems = global, which also clears per-stem pauses; event `watch.resumed` |
+| `watch_status` | `WatchStatusParams {stems?}` | `WatchStatusResult {stems: [{name, rules: [{paths, ignore, action, debounce_ms, settle_ms, root, dir}], paused, active, last_triggered, pending, busy}], global_paused, disabled}` — stems with `watch:` rules; `disabled` after `up --no-watch` |
+| `config_diff` | `{}` | `ConfigDiffResult {plan: ReloadPlan {stems: [{name, action, changes, fields, hot, running}], workspace, catalog_changed}, pending, loaded_at, detected_at?, sources, last_error?}` — the plan from the applied config to the one on disk, read now; `last_error` when it is invalid (33, [config.md](config.md#reload-on-change-fr-wd-3)) |
+| `config_apply` | `ConfigApplyParams {stems?, yes}` | `ConfigApplyResult {applied: [{stem, action, result}], failed: [{stem, action, error}], skipped: [{stem, action, reason}], workspace, pending, ok}` — stop, install, hot-apply, start; `yes: true` required (`DESTRUCTIVE_NOT_CONFIRMED`); invalid config on disk: its errors; event `config.applied` |
 | `query_logs` | `{stems?, since?, until?, grep?, level?, script?, tail?, from_files?}` | `{records: [LogRecord], truncated}` — oldest first, interleaved by `ts`, at most 10 000 (the newest; `truncated` says more matched). Times: `10m`, `1.5s` (before the daemon's clock) or RFC 3339; `level`: `error` (exact) or `warn+` (and above). Unknown stem: `UNKNOWN_STEM`; bad filter: `USAGE` (see [logs.md](logs.md)) |
 | `subscribe_logs` | `{stems?, since?, grep?, level?, script?, tail?}` | ack `{subscribed: true, replay: n}`, then `log` notifications (see below) |
 | `export_logs` | `{path, since?}` (`path` absolute) | `{path, entries: [name], bytes}` — writes the `.tar.gz` bundle ([logs.md](logs.md#export-bundle)) |
@@ -140,6 +148,7 @@ the connection stays usable. For a stream:
 | `stamps` | `StampsParams {stem?, clear?}` | `StampsResult {stamps: [{stem, script, hash, computed_at, inputs}], cleared}` |
 | `run_script` | `RunScriptParams {stem? (null: workspace script), name, args? ([argv] \| {name: value}), wait? (true), start_deps?, ready_timeout_ms? (30000)}` | `RunScriptResult {run_id, stem, script, ok, exit, signal, duration_ms, timed_out, attempts, argv, tail, queued, error?}`; with `wait: false` at once `RunScriptAccepted {run_id, stem, script}` (follow the `script.*` events with that `data.run_id`). A failed script is a successful call with `ok: false` and `error` (`SCRIPT_FAILED`); bad args: `SCRIPT_ARGS_INVALID` (`details {arg, reason, stem, script}`); unhealthy `requires`: `SCRIPT_REQUIRES_UNMET` (`details {requires, unmet: [{stem, state}], start_error}`); stem still starting past the bound: `START_TIMEOUT` ([scripts.md](scripts.md#custom-scripts-and-stems-run)) |
 | `script_catalog` | `ScriptCatalogParams {stem?}` | `ScriptCatalogResult {scripts: [{stem, name, description, args: [{name, type, default, required, description, values}], requires, kind: lifecycle\|custom, timeout, retries, concurrent, mcp_tool, input_schema}]}` — what the TUI (30) and MCP (31) consume |
+| `stem_config` | `{stem}` | the stem's resolved config (`stems_config::Stem` JSON: `type`, `env`, `ports`, `scripts`, `health`, ...; `UNKNOWN_STEM` otherwise) — the TUI detail view (27) |
 | `overlays` | `OverlaysParams {stem?}` | `OverlaysResult {overlays: [{stem, dest, status: present\|modified\|missing, keep, sha256, run_id}]}` ([overlays.md](overlays.md)) |
 | `repos_sync` | `ReposSyncParams {stems?, force_fetch? (true), recurse_submodules?}` | `ReposSyncResult {ok, repos: [{stem, path, action, ref, sha, message, error?}]}` — clone / fetch / check out git codebases ([repos.md](repos.md)) |
 | `repos_status` | `ReposStatusParams {stems?}` | `ReposStatusResult {repos: [{stem, source, path, url, ref, branch, sha, dirty, ahead, behind, exists}]}` |
@@ -148,8 +157,11 @@ the connection stays usable. For a stream:
 | `_debug.describe` | `{handle}` | `RuntimeFacts` |
 
 `StemStatus` is `{name, type, state, glyph, reason, pid, pgid, ports: [{name,
-port, auto}], uptime_s, started_at, restarts, seeded, health, error}` plus `env` (what
-stems set for the process) with `verbose`. Semantics of the lifecycle methods:
+port, auto}], uptime_s, started_at, restarts, restarts_in_window, seeded, health, error}` plus `metrics`
+(`{ts, cpu_pct, rss_bytes, children}`, the latest sample of a running stem; 25) and `env` (what
+stems set for the process) with `verbose`, and `outputs` (`{NAME: value}`,
+secrets `"<redacted>"`, omitted when empty; 26) and `watch` (`{paused, rules}`,
+only for stems with `watch:` rules; 24). Semantics of the lifecycle methods:
 [lifecycle.md](lifecycle.md).
 
 Methods a daemon does not know answer `NOT_IMPLEMENTED`. `Method` is an
@@ -198,18 +210,36 @@ Kinds defined so far (`stems_api::EventKind`; later deliverables add more, so
 consumers must ignore unknown kinds): `daemon.started`, `daemon.stopping`,
 `daemon.stopped`, `workspace.loaded`, `stem.state`, `stem.port_allocated`,
 `stem.adopted`, `stem.recovered_dead`, `stem.restarting`, `stem.gave_up`,
-`stem.health`, `process.exited`, `process.output`, `up.started`, `up.finished`,
+`stem.health`, `stem.threshold`, `stem.outputs`, `process.exited`, `process.output`, `profile.expanded`, `up.started`, `up.finished`,
 `down.started`, `down.finished`, `script.queued`, `script.started`,
-`script.finished`, `watch.triggered`, `watch.paused`, `watch.reconfigured`,
-`config.changed`, `config.invalid`, `overlay.materialised` (`data: {dest,
+`script.finished`, `watch.triggered`, `watch.action_finished`, `watch.paused`,
+`watch.resumed`, `watch.reconfigured`,
+`config.changed`, `config.invalid`, `config.applied`, `config.pending`,
+`tools.changed`, `overlay.materialised` (`data: {dest,
 keep, backup}`), `overlay.removed`, `overlay.kept`,
 `overlay.modified_left_in_place` (`data: {dest}`; see
 [overlays.md](overlays.md)), `repo.cloned`, `repo.fetched`,
 `repo.checked_out`, `repo.skipped_dirty`, `repo.failed` (see
-[repos.md](repos.md#logs-and-events)).
+[repos.md](repos.md#logs-and-events)), `docker.pull` (`data: {stem, image,
+layer, status}`, one per layer status change) and `docker.build` (`data:
+{stem, line}`) (see [docker.md](docker.md)).
+
+Config reload payloads (deliverable 33, [config.md](config.md#reload-on-change-fr-wd-3)):
+`config.changed` `data: {plan, sources, auto_apply}` (reason `config
+changed: N stems affected`); `config.invalid` `data: {errors, codes}`;
+`config.applied` `data: {applied, failed: [{stem, action, code}], skipped,
+workspace, auto, pending}` (or `{applied, workspace, implicit: true}` when a
+command applied a change that restarts nothing); `config.pending` `data:
+{stems}` (a command used the applied config while these running stems wait
+for `config apply`); `watch.reconfigured` (stem) `data: {rules: [{paths,
+action, debounce_ms, settle_ms}], running}`; `tools.changed` `data: {added,
+removed, changed, agent_changed}` (MCP tool names; `stems mcp` sends
+`notifications/tools/list_changed`). Their actor is `daemon` when the
+config watcher acted.
 
 Recovery payloads (deliverable 11): `stem.adopted` `data: {pid, pgid,
-started_at}` (followed by `stem.state` `stopped → healthy`, reason
+started_at, container_id}` (`container_id` for docker/compose stems, whose
+`pid`/`pgid` are 0; followed by `stem.state` `stopped → healthy`, reason
 `adopted`); `stem.recovered_dead` `data: {pid, pgid, start_time,
 container_id}` (the state entry was cleared). See [recovery.md](recovery.md).
 
@@ -220,10 +250,37 @@ signal, duration_ms, timed_out, cancelled, ok, run_id?, attempt?}`;
 for another script of the same stem). `run_id` and `attempt` (1-based) are
 set for `run_script` runs. See [scripts.md](scripts.md).
 
+Watchdog payloads (deliverable 24, actor `watchdog` unless a client paused/resumed):
+`watch.triggered` `reason` (`watch: app.py changed`) and `data: {paths (≤ 10,
+relative to the rule's root), path_count, action, rule_index}`;
+`watch.action_finished` `data: {action, rule_index, ok, error?}`;
+`watch.paused` / `watch.resumed` with `stem` (per-stem) or `data: {global:
+true}`. See [watchdogs.md](watchdogs.md).
+
+Output payloads (deliverable 26): `stem.outputs` `data: {names, secret}`
+(the names of the outputs just evaluated and of the secret ones; never
+values), emitted before the stem's `stem.state → healthy`. See
+[config.md](config.md#outputs-fr-st-6).
+
+Health payloads (deliverable 21): `stem.health` — one per health
+transition of a running or monitored stem (`healthy ⇄ unhealthy`, and
+`unknown ⇄ healthy/unhealthy` for external stems; never per probe, and not
+for `starting → healthy`, which is a `stem.state`), with `from`/`to`,
+`reason` (the last probe's detail) and `data: {probe, detail, latency_ms,
+outcome, consecutive_failures}`. The matching `stem.state` event is emitted
+too. See [health.md](health.md).
+
+Metrics payloads (deliverable 25): `stem.threshold` — a `limits:`
+threshold was crossed or cleared: `reason` (`memory > 100MB crossed`) and
+`data: {metric: memory|cpu, value, limit, for_s, state: crossed|cleared}`
+(`limit` in bytes or percent of one core). While crossed, a healthy stem is
+`degraded` with that reason. See [metrics.md](metrics.md).
+
 Lifecycle payloads (deliverable 10): `stem.state` has `from`/`to`/`reason`
 and `data: {pid, error?, outcome?, exit_code?, signal?}`;
 `stem.port_allocated` `data: {name, port}`; `process.exited` (supervised
-stems) `data: {pid, code, signal}`; `up.started` `data: {requested, stems,
+stems) `data: {pid, code, signal}`; `profile.expanded` (26) `data: {profile,
+added, requested}`; `up.started` `data: {profile, requested, stems,
 layers, detach}`; `up.finished` `data: {requested, started, failed, skipped,
 ok}`; `down.started` `data: {requested, all}`; `down.finished` `data:
 {stopped, skipped, failed, daemon_stopping}`.

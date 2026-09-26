@@ -2,7 +2,12 @@
 source: crates/stems-cli/tests/help.rs
 expression: help
 ---
-Show health check results
+Show the last health probe results per stem, with latency.
+
+The table has one row per probe: STEM TYPE OK LATENCY DETAIL TS. Without a stem it shows each stem's
+latest probe; with one, its last 10 (`--last` changes both; the daemon keeps 50 per stem). --json
+gives `{stems: [{name, type, state, consecutive_failures, transitions_60s, results: [{ts, ok,
+outcome, latency_ms, detail}]}]}`.
 
 Usage: stems health [OPTIONS] [STEM]
 
@@ -11,8 +16,11 @@ Arguments:
           Only this stem
 
 Options:
+      --last <N>
+          Probe results per stem (default 1 without a stem, 10 with one; max 50)
+
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>

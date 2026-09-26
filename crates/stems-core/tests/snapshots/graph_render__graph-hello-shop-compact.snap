@@ -1,0 +1,9 @@
+---
+source: crates/stems-core/tests/graph_render.rs
+expression: out
+---
+[shop-web !]─────▶[shop-api    ✗]──┬─┬──▶[postgres ✓]
+                                   │ │
+                  [shop-worker ↻]──┴─┴──▶[redis    ✓]
+
+                                         [httpbin  ?]

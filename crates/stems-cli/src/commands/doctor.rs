@@ -158,7 +158,10 @@ async fn orphans_check(ctx: &Ctx, args: &DoctorArgs, mode: Mode) -> Result<Comma
     // A running daemon is never an orphan, and can adopt (interactive only).
     let daemon = connect_to(&t, client::options(ctx)).await.ok();
     let ignore: Vec<i32> = daemon.iter().map(|c| c.info().pid as i32).collect();
-    let found = orphans::scan(ctx, &t, &ignore)?;
+    let mut found = orphans::scan(ctx, &t, &ignore)?;
+    // Containers labelled for the workspace / of stems-owned compose
+    // projects (14/15), when Docker is reachable.
+    found.extend(orphans::scan_containers(ctx, &t, false).await);
     let policy = Policy::new(
         args.yes,
         false,
@@ -166,7 +169,13 @@ async fn orphans_check(ctx: &Ctx, args: &DoctorArgs, mode: Mode) -> Result<Comma
         args.kill_foreign,
         mode == Mode::Json || !std::io::stdin().is_terminal(),
     );
-    let resolved = orphans::resolve(&found, &policy, daemon.as_ref()).await;
+    let resolved = orphans::resolve(
+        &found,
+        &policy,
+        daemon.as_ref(),
+        ctx.env.get("DOCKER_HOST").cloned(),
+    )
+    .await;
     let remaining = orphans::remaining(&resolved);
     let mut human = if found.is_empty() {
         "no orphans\n".to_string()

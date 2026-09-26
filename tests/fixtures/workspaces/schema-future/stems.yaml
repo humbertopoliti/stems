@@ -1,0 +1,11 @@
+# schema-future — a workspace written for a stems format this binary does
+# not know (release/version-compat.feature, deliverable 32): validation must
+# report only SCHEMA_VERSION_UNSUPPORTED and name the stems version needed.
+schema_version: 99
+name: schema-future
+
+stems:
+  api:
+    type: process
+    command: python3 -m http.server 18990
+    ports: [{ name: http, port: 18990 }]

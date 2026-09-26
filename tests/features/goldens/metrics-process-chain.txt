@@ -1,0 +1,6 @@
+STEM   CPU%  MEM     CHILDREN  UPTIME  RESTARTS  CPU-SPARK  MEM-SPARK
+a      0.3   17.8MB  1         3s      0         _________  #########
+b      0.3   17.8MB  1         2s      0         _,______   .#######
+c      0.3   17.8MB  1         2s      0         _,______   .#######
+d      1.0   17.5MB  1         1s      0         _,__       ,###
+TOTAL  1.9   70.8MB  4         -       -         -          -

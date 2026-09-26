@@ -23,12 +23,12 @@ Commands:
   start        Start stems (and unstarted hard dependencies)
   stop         Stop stems
   restart      Restart stems (stop, then start)
-  attach       Follow the workspace daemon (plain event stream until the TUI lands)
+  attach       Open the dashboard (TUI) on the workspace daemon
   status       Show the state of every stem
   logs         Show or follow stem and script logs
   events       Show or follow the event stream (NDJSON with --json)
   metrics      Show CPU, memory and disk usage per stem
-  health       Show health check results
+  health       Show the last health probe results per stem, with latency
   graph        Draw the dependency graph
   run          Run a stem or workspace script
   scripts      List scripts

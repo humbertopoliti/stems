@@ -332,6 +332,7 @@ mod tests {
             state,
             glyph: state.glyph(false),
             reason: None,
+            degraded: false,
             pid,
             pgid: pid,
             ports: vec![PortStatus {
@@ -342,10 +343,14 @@ mod tests {
             uptime_s: pid.map(|_| 75),
             started_at: None,
             restarts: 0,
+            restarts_in_window: 0,
             seeded: false,
             health: None,
+            metrics: None,
             error: None,
             env: None,
+            outputs: Default::default(),
+            watch: None,
         };
         let mut hosted = stem("hosted", StemState::Unknown, None, None);
         hosted.kind = "external".into();
@@ -377,16 +382,21 @@ mod tests {
             state: StemState::Failed,
             glyph: Glyph::Failed,
             reason: Some(reason.into()),
+            degraded: false,
             pid: None,
             pgid: None,
             ports: vec![],
             uptime_s: None,
             started_at: None,
             restarts: 7,
+            restarts_in_window: 0,
             seeded: false,
             health: None,
+            metrics: None,
             error: None,
             env: None,
+            outputs: Default::default(),
+            watch: None,
         }];
         StatusResult {
             summary: StatusSummary::of(&stems),

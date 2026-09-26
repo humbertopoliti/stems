@@ -18,7 +18,7 @@ use serde_json::Value;
 use crate::world::{
     self, E2eWorld, find_files, find_stem, is_socket_or_lock, stem_port, stem_state,
 };
-use crate::{golden, hooks, http, procs, util};
+use crate::{docker, golden, hooks, http, procs, util};
 
 /// Poll interval for `within Ns ...` steps.
 pub const POLL: Duration = Duration::from_millis(100);
@@ -68,6 +68,32 @@ step!(given_workspace_with_override(w, m) {
 step!(given_local_override(w, m) {
     w.set_override(&m[1], &m[2]);
 });
+
+step!(given_local_override_removed(w, m) {
+    w.remove_override(&m[1]);
+});
+
+/// `Given the local override file is extended with:` + docstring (33): the
+/// YAML mapping is deep-merged into the generated `stems.local.yaml` (port
+/// remapping kept), which is rewritten.
+fn given_local_override_extended<'a>(w: &'a mut E2eWorld, ctx: Context) -> LocalBoxFuture<'a, ()> {
+    let text = ctx.step.docstring.clone().unwrap_or_default();
+    Box::pin(async move {
+        let _ = w.remaining();
+        let text = text.strip_prefix('\n').unwrap_or(&text);
+        let cut = text
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| l.len() - l.trim_start().len())
+            .min()
+            .unwrap_or(0);
+        let body: String = text
+            .lines()
+            .map(|l| format!("{}\n", l.get(cut..).unwrap_or("").trim_end()))
+            .collect();
+        w.merge_override(&body);
+    })
+}
 
 step!(given_empty_dir(w, m) {
     w.use_empty_dir();
@@ -326,6 +352,238 @@ step!(then_golden(w, m) {
         })
         .into_owned();
     golden::check(&dir, &m[1], &actual, &ignore).unwrap_or_else(|e| panic!("{e}"));
+});
+
+// ----------------------------------------------------------------------------
+// TUI frames (27)
+// ----------------------------------------------------------------------------
+
+/// Map remapped ports in `text` back to the ones the workspace declares.
+fn unmap_ports(w: &E2eWorld, text: &str) -> String {
+    let back: std::collections::HashMap<String, String> = w
+        .port_map
+        .iter()
+        .map(|(from, to)| (to.to_string(), from.to_string()))
+        .collect();
+    regex::Regex::new(r"\b\d{2,5}\b")
+        .expect("regex")
+        .replace_all(text, |c: &regex::Captures<'_>| {
+            back.get(&c[0]).cloned().unwrap_or_else(|| c[0].to_owned())
+        })
+        .into_owned()
+}
+
+/// The frames of a headless `stems attach` / `stems up` in `stdout`: the
+/// text after each `--- frame N ---` line up to the next one (ports mapped
+/// back to the declared ones).
+pub fn frames_in(stdout: &str) -> Vec<String> {
+    let mut frames = Vec::new();
+    let mut cur: Option<Vec<&str>> = None;
+    for line in stdout.lines() {
+        let t = line.trim();
+        if t.starts_with("--- frame ") && t.ends_with(" ---") {
+            if let Some(c) = cur.take() {
+                frames.push(c.join("\n"));
+            }
+            cur = Some(Vec::new());
+        } else if let Some(c) = cur.as_mut() {
+            c.push(line);
+        }
+    }
+    if let Some(c) = cur {
+        frames.push(c.join("\n"));
+    }
+    frames
+}
+
+fn frames(w: &E2eWorld) -> Vec<String> {
+    frames_in(&unmap_ports(w, &w.last().stdout))
+}
+
+fn frame_n(w: &E2eWorld, n: &str) -> String {
+    let all = frames(w);
+    let i: usize = n.parse().expect("frame number");
+    all.get(i.wrapping_sub(1)).cloned().unwrap_or_else(|| {
+        panic!(
+            "there is no frame {i} ({} frames)\n{}",
+            all.len(),
+            w.last().describe()
+        )
+    })
+}
+
+/// Mask frame columns by the table header's positions: in the header line
+/// (the first with `STEM` and `STATUS`) each named column spans from its
+/// start to the next header's; in the rows below it (up to the first blank
+/// line) each masked cell becomes `*`, blank ones too (a sparkline may or
+/// may not have its first sample yet; 25). `daemon pid N` becomes
+/// `daemon pid *`. Trailing spaces are trimmed.
+pub fn mask_frame(frame: &str, cols: &[String]) -> String {
+    let mut lines: Vec<Vec<char>> = frame.lines().map(|l| l.chars().collect()).collect();
+    let header = lines.iter().position(|l| {
+        let s: String = l.iter().collect();
+        let words: Vec<&str> = s.split_whitespace().collect();
+        words.contains(&"STEM") && words.contains(&"STATUS")
+    });
+    if let Some(h) = header {
+        let hl = lines[h].clone();
+        let starts: Vec<usize> = (0..hl.len())
+            .filter(|&i| hl[i] != ' ' && (i == 0 || hl[i - 1] == ' '))
+            .collect();
+        let names: Vec<String> = starts
+            .iter()
+            .map(|&s| hl[s..].iter().take_while(|c| **c != ' ').collect())
+            .collect();
+        let ranges: Vec<(usize, Option<usize>)> = names
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| cols.iter().any(|c| c.eq_ignore_ascii_case(n)))
+            .map(|(i, _)| (starts[i], starts.get(i + 1).copied()))
+            .collect();
+        for row in lines.iter_mut().skip(h + 1) {
+            if row.iter().all(|c| *c == ' ') {
+                break;
+            }
+            for &(a, b) in &ranges {
+                if row.len() <= a {
+                    row.resize(a + 1, ' ');
+                }
+                let b = b.unwrap_or(row.len()).min(row.len());
+                for c in &mut row[a..b] {
+                    *c = ' ';
+                }
+                row[a] = '*';
+            }
+        }
+    }
+    let pid = regex::Regex::new(r"daemon pid \d+").expect("regex");
+    // `TIME` (29): clock times (`12:00:01`, `12:00:01.234`) anywhere in the
+    // frame (log lines, the events table) get their digits masked.
+    let time = regex::Regex::new(r"\b\d{2}:\d{2}:\d{2}(?:\.\d{3})?\b").expect("regex");
+    let mask_time = cols.iter().any(|c| c.eq_ignore_ascii_case("TIME"));
+    lines
+        .iter()
+        .map(|l| {
+            let s: String = l.iter().collect();
+            let mut s = pid.replace_all(s.trim_end(), "daemon pid *").into_owned();
+            // The status bar's right-hand hints are right-aligned (and cut
+            // with `…`) after a left part whose width depends on the pid's
+            // digits: keep the line only up to the six glyph counts.
+            if let Some(i) = s.find("daemon pid * · ") {
+                let head = i + "daemon pid * · ".len();
+                let counts: Vec<&str> = s[head..].split(' ').take(6).collect();
+                s = format!("{}{}", &s[..head], counts.join(" "));
+            }
+            if mask_time {
+                time.replace_all(&s, |c: &regex::Captures| {
+                    c[0].replace(|ch: char| ch.is_ascii_digit(), "*")
+                })
+                .into_owned()
+            } else {
+                s
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim_end()
+        .to_owned()
+        + "\n"
+}
+
+step!(then_frame_golden(w, m) {
+    let cols: Vec<String> = m[2].split(',').map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()).collect();
+    let all = frames(w);
+    let last = all.last().unwrap_or_else(|| panic!("no frame in stdout\n{}", w.last().describe()));
+    let actual = mask_frame(last, &cols);
+    let dir = world::repo_root().join("tests/features/goldens");
+    let path = dir.join(format!("{}.txt", m[1]));
+    if std::env::var("STEMS_E2E_BLESS").is_ok_and(|v| v == "1") {
+        std::fs::write(&path, &actual).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        return;
+    }
+    let Ok(expected) = std::fs::read_to_string(&path) else {
+        let new = dir.join(format!("{}.txt.new", m[1]));
+        std::fs::write(&new, &actual).unwrap_or_else(|e| panic!("{}: {e}", new.display()));
+        panic!("golden {} does not exist; wrote {} for review (rename it, or rerun with STEMS_E2E_BLESS=1)", path.display(), new.display());
+    };
+    let expected = mask_frame(&expected, &cols);
+    assert!(
+        expected == actual,
+        "the frame does not match golden {} (masking {cols:?})\n--- expected\n{expected}--- actual\n{actual}",
+        path.display()
+    );
+});
+
+step!(then_last_frame_contains(w, m) {
+    let text = w.expand(&m[1]);
+    let all = frames(w);
+    let last = all.last().unwrap_or_else(|| panic!("no frame in stdout\n{}", w.last().describe()));
+    assert!(last.contains(&text), "the last frame does not contain {text:?}\n{last}");
+});
+
+step!(then_last_frame_not_contains(w, m) {
+    let text = w.expand(&m[1]);
+    let all = frames(w);
+    let last = all.last().unwrap_or_else(|| panic!("no frame in stdout\n{}", w.last().describe()));
+    assert!(!last.contains(&text), "the last frame contains {text:?}\n{last}");
+});
+
+step!(then_frame_n_contains(w, m) {
+    let text = w.expand(&m[2]);
+    let f = frame_n(w, &m[1]);
+    assert!(f.contains(&text), "frame {} does not contain {text:?}\n{f}", m[1]);
+});
+
+step!(then_frame_n_not_contains(w, m) {
+    let text = w.expand(&m[2]);
+    let f = frame_n(w, &m[1]);
+    assert!(!f.contains(&text), "frame {} contains {text:?}\n{f}", m[1]);
+});
+
+step!(then_stdout_restore_sequence(w, m) {
+    let last = w.last();
+    assert!(
+        last.stdout.contains("\x1b[?1049l"),
+        "stdout does not contain the terminal restore sequence ESC[?1049l\n{}",
+        last.describe()
+    );
+});
+
+/// Standard base64 (with padding), for the OSC 52 step.
+fn base64(data: &[u8]) -> String {
+    const B: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for c in data.chunks(3) {
+        let n = (u32::from(c[0]) << 16)
+            | (u32::from(*c.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*c.get(2).unwrap_or(&0));
+        for i in 0..4 {
+            out.push(if i <= c.len() {
+                B[((n >> (18 - 6 * i)) & 63) as usize] as char
+            } else {
+                '='
+            });
+        }
+    }
+    out
+}
+
+step!(then_stdout_osc52(w, m) {
+    // `\n` in the step text is a newline (a copied range of lines).
+    let text = w.expand(&m[1]).replace("\\n", "\n");
+    let seq = format!("\x1b]52;c;{}\x07", base64(text.as_bytes()));
+    let last = w.last();
+    assert!(
+        last.stdout.contains(&seq),
+        "stdout does not contain the OSC 52 sequence for {text:?} ({seq:?})\n{}",
+        last.describe()
+    );
+});
+
+step!(then_stdout_not_contains(w, m) {
+    let text = w.expand(&m[1]);
+    let last = w.last();
+    assert!(!last.stdout.contains(&text), "stdout contains {text:?}\n{}", last.describe());
 });
 
 step!(then_background_stdout_contains(w, m) {
@@ -1028,6 +1286,58 @@ step!(then_no_container(w, m) {
 });
 
 // ----------------------------------------------------------------------------
+// Docker (14/15; `@docker` scenarios only)
+// ----------------------------------------------------------------------------
+
+fn docker_bound(w: &E2eWorld) -> Duration {
+    Duration::from_secs(120).min(w.remaining())
+}
+
+step!(then_container_running_with_label(w, m) {
+    let name = w.expand(&m[1]);
+    let (k, v) = (w.expand(&m[2]), w.expand(&m[3]));
+    let r = docker::docker(&["inspect".into(), name.clone()], docker_bound(w)).await;
+    assert!(r.ok, "docker inspect {name} failed: {}", r.stderr);
+    let i = docker::inspect_object(&r.stdout).unwrap_or_else(|e| panic!("{name}: {e}"));
+    if let Err(e) = docker::check_running_with_label(&i, &k, &v) {
+        panic!("container {name}: {e}");
+    }
+});
+
+step!(given_container_with_labels(w, m) {
+    let name = w.expand(&m[1]);
+    let labels = docker::parse_labels(&w.expand(&m[2])).unwrap_or_else(|e| panic!("{e}"));
+    let r = docker::docker(&docker::run_args(&name, &labels), docker_bound(w)).await;
+    assert!(r.ok, "docker run {name} failed: {}", r.stderr);
+});
+
+step!(then_docker_volume(w, m) {
+    let name = w.expand(&m[1]);
+    let want = m[2] == "exists";
+    let r = docker::docker(
+        &["volume".into(), "inspect".into(), name.clone()],
+        docker_bound(w),
+    )
+    .await;
+    assert_eq!(r.ok, want, "docker volume {name}: expected it to {}; {}", m[2], r.stderr);
+});
+
+step!(then_compose_service_running(w, m) {
+    let (project, service) = (w.expand(&m[1]), w.expand(&m[2]));
+    let args: Vec<String> = ["compose", "-p", &project, "ps", "--format", "json", "-a"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let r = docker::docker(&args, docker_bound(w)).await;
+    assert!(r.ok, "docker compose -p {project} ps failed: {}", r.stderr);
+    let entries = docker::parse_compose_ps(&r.stdout);
+    assert!(
+        docker::compose_service_running(&entries, &service),
+        "compose project {project} has no running service {service}: {entries:?}"
+    );
+});
+
+// ----------------------------------------------------------------------------
 // Crash recovery (11)
 // ----------------------------------------------------------------------------
 
@@ -1211,6 +1521,36 @@ step!(when_file_written(w, m) {
     std::fs::write(&p, format!("{text}\n")).unwrap_or_else(|e| panic!("writing {}: {e}", p.display()));
 });
 
+/// `Given the local override file contains:` + docstring (26): writes
+/// `stems.local.yaml` verbatim (placeholders expanded), replacing the
+/// harness-generated one. Use with a workspace "with its original ports"
+/// (the generated port overrides are not merged back).
+fn given_local_file_docstring<'a>(w: &'a mut E2eWorld, ctx: Context) -> LocalBoxFuture<'a, ()> {
+    let text = ctx.step.docstring.clone().unwrap_or_default();
+    Box::pin(async move {
+        let _ = w.remaining();
+        let text = w.expand(&text);
+        // Gherkin docstrings start with the newline after `"""`.
+        let text = text.strip_prefix('\n').unwrap_or(&text);
+        // Dedent (in case the parser keeps the feature file's indentation).
+        let cut = text
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| l.len() - l.trim_start().len())
+            .min()
+            .unwrap_or(0);
+        let mut body: String = text
+            .lines()
+            .map(|l| format!("{}\n", l.get(cut..).unwrap_or("").trim_end()))
+            .collect();
+        let p = ws_file(w, "stems.local.yaml");
+        if !body.ends_with('\n') {
+            body.push('\n');
+        }
+        std::fs::write(&p, body).unwrap_or_else(|e| panic!("writing {}: {e}", p.display()));
+    })
+}
+
 step!(then_file_contains(w, m) {
     let p = ws_file(w, &m[1]);
     let want = w.expand(&m[2]);
@@ -1390,6 +1730,278 @@ step!(given_state_records_overlay(w, m) {
     std::fs::write(&path, serde_json::to_string_pretty(&doc).expect("json")).expect("write state.json");
 });
 
+// ----------------------------------------------------------------------------
+// Health (21)
+// ----------------------------------------------------------------------------
+
+async fn matching_events(w: &mut E2eWorld, want: &Value) -> (usize, String) {
+    let out = w.run("stems events --json --since 0", None, &[]).await;
+    out.guard_implemented("08");
+    let events = out.json.as_ref().map(events_of).unwrap_or_default();
+    let n = events.iter().filter(|e| util::is_subset(want, e)).count();
+    (n, out.describe())
+}
+
+step!(then_exactly_events(w, m) {
+    let n: usize = m[1].parse().expect("count");
+    let want = expected(w, &m[2]);
+    let (got, describe) = matching_events(w, &want).await;
+    assert!(got == n, "{got} event(s) match {want}, expected exactly {n}\n{describe}");
+});
+
+// ----------------------------------------------------------------------------
+// Restart policies (22)
+// ----------------------------------------------------------------------------
+
+step!(then_during_events_never(w, m) {
+    let until = bound(w, &m[1]);
+    let unwanted = expected(w, &m[2]);
+    loop {
+        let out = w.run("stems events --json --since 0", None, &[]).await;
+        out.guard_implemented("08");
+        assert!(out.code == 0, "cannot read the events stream\n{}", out.describe());
+        let events = out.json.as_ref().map(events_of).unwrap_or_default();
+        if let Some(e) = events.iter().find(|e| util::is_subset(&unwanted, e)) {
+            panic!("unexpected event matching {unwanted}: {e}\n{}", out.describe());
+        }
+        if Instant::now() >= until {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+});
+
+// Watchdogs (24): a bounded "no more than k" check (coalescing proofs).
+step!(then_during_at_most_events(w, m) {
+    let until = bound(w, &m[1]);
+    let max: usize = m[2].parse().expect("count");
+    let want = expected(w, &m[3]);
+    loop {
+        let (got, describe) = matching_events(w, &want).await;
+        assert!(got <= max, "{got} event(s) match {want}, expected at most {max}\n{describe}");
+        if Instant::now() >= until {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+});
+
+/// Milliseconds between two events' `ts`.
+fn ts_ms(e: &Value) -> Option<i64> {
+    let ts = e.get("ts")?.as_str()?;
+    chrono::DateTime::parse_from_rfc3339(ts)
+        .ok()
+        .map(|t| t.timestamp_millis())
+}
+
+step!(then_event_followed_after(w, m) {
+    let (first, second) = (expected(w, &m[1]), expected(w, &m[2]));
+    let (lo, hi): (i64, i64) = (m[3].parse().expect("ms"), m[4].parse().expect("ms"));
+    let out = w.run("stems events --json --since 0", None, &[]).await;
+    out.guard_implemented("08");
+    let events = out.json.as_ref().map(events_of).unwrap_or_default();
+    let seq = |e: &Value| e.get("seq").and_then(Value::as_u64).unwrap_or(0);
+    let a = events
+        .iter()
+        .find(|e| util::is_subset(&first, e))
+        .unwrap_or_else(|| panic!("no event matches {first}\n{}", out.describe()));
+    let b = events
+        .iter()
+        .filter(|e| seq(e) > seq(a))
+        .find(|e| util::is_subset(&second, e))
+        .unwrap_or_else(|| panic!("no event after {a} matches {second}\n{}", out.describe()));
+    let gap = ts_ms(b).expect("ts") - ts_ms(a).expect("ts");
+    assert!(
+        (lo..=hi).contains(&gap),
+        "{gap} ms between {a} and {b}, expected {lo}..={hi} ms"
+    );
+});
+
+step!(then_within_at_least_events(w, m) {
+    let until = bound(w, &m[1]);
+    let n: usize = m[2].parse().expect("count");
+    let want = expected(w, &m[3]);
+    loop {
+        let (got, describe) = matching_events(w, &want).await;
+        if got >= n {
+            return;
+        }
+        assert!(
+            Instant::now() < until,
+            "only {got} event(s) match {want} after {}s (want at least {n})\n{describe}",
+            m[1]
+        );
+        tokio::time::sleep(POLL).await;
+    }
+});
+
+step!(then_within_json_of(w, m) {
+    let until = bound(w, &m[1]);
+    let (path, line) = (m[2].clone(), m[3].clone());
+    let want = expected(w, &m[4]);
+    loop {
+        let out = w.run(&line, None, &[]).await;
+        let got: Vec<Value> = out
+            .json
+            .as_ref()
+            .and_then(|j| util::query(j, &path).ok())
+            .map(|v| v.into_iter().cloned().collect())
+            .unwrap_or_default();
+        if got.len() == 1 && got[0] == want {
+            return;
+        }
+        assert!(
+            Instant::now() < until,
+            "JSON at {path} of `{line}` is {} after {}s (expected {want})\n{}",
+            serde_json::to_string(&got).unwrap_or_default(),
+            m[1],
+            out.describe()
+        );
+        tokio::time::sleep(POLL).await;
+    }
+});
+
+step!(then_daemon_cpu_below(w, m) {
+    let max: f64 = m[1].parse().expect("percent");
+    let pid = daemon_pid(w).await;
+    let window = Duration::from_secs(3).min(w.remaining());
+    // Measured over a window (the sampling period, not a wait).
+    let t0 = (Instant::now(), cpu_seconds(pid).await);
+    tokio::time::sleep(window).await;
+    let t1 = (Instant::now(), cpu_seconds(pid).await);
+    let pct = 100.0 * (t1.1 - t0.1) / t1.0.duration_since(t0.0).as_secs_f64();
+    assert!(pct < max, "daemon (pid {pid}) used {pct:.1}% CPU over {:.1}s (limit {max}%)", window.as_secs_f64());
+});
+
+step!(given_generated_probe_workspace(w, m) {
+    let n: u16 = m[1].parse().expect("stem count");
+    let every: u64 = m[2].parse().expect("interval ms");
+    assert!(n <= world::PORT_BLOCK, "at most {} stems (one port block)", world::PORT_BLOCK);
+    w.use_empty_dir();
+    let base = world::allocate_port_block();
+    w.port_base = Some(base);
+    let mut yaml = String::from(
+        "# generated by `a workspace with N process stems using tcp health` (21)\nschema_version: 1\nname: probes\nstems:\n",
+    );
+    for i in 0..n {
+        let port = base + i;
+        yaml.push_str(&format!(
+            "  s{i:02}:\n    type: process\n    command: exec python3 -m http.server {port} --bind 127.0.0.1\n    ports: [{{ name: http, port: {port} }}]\n    health: {{ type: tcp, interval: {every}ms, timeout: 150ms, retries: 5, start_timeout: 60s }}\n    stop_grace: 2s\n"
+        ));
+    }
+    let path = w.ws().join("stems.yaml");
+    std::fs::write(&path, yaml).unwrap_or_else(|e| panic!("writing {}: {e}", path.display()));
+});
+
+// ----------------------------------------------------------------------------
+// Metrics (25)
+// ----------------------------------------------------------------------------
+
+/// A number bound: a number, or a sum `a+b` after placeholder expansion
+/// (`${var:rss}+104857600`).
+fn number_expr(w: &E2eWorld, raw: &str) -> f64 {
+    w.expand(raw)
+        .split('+')
+        .map(|p| {
+            p.trim()
+                .trim_matches('"')
+                .parse::<f64>()
+                .unwrap_or_else(|_| panic!("not a number: {p} (in {raw})"))
+        })
+        .sum()
+}
+
+/// Objects selected by `path` (arrays are flattened one level).
+fn objects_at(doc: &Value, path: &str) -> Vec<Value> {
+    util::query(doc, path)
+        .unwrap_or_else(|e| panic!("{e}"))
+        .into_iter()
+        .flat_map(|v| match v {
+            Value::Array(a) => a.clone(),
+            other => vec![other.clone()],
+        })
+        .collect()
+}
+
+fn some_field_above(doc: &Value, path: &str, field: &str, min: f64) -> (bool, Vec<f64>) {
+    let vals: Vec<f64> = objects_at(doc, path)
+        .iter()
+        .filter_map(|o| o.get(field)?.as_f64())
+        .collect();
+    (vals.iter().any(|v| *v > min), vals)
+}
+
+step!(then_within_json_of_greater(w, m) {
+    let until = bound(w, &m[1]);
+    let (path, line) = (m[2].clone(), m[3].clone());
+    let min = number_expr(w, &m[4]);
+    loop {
+        let out = w.run(&line, None, &[]).await;
+        let got: Vec<Value> = out.json.as_ref().and_then(|j| util::query(j, &path).ok()).map(|v| v.into_iter().cloned().collect()).unwrap_or_default();
+        if got.len() == 1 && got[0].as_f64().is_some_and(|n| n > min) {
+            return;
+        }
+        assert!(Instant::now() < until, "JSON at {path} of `{line}` is {} after {}s (expected a number > {min})\n{}", serde_json::to_string(&got).unwrap_or_default(), m[1], out.describe());
+        tokio::time::sleep(POLL).await;
+    }
+});
+
+step!(then_some_sample_greater(w, m) {
+    let min = number_expr(w, &m[3]);
+    let (ok, vals) = some_field_above(w.last_json(), &m[1], &m[2], min);
+    assert!(ok, "no object at {} has {} > {min} (values {vals:?})\n{}", m[1], m[2], w.last().describe());
+});
+
+step!(then_within_some_sample_greater(w, m) {
+    let until = bound(w, &m[1]);
+    let (path, line, field) = (m[2].clone(), m[3].clone(), m[4].clone());
+    let min = number_expr(w, &m[5]);
+    loop {
+        let out = w.run(&line, None, &[]).await;
+        let (ok, vals) = out.json.as_ref().map(|j| some_field_above(j, &path, &field, min)).unwrap_or_default();
+        if ok {
+            return;
+        }
+        assert!(Instant::now() < until, "no object at {path} of `{line}` has {field} > {min} after {}s (last values {vals:?})\n{}", m[1], out.describe());
+        tokio::time::sleep(POLL).await;
+    }
+});
+
+step!(then_json_descending_by(w, m) {
+    let objs = objects_at(w.last_json(), &m[1]);
+    assert!(objs.len() >= 2, "JSON at {} has {} objects (expected at least 2 to compare)\n{}", m[1], objs.len(), w.last().describe());
+    let vals: Vec<f64> = objs.iter().map(|o| util::query(o, &format!("$.{}", m[2])).ok().and_then(|v| v.first().and_then(|x| x.as_f64())).unwrap_or(f64::NEG_INFINITY)).collect();
+    for (i, pair) in vals.windows(2).enumerate() {
+        assert!(pair[0] >= pair[1], "JSON at {} is not descending by {} at index {i}: {vals:?}\n{}", m[1], m[2], w.last().describe());
+    }
+});
+
+step!(then_json_count_between(w, m) {
+    let (lo, hi): (usize, usize) = (m[2].parse().expect("min"), m[3].parse().expect("max"));
+    let n = objects_at(w.last_json(), &m[1]).len();
+    assert!(lo <= n && n <= hi, "JSON at {} has {n} elements (expected {lo}..={hi})\n{}", m[1], w.last().describe());
+});
+
+step!(then_within_metrics_file_lines(w, m) {
+    let until = bound(w, &m[1]);
+    let (stem, min): (String, usize) = (m[2].clone(), m[3].parse().expect("lines"));
+    let name = format!("{stem}.ndjson");
+    loop {
+        let files: Vec<PathBuf> = find_files(&w.home, &|_| true)
+            .into_iter()
+            .filter(|p| p.file_name().is_some_and(|n| n == name.as_str()) && p.parent().and_then(|d| d.file_name()).is_some_and(|n| n == "metrics"))
+            .collect();
+        let lines = files.first().and_then(|f| std::fs::read_to_string(f).ok()).map_or(0, |t| {
+            t.lines().filter(|l| serde_json::from_str::<Value>(l).is_ok_and(|v| v.get("rss_bytes").is_some())).count()
+        });
+        if lines >= min {
+            return;
+        }
+        assert!(Instant::now() < until, "metrics file {name} under {} has {lines} sample line(s) after {}s (want at least {min}; files: {files:?})", w.home.display(), m[1]);
+        tokio::time::sleep(POLL).await;
+    }
+});
+
 /// Every step: (regex, function). Registered for Given, When and Then.
 pub const STEPS: &[(&str, Step<E2eWorld>)] = &[
     // Given
@@ -1417,6 +2029,14 @@ pub const STEPS: &[(&str, Step<E2eWorld>)] = &[
     (
         r#"^a local override setting ([^=\s]+)=(.*)$"#,
         given_local_override,
+    ),
+    (
+        r#"^the local override "([^"]+)" is removed$"#,
+        given_local_override_removed,
+    ),
+    (
+        r#"^the local override file is extended with:$"#,
+        given_local_override_extended,
     ),
     (
         r#"^the workspace has a private copy of the repos$"#,
@@ -1506,6 +2126,22 @@ pub const STEPS: &[(&str, Step<E2eWorld>)] = &[
     (
         r#"^no container with label stems\.workspace=(\S+) exists$"#,
         then_no_container,
+    ),
+    (
+        r#"^the container "([^"]+)" is running with label "([^"=]+)=([^"]*)"$"#,
+        then_container_running_with_label,
+    ),
+    (
+        r#"^a container "([^"]+)" is running with labels "([^"]+)"$"#,
+        given_container_with_labels,
+    ),
+    (
+        r#"^the docker volume "([^"]+)" (exists|does not exist)$"#,
+        then_docker_volume,
+    ),
+    (
+        r#"^the compose project "([^"]+)" has service "([^"]+)" running$"#,
+        then_compose_service_running,
     ),
     (r#"^the state file contains no stems$"#, then_state_no_stems),
     (r#"^the state file is valid JSON$"#, then_state_valid_json),
@@ -1644,6 +2280,10 @@ pub const STEPS: &[(&str, Step<E2eWorld>)] = &[
         then_file_contains,
     ),
     (
+        r#"^the local override file contains:$"#,
+        given_local_file_docstring,
+    ),
+    (
         r#"^the events stream does not contain (.+)$"#,
         then_events_not_contain,
     ),
@@ -1666,12 +2306,102 @@ pub const STEPS: &[(&str, Step<E2eWorld>)] = &[
         r#"^the state file records an overlay for stem "([^"]+)" at "([^"]+)"$"#,
         given_state_records_overlay,
     ),
+    // Health (21)
+    (
+        r#"^there are exactly (\d+) events matching (.+)$"#,
+        then_exactly_events,
+    ),
+    (
+        r#"^within (\d+(?:\.\d+)?)s there are at least (\d+) events matching (.+)$"#,
+        then_within_at_least_events,
+    ),
+    // Restart policies (22)
+    (
+        r#"^during (\d+(?:\.\d+)?)s the events stream never contains (.+)$"#,
+        then_during_events_never,
+    ),
+    // Watchdogs (24)
+    (
+        r#"^during (\d+(?:\.\d+)?)s there are at most (\d+) events matching (.+)$"#,
+        then_during_at_most_events,
+    ),
+    (
+        r#"^the first event matching (\{.*?\}) is followed by one matching (\{.*\}) after (\d+) to (\d+) ms$"#,
+        then_event_followed_after,
+    ),
+    (
+        r#"^within (\d+(?:\.\d+)?)s the JSON at "([^"]+)" of "(stems [^"]*)" equals (.+)$"#,
+        then_within_json_of,
+    ),
+    (
+        r#"^the daemon's CPU is below (\d+(?:\.\d+)?) %$"#,
+        then_daemon_cpu_below,
+    ),
+    (
+        r#"^a workspace with (\d+) process stems using tcp health every (\d+)ms$"#,
+        given_generated_probe_workspace,
+    ),
+    // TUI (27)
+    (
+        r#"^the frame matches golden "([^"]+)"(?: masking ([\w,]+))?$"#,
+        then_frame_golden,
+    ),
+    (
+        r#"^the last frame contains "(.*)"$"#,
+        then_last_frame_contains,
+    ),
+    (
+        r#"^the last frame does not contain "(.*)"$"#,
+        then_last_frame_not_contains,
+    ),
+    (r#"^frame (\d+) contains "(.*)"$"#, then_frame_n_contains),
+    (
+        r#"^frame (\d+) does not contain "(.*)"$"#,
+        then_frame_n_not_contains,
+    ),
+    (
+        r#"^stdout contains the terminal restore sequence$"#,
+        then_stdout_restore_sequence,
+    ),
+    (
+        r#"^stdout contains the OSC 52 sequence for "(.*)"$"#,
+        then_stdout_osc52,
+    ),
+    (
+        r#"^stdout does not contain "(.*)"$"#,
+        then_stdout_not_contains,
+    ),
+    // Metrics (25)
+    (
+        r#"^within (\d+(?:\.\d+)?)s the JSON at "([^"]+)" of "(stems [^"]*)" is greater than (\S+)$"#,
+        then_within_json_of_greater,
+    ),
+    (
+        r#"^some sample in the JSON at "([^"]+)" has "([\w.]+)" greater than (\S+)$"#,
+        then_some_sample_greater,
+    ),
+    (
+        r#"^within (\d+(?:\.\d+)?)s some sample in the JSON at "([^"]+)" of "(stems [^"]*)" has "([\w.]+)" greater than (\S+)$"#,
+        then_within_some_sample_greater,
+    ),
+    (
+        r#"^the JSON at "([^"]+)" is in descending order by "([\w.]+)"$"#,
+        then_json_descending_by,
+    ),
+    (
+        r#"^the JSON at "([^"]+)" has between (\d+) and (\d+) elements$"#,
+        then_json_count_between,
+    ),
+    (
+        r#"^within (\d+(?:\.\d+)?)s the metrics file of "([^"]+)" has at least (\d+) lines$"#,
+        then_within_metrics_file_lines,
+    ),
 ];
 
 /// The step collection handed to cucumber.
 pub fn collection() -> Collection<E2eWorld> {
     let mut c = Collection::new();
-    for (re, f) in STEPS {
+    for (re, f) in STEPS.iter().chain(crate::mcp::STEPS) {
         let regex = regex::Regex::new(re).unwrap_or_else(|e| panic!("bad step regex {re}: {e}"));
         c = c
             .given(None, regex.clone(), *f)
@@ -1684,6 +2414,29 @@ pub fn collection() -> Collection<E2eWorld> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mask_time_and_base64() {
+        let f = " a 12:00:01.234 x\n12:00:01 stem.state\n";
+        assert_eq!(
+            mask_frame(f, &[]),
+            " a 12:00:01.234 x\n12:00:01 stem.state\n"
+        );
+        assert_eq!(
+            mask_frame(f, &["TIME".to_owned()]),
+            " a **:**:**.*** x\n**:**:** stem.state\n"
+        );
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+        // Status bars differing only by the pid's width compare equal.
+        let a = " ws · profile - · daemon pid 4242 · ✓1 !0 ✗0 ·0 ?0 ↻0 Space pause · ? help…\n";
+        let b = " ws · profile - · daemon pid 94242 · ✓1 !0 ✗0 ·0 ?0 ↻0 Space pause · ? hel…\n";
+        assert_eq!(mask_frame(a, &[]), mask_frame(b, &[]));
+        assert_eq!(
+            mask_frame(a, &[]),
+            " ws · profile - · daemon pid * · ✓1 !0 ✗0 ·0 ?0 ↻0\n"
+        );
+        assert_eq!(base64(b"fooba"), "Zm9vYmE=");
+    }
 
     #[test]
     fn events_of_accepts_ndjson_envelopes_and_single_lines() {
@@ -1700,6 +2453,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn frames_are_split_and_masked() {
+        let out = "noise\n--- frame 1 ---\n  STEM  STATUS  PID    UPTIME\n› a     ok      123    3s\n\n daemon pid 42 · x\n--- frame 2 ---\nsecond\n";
+        let f = frames_in(out);
+        assert_eq!(f.len(), 2);
+        assert_eq!(f[1], "second");
+        let masked = mask_frame(&f[0], &["PID".to_owned(), "UPTIME".to_owned()]);
+        assert_eq!(
+            masked,
+            "  STEM  STATUS  PID    UPTIME\n› a     ok      *      *\n\n daemon pid * · x\n"
+        );
+        let other =
+            "  STEM  STATUS  PID    UPTIME\n› a     ok      98765  1m02s\n\n daemon pid 7 · x\n";
+        assert_eq!(
+            mask_frame(other, &["PID".to_owned(), "UPTIME".to_owned()]),
+            masked
+        );
+    }
+
     /// No step text may match two regexes (cucumber would report ambiguity).
     #[test]
     fn step_regexes_are_unambiguous() {
@@ -1711,6 +2483,9 @@ mod tests {
             r#"the fixture workspace "two-errors" with its original ports"#,
             r#"the "minimal" workspace with a local override setting stems.echo-svc.enabled=false"#,
             r#"a local override setting profiles.default=backend"#,
+            r#"the local override file contains:"#,
+            r#"the local override file is extended with:"#,
+            r#"the local override "stems.extra" is removed"#,
             r#"the workspace has a private copy of the repos"#,
             r#"an empty directory"#,
             r#"the "minimal" workspace is up"#,
@@ -1744,6 +2519,11 @@ mod tests {
             r#"the chaos response status is 200"#,
             r#"no process from the workspace's process groups is alive"#,
             r#"no container with label stems.workspace=hello-shop exists"#,
+            r#"the container "docker-pg-db" is running with label "stems.workspace=docker-pg""#,
+            r#"a container "docker-pg-stray" is running with labels "stems.workspace=docker-pg,stems.stem=db""#,
+            r#"the docker volume "docker-pg_pgdata" exists"#,
+            r#"the docker volume "docker-pg_pgdata" does not exist"#,
+            r#"the compose project "stems-compose-redis" has service "redis" running"#,
             r#"the state file contains no stems"#,
             r#"the state file is valid JSON"#,
             r#"the state file records stem "echo-svc" at the stray process with a wrong start time"#,
@@ -1792,6 +2572,29 @@ mod tests {
             r#"a bare git repository "shop" made from "examples/repos/shop-api""#,
             r#"a fake tool "vite" on PATH that runs "echo fake vite""#,
             r#"the state file records an overlay for stem "shop-api" at "config/local.ini""#,
+            r#"there are exactly 2 events matching {"kind": "stem.health"}"#,
+            r#"within 3s there are at least 4 events matching {"kind": "stem.health"}"#,
+            r#"during 3s the events stream never contains {"kind": "stem.restarting"}"#,
+            r#"during 2s there are at most 1 events matching {"kind": "watch.triggered"}"#,
+            r#"the first event matching {"kind": "stem.restarting"} is followed by one matching {"to": "healthy"} after 400 to 9000 ms"#,
+            r#"within 2s the JSON at "$.data.stems[0].degraded" of "stems status --json" equals false"#,
+            r#"the daemon's CPU is below 5 %"#,
+            r#"a workspace with 20 process stems using tcp health every 200ms"#,
+            r#"the frame matches golden "tui-table-minimal""#,
+            r#"the frame matches golden "tui-table-minimal" masking PID,UPTIME"#,
+            r#"the last frame contains "[Detail]""#,
+            r#"the last frame does not contain "a""#,
+            r#"frame 2 contains "[Detail]""#,
+            r#"frame 2 does not contain "Help""#,
+            r#"stdout contains the terminal restore sequence"#,
+            r#"stdout contains the OSC 52 sequence for "INFO chaos log line 2""#,
+            r#"stdout does not contain "--- frame 1 ---""#,
+            r#"within 5s the JSON at "$.data.stems[0].latest.rss_bytes" of "stems metrics --json" is greater than ${var:rss}+104857600"#,
+            r#"some sample in the JSON at "$.data.stems[0].history" has "cpu_pct" greater than 50"#,
+            r#"within 5s some sample in the JSON at "$.data.stems[0].history" of "stems metrics --history 10s --json" has "cpu_pct" greater than 50"#,
+            r#"the JSON at "$.data.stems" is in descending order by "latest.rss_bytes""#,
+            r#"the JSON at "$.data.stems[0].history" has between 1 and 40 elements"#,
+            r#"within 3s the metrics file of "echo-svc" has at least 2 lines"#,
         ];
         let regexes: Vec<regex::Regex> = STEPS
             .iter()
@@ -1803,7 +2606,8 @@ mod tests {
         }
         assert_eq!(
             STEPS.len(),
-            samples.len() - 5,
+            // +1 variant: the docker volume step's `exists`/`does not exist` (14).
+            samples.len() - 7,
             "every step has a sample (plus optional-group variants)"
         );
     }

@@ -1,0 +1,9 @@
+                                        ┌────────────┐
+                                    ╭──▶│ postgres · │
+┌────────────┐      ┌────────────┐  │   └────────────┘
+│ shop-web · ├─────▶│ shop-api · ├──┤
+└────────────┘      └────────────┘  │   ┌────────────┐
+                                    ╰──▶│ redis    · │
+                                        └────────────┘
+
+✓ healthy  ! degraded  ✗ failed  · stopped  ? unknown  ↻ transitioning

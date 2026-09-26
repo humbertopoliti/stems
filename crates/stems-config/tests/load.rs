@@ -302,6 +302,112 @@ fn include_cycle_is_an_error() {
     assert_eq!(e.errors[0].code, codes::INCLUDE_CYCLE);
 }
 
+#[test]
+fn duplicate_stem_across_includes_is_an_error_with_both_files() {
+    let ws = Ws::new(&[
+        ("stems.yaml", "include: [teams/a.yaml, teams/b.yaml]\n"),
+        ("teams/a.yaml", "stems:\n  pay: { type: process }\n"),
+        ("teams/b.yaml", "stems:\n  pay: { type: process }\n"),
+    ]);
+    let e = ws.fail();
+    assert_eq!(e.errors[0].code, codes::DUPLICATE_STEM);
+    let d = e.errors[0].details.as_ref().unwrap();
+    assert_eq!(d["stem"], "pay");
+    let files: Vec<String> = d["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        files,
+        [
+            ws.root.join("teams/a.yaml").display().to_string(),
+            ws.root.join("teams/b.yaml").display().to_string()
+        ]
+    );
+    assert_eq!(e.errors[0].path, Some("stems.pay".parse().unwrap()));
+
+    // An included stem redefined by the including file is a duplicate too.
+    let ws = Ws::new(&[
+        (
+            "stems.yaml",
+            "include: [a.yaml]\nstems:\n  pay: { type: process }\n",
+        ),
+        ("a.yaml", "stems:\n  pay: { type: process }\n"),
+    ]);
+    assert_eq!(ws.fail().errors[0].code, codes::DUPLICATE_STEM);
+}
+
+#[test]
+fn extends_bases_and_the_local_file_may_override_stems() {
+    let ws = Ws::new(&[
+        (
+            "base.yaml",
+            "stems:\n  pay: { type: process, env: { A: base } }\n",
+        ),
+        (
+            "stems.yaml",
+            "extends: base.yaml\ninclude: [a.yaml, a.yaml]\nstems:\n  pay: { env: { A: child } }\n",
+        ),
+        ("a.yaml", "stems:\n  other: { type: process }\n"),
+        ("stems.local.yaml", "stems:\n  pay: { enabled: false }\n"),
+    ]);
+    let r = ws.load();
+    let pay = r.workspace.stem("pay").unwrap();
+    assert!(!pay.enabled);
+    assert_eq!(pay.env["A"], "child");
+}
+
+#[test]
+fn extends_chain_is_limited_to_five() {
+    let mut files: Vec<(String, String)> = vec![("stems.yaml".into(), "extends: b1.yaml\n".into())];
+    for i in 1..=5 {
+        files.push((format!("b{i}.yaml"), format!("extends: b{}.yaml\n", i + 1)));
+    }
+    files.push(("b6.yaml".into(), "vars: { deep: '1' }\n".into()));
+    let refs: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(a, b)| (a.as_str(), b.as_str()))
+        .collect();
+    let e = Ws::new(&refs).fail();
+    assert_eq!(e.errors[0].code, codes::INCLUDE_CYCLE);
+    assert!(
+        e.errors[0].message.contains("deeper than 5"),
+        "{}",
+        e.errors[0].message
+    );
+    assert!(e.errors[0].hint.as_deref().unwrap().contains("at most 5"));
+
+    // Five hops are fine.
+    let mut files: Vec<(String, String)> = vec![("stems.yaml".into(), "extends: b1.yaml\n".into())];
+    for i in 1..=4 {
+        files.push((format!("b{i}.yaml"), format!("extends: b{}.yaml\n", i + 1)));
+    }
+    files.push(("b5.yaml".into(), "vars: { deep: '1' }\n".into()));
+    let refs: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(a, b)| (a.as_str(), b.as_str()))
+        .collect();
+    assert_eq!(Ws::new(&refs).load().workspace.vars["deep"], "1");
+}
+
+#[test]
+fn nested_extends_resolve_relative_to_their_own_file() {
+    let ws = Ws::new(&[
+        ("stems.yaml", "extends: org/base.yaml\n"),
+        (
+            "org/base.yaml",
+            "extends: ../shared/root.yaml\ninclude: [parts/p.yaml]\n",
+        ),
+        ("org/parts/p.yaml", "vars: { part: p }\n"),
+        ("shared/root.yaml", "vars: { root: r }\n"),
+    ]);
+    let r = ws.load();
+    assert_eq!(r.workspace.vars["part"], "p");
+    assert_eq!(r.workspace.vars["root"], "r");
+}
+
 // ---------------------------------------------------------------------------
 // Substitution
 // ---------------------------------------------------------------------------
@@ -379,7 +485,10 @@ stems:
     );
     // Auto ports: `self` is rewritten to the stem name and recorded.
     let web = w.stem("web").unwrap();
-    assert_eq!(web.outputs["URL"], "http://localhost:${stem.web.port}");
+    assert_eq!(
+        web.outputs["URL"],
+        stems_config::Output::Value("http://localhost:${stem.web.port}".into())
+    );
     assert_eq!(
         web.health.as_ref().unwrap().port,
         Some(HealthPort::Deferred("${stem.web.port}".into()))
@@ -636,7 +745,7 @@ fn defaults_fill_an_empty_stem() {
     match &w.stem("c").unwrap().runtime {
         StemRuntime::Compose(c) => {
             assert_eq!(c.service, "c");
-            assert_eq!(c.project_name, "integration");
+            assert_eq!(c.project_name, "stems-integration");
             assert_eq!(c.file.as_deref(), Some(ws.root.join("dc.yml").as_path()));
         }
         other => panic!("{other:?}"),
@@ -741,4 +850,56 @@ fn local_example_profile_alias_parses() {
         w.profiles["backend"],
         stems_config::Profile::Stems(vec!["b".into()])
     );
+}
+
+#[test]
+fn outputs_forms_and_invalid_names() {
+    let ws = Ws::new(&[(
+        "stems.yaml",
+        "stems:\n  api:\n    type: process\n    ports: [8080]\n    outputs:\n      URL: \"http://localhost:${stem.self.port}\"\n      N: 3\n      TOKEN: { command: \"cat $STEMS_STATE_DIR/token\", secret: true }\n      PLAIN: { command: \"echo x\" }\n      bad-name: x\n      9LIVES: y\n",
+    )]);
+    let r = ws.load();
+    let api = r.workspace.stem("api").unwrap();
+    use stems_config::Output;
+    assert_eq!(
+        api.outputs["URL"],
+        Output::Value("http://localhost:8080".into())
+    );
+    assert_eq!(api.outputs["N"], Output::Value("3".into()));
+    assert_eq!(
+        api.outputs["TOKEN"],
+        Output::Command {
+            command: "cat $STEMS_STATE_DIR/token".into(),
+            secret: true
+        }
+    );
+    assert!(api.outputs["TOKEN"].is_secret());
+    assert!(!api.outputs["PLAIN"].is_secret());
+    assert_eq!(api.outputs.len(), 4, "invalid names are dropped");
+    let paths: Vec<String> = r
+        .diagnostics
+        .iter()
+        .map(|d| d.path.as_ref().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        paths,
+        ["stems.api.outputs.bad-name", "stems.api.outputs.9LIVES"]
+    );
+    assert!(
+        r.diagnostics
+            .iter()
+            .all(|d| d.code == codes::SCHEMA_INVALID)
+    );
+    // `show` serialises the declaration as written (no value exists at config time).
+    let v = serde_json::to_value(api).unwrap();
+    assert_eq!(
+        v["outputs"]["TOKEN"],
+        serde_json::json!({ "command": "cat $STEMS_STATE_DIR/token", "secret": true })
+    );
+
+    let ws = Ws::new(&[(
+        "stems.yaml",
+        "stems:\n  api:\n    type: process\n    outputs:\n      T: { command: x, secret: true, extra: 1 }\n",
+    )]);
+    assert_eq!(ws.fail().errors[0].code, codes::SCHEMA_INVALID);
 }

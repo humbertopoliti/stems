@@ -111,8 +111,12 @@ An **orphan** is a process listening on a port declared by an enabled
 part of a recorded stem's process group and is not the daemon. Typical
 causes: a service started by hand, a stem of a run whose state was lost, an
 unrelated program on the same port. Containers labelled for the workspace
-but missing from state are the docker runtime's part (14:
-`Runtime::scan_orphans`).
+(and containers of stems-owned compose projects) missing from state are
+container orphans (14/15, `kind: container`): `stems doctor` and
+`doctor --orphans` list them when Docker is reachable (silently skipped when
+it is not), `stems up` stops on *running* ones when its selection needs
+Docker, and `--yes` / `doctor --fix` remove them (never adopt them). See
+[docker.md](docker.md#daemon-wiring-deliverable-14).
 
 Each orphan (JSON):
 

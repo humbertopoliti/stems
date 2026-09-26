@@ -6,9 +6,11 @@
 //! Entry point: [`load`]. See the crate README for merge and substitution rules.
 
 mod codebase;
+pub mod compat;
 pub mod defaults;
 mod diagnostic;
 mod discover;
+pub mod edit;
 mod loader;
 mod merge;
 mod model;
@@ -28,6 +30,7 @@ use serde_yaml_ng::{Mapping, Value};
 pub use codebase::{expand_tilde, is_git_url, normalize};
 pub use diagnostic::{ConfigErrors, Diagnostic, Span, codes};
 pub use discover::{CONFIG_FILE, ENV_WORKSPACE, LOCAL_FILE, discover};
+pub use loader::MAX_EXTENDS_DEPTH;
 pub use merge::merge as merge_values;
 pub use model::*;
 pub use path::{ConfigPath, ParsePathError, Segment};
@@ -132,6 +135,7 @@ pub fn load(opts: LoadOptions) -> Result<Resolved, ConfigErrors> {
             StemFacts {
                 ports: resolve_ports(s.ports.as_deref(), s.kind, &p, &mut scratch),
                 codebase: None,
+                outputs: Default::default(),
             },
         );
     }
@@ -198,6 +202,25 @@ pub fn load(opts: LoadOptions) -> Result<Resolved, ConfigErrors> {
         spans,
         deferred,
     })
+}
+
+/// The committed config tree: `stems.yaml` with its `extends` and
+/// `include`s merged, without `stems.local.yaml`, before defaults and
+/// substitution (`stems config set` copies lists from it). Also returns the
+/// path of `stems.yaml`.
+pub fn committed_tree(opts: &LoadOptions) -> Result<(PathBuf, Value), ConfigErrors> {
+    let config_file = discover(opts.workspace.as_deref(), &opts.cwd, &opts.env)?;
+    let mut loader = Loader::default();
+    let main = loader.load(&config_file, None);
+    if !loader.errors.is_empty() {
+        return Err(ConfigErrors {
+            errors: loader.errors,
+        });
+    }
+    Ok((
+        config_file,
+        main.unwrap_or_else(|| Value::Mapping(Mapping::new())),
+    ))
 }
 
 /// Env keys set by `stems.local.yaml`: workspace-level and per stem.

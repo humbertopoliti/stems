@@ -1,0 +1,91 @@
+# watch-shop — fixture for tests/features/watch/*.feature (deliverable 24).
+#
+# Every stem is examples/repos/shop-api standalone (no DB) with an http
+# probe on /healthz and a different `watch:` rule. Scenarios start ONE stem
+# (`stems up <stem>`) after `Given the workspace has a private copy of the
+# repos`, then change files in `${tmp}/examples/repos/shop-api` (the shared
+# codebase). Only running stems watch, so the other rules never fire.
+#
+#   api       *.py → restart, debounce 200ms (restart, ignore control,
+#             pause/resume, --no-watch)
+#   anyfile   ** → restart, debounce 200ms (default ignores: node_modules)
+#   burst     *.py → restart, debounce 1s (10 files at once → one firing)
+#   scripted  *.py → script:on-change (no restart)
+#   rebuilt   *.py → rebuild: the `build` script appends to build-marker.txt
+#             in the workspace dir, then the stem restarts
+#   steady    *.py → restart, debounce 200ms, settle 1s (changes during a
+#             restart queue one more restart, fired after 1s of quiet)
+schema_version: 1
+name: watch-shop
+
+stems:
+  api:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    env: { SHOP_CHAOS: "1" }
+    ports: [{ name: http, port: 18561 }]
+    health:
+      type: http
+      url: "http://127.0.0.1:${stem.api.port}/healthz"
+      interval: 200ms
+      timeout: 150ms
+      retries: 2
+      start_timeout: 15s
+    stop_grace: 1s
+    scripts: { start: python3 app.py }
+    watch:
+      - { paths: ["*.py"], action: restart, debounce: 200ms }
+  anyfile:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    env: { SHOP_CHAOS: "1" }
+    ports: [{ name: http, port: 18562 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 2, start_timeout: 15s }
+    stop_grace: 1s
+    scripts: { start: python3 app.py }
+    watch:
+      - { paths: ["**"], action: restart, debounce: 200ms }
+  burst:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    env: { SHOP_CHAOS: "1" }
+    ports: [{ name: http, port: 18563 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 2, start_timeout: 15s }
+    stop_grace: 1s
+    scripts: { start: python3 app.py }
+    watch:
+      - { paths: ["*.py"], action: restart, debounce: 1s }
+  scripted:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    env: { SHOP_CHAOS: "1" }
+    ports: [{ name: http, port: 18564 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 2, start_timeout: 15s }
+    stop_grace: 1s
+    scripts:
+      start: python3 app.py
+      on-change: echo "on-change ran for $STEMS_STEM"
+    watch:
+      - { paths: ["*.py"], action: "script:on-change", debounce: 200ms }
+  rebuilt:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    env: { SHOP_CHAOS: "1" }
+    ports: [{ name: http, port: 18565 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 2, start_timeout: 15s }
+    stop_grace: 1s
+    scripts:
+      start: python3 app.py
+      build: { command: "echo built >> build-marker.txt", cwd: workspace }
+    watch:
+      - { paths: ["*.py"], action: rebuild, debounce: 200ms }
+  steady:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    env: { SHOP_CHAOS: "1" }
+    ports: [{ name: http, port: 18566 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 2, start_timeout: 15s }
+    stop_grace: 1s
+    scripts: { start: python3 app.py }
+    watch:
+      - { paths: ["*.py"], action: restart, debounce: 200ms, settle: 1s }

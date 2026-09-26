@@ -1,0 +1,47 @@
+# profiles-demo — fixture for tests/features/profiles (FR-WS-8, deliverable 26).
+#
+# A chain db <- api <- web (hard edges) plus an independent `tool` that web
+# names with a *soft* edge. Profile `web` lists only the leaf: `up` pulls
+# api and db in as hard dependencies (event `profile.expanded`), never
+# `tool` (soft edges do not select). Each stem is a tiny Python HTTP server.
+schema_version: 1
+name: profiles-demo
+default_profile: web
+
+profiles:
+  web: [web]
+  api-only: [api, db]
+  everything: [db, api, web, tool]
+  all: everything   # an alias of another profile
+
+stems:
+  db:
+    type: process
+    ports: [{ name: http, port: 18461 }]
+    scripts:
+      start: python3 -m http.server ${stem.self.port} --bind 127.0.0.1
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+  api:
+    type: process
+    depends_on: [db]
+    ports: [{ name: http, port: 18462 }]
+    scripts:
+      start: python3 -m http.server ${stem.self.port} --bind 127.0.0.1
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+  web:
+    type: process
+    depends_on: [api, { stem: tool, soft: true }]
+    ports: [{ name: http, port: 18463 }]
+    scripts:
+      start: python3 -m http.server ${stem.self.port} --bind 127.0.0.1
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+  tool:
+    type: process
+    ports: [{ name: http, port: 18464 }]
+    scripts:
+      start: python3 -m http.server ${stem.self.port} --bind 127.0.0.1
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s

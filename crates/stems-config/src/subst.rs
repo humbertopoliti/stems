@@ -56,6 +56,9 @@ pub struct StemFacts {
     pub ports: Vec<Port>,
     /// Codebase directory, if any.
     pub codebase: Option<PathBuf>,
+    /// Evaluated outputs (FR-ST-6), known only at runtime: a reference to one
+    /// that is not here stays deferred.
+    pub outputs: std::collections::BTreeMap<String, String>,
 }
 
 /// Lexical scope of a string being substituted.
@@ -369,9 +372,10 @@ impl<'a> Substituter<'a> {
                 }
             }
             ("host", "") => Piece::Value("localhost".into()),
-            ("outputs", out) if !out.is_empty() => {
-                Piece::Deferred(format!("stem.{name}.outputs.{out}"), DeferredKind::Output)
-            }
+            ("outputs", out) if !out.is_empty() => match facts.outputs.get(out) {
+                Some(v) => Piece::Value(v.clone()),
+                None => Piece::Deferred(format!("stem.{name}.outputs.{out}"), DeferredKind::Output),
+            },
             _ => err(
                 format!("unknown stem property `{prop}`"),
                 "available: `port`, `ports.<name>`, `host`, `outputs.<name>`",
@@ -478,6 +482,7 @@ mod tests {
                     },
                 ],
                 codebase: Some(PathBuf::from("/code/api")),
+                outputs: [("URL".to_string(), "http://x".to_string())].into(),
             },
         );
         m
@@ -544,11 +549,20 @@ mod tests {
             "${stem.api.ports.debug}"
         );
         assert_eq!(s.expand("${stem.api.host}", &scope, &p), "localhost");
+        assert_eq!(
+            s.expand("${stem.api.outputs.URL}/v1", &scope, &p),
+            "http://x/v1"
+        );
+        assert_eq!(
+            s.expand("${stem.api.outputs.NOPE}", &scope, &p),
+            "${stem.api.outputs.NOPE}"
+        );
         assert_eq!(s.expand("${codebase}/bin", &scope, &p), "/code/api/bin");
         assert_eq!(s.expand("${ codebase }", &scope, &p), "/code/api");
         assert!(s.diagnostics.is_empty(), "{:?}", s.diagnostics);
-        assert_eq!(s.deferred.len(), 1);
+        assert_eq!(s.deferred.len(), 2);
         assert_eq!(s.deferred[0].kind, DeferredKind::AutoPort);
+        assert_eq!(s.deferred[1].kind, DeferredKind::Output);
     }
 
     #[test]

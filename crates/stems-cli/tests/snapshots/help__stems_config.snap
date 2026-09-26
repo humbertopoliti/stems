@@ -9,8 +9,10 @@ Usage: stems config [OPTIONS] <COMMAND>
 Commands:
   get    Print the value at a config path (e.g. stems.shop-api.env.PORT)
   set    Set a value in stems.local.yaml
-  diff   Show what applying the changed config would do
-  apply  Apply the changed config to running stems
+  unset  Remove a value from stems.local.yaml
+  diff   Show what applying the changed config would do (the daemon's plan: STEM ACTION FIELDS HOT)
+  apply  Apply the changed config to running stems: stop removed stems, restart changed ones in
+         dependency order, hot-apply the rest
   help   Print this message or the help of the given subcommand(s)
 
 Options:

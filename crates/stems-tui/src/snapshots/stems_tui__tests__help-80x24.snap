@@ -1,0 +1,28 @@
+---
+source: crates/stems-tui/src/tests.rs
+expression: text
+---
+ stems · process-chain                      Graph [Table] Detail  Logs  Events
+  STEM TYPE    STATUS     REASON       PID    PORTS  UPTIME RESTARTS CPU   MEM
+› a    process ✓ healthy  ready (tcp)  101    18301  9s     0
+  b    process ✓ healthy  ready (tcp)  102    18302  8s     0
+  c    process ↻ starting -            103    18303  1s     0
+  ┌ Help ───────────────────────────────────────────────────────────────────┐
+  │ j/k ↓/↑    move the selection        r / R      restart / rebuild       │
+  │ h/l ←/→    graph: across columns     p          pause/resume watchdog   │
+  │ f e + -    graph: focus labels zoom  o          open code in $EDITOR    │
+  │ g / G      first / last stem         S          reset (type `reset`)    │
+  │ Enter      open the detail view      :          script menu             │
+  │ Tab S-Tab  next / previous view      u / d      up all / down all       │
+  │ /          filter stems by name      Ctrl-P     command palette         │
+  │ O          cycle the sort order      Esc        dismiss toasts, back    │
+  │ Ctrl-L     split: logs below         e          error toast details     │
+  │ s          start the stem            ?          toggle this help        │
+  │ x / X      stop / with dependants    q Ctrl-C   quit                    │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+
+
+
+
+ process-chain · profile - · daemon pid 4242 · ✓2 !0 ✗0 ·1 ?0 ↻1 ? help · q qui…

@@ -1,0 +1,44 @@
+---
+source: crates/stems-tui/src/tests.rs
+expression: text
+---
+ stems · minimal                                                                    Graph  Table [Detail] Logs  Events
+┌ Detail: echo-svc · ✓ healthy ────────────────────────────────────────────────────────────────────────────────────────┐
+│Config                                                      Status                                                    │
+│loading…                                                    ✓ healthy (ready (tcp))                                   │
+│                                                            pid 12345 · up 42s · restarts 0                           │
+│                                                            ports http:18090                                          │
+│                                                            Scripts                                                   │
+│                                                            -                                                         │
+│                                                            Health                                                    │
+│                                                            n/a                                                       │
+│                                                            Metrics                                                   │
+│                                                            n/a (no samples yet)                                      │
+│                                                            Events                                                    │
+│                                                            -                                                         │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ Logs: echo-svc · following ──────────────────────────────────────────────────────────────────────────────────────────┐
+│   12:00:00.000 INFO listening on 127.0.0.1:18090                                                                     │
+│›  12:00:00.005 WARN chaos endpoints enabled under /__chaos/                                                          │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ minimal · profile - · daemon pid 4242 · ✓1 !0 ✗0 ·0 ?0 ↻0                                   Esc back · ? help · q quit

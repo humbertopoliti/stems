@@ -219,6 +219,9 @@ async fn wait_group_empty_until(pgid: i32, deadline: Instant) -> bool {
 fn signal_group(pgid: i32, sig: Signal) -> io::Result<()> {
     match os::kill_group(pgid, Some(sig)) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        // macOS answers EPERM for a group whose members are all zombies
+        // (exited, not reaped yet): nothing is left to signal.
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied && !group_alive(pgid) => Ok(()),
         other => other,
     }
 }

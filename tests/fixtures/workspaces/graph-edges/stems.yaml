@@ -1,0 +1,41 @@
+# graph-edges — fixture for tui/graph-focus-edges.feature (deliverable 28).
+#
+# Four shop-api processes: web -> api (protocol: http), api -> db
+# (protocol: tcp), worker -> db. The TUI graph's columns are [web],
+# [api, worker], [db]: focus on web shows only web and api; `e` labels the
+# web -> api edge `http`. `PORT` is set by stems from each stem's first port.
+schema_version: 1
+name: graph-edges
+
+stems:
+  db:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    ports: [{ name: http, port: 18751 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts: { start: python3 app.py }
+  api:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    depends_on: [{ stem: db, protocol: tcp }]
+    ports: [{ name: http, port: 18752 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts: { start: python3 app.py }
+  web:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    depends_on: [{ stem: api, protocol: http }]
+    ports: [{ name: http, port: 18753 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts: { start: python3 app.py }
+  worker:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    depends_on: [db]
+    ports: [{ name: http, port: 18754 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts: { start: python3 app.py }

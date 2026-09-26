@@ -706,6 +706,16 @@ pub(super) async fn scan_orphans(cx: &Arc<DoctorCtx>) -> (Vec<Orphan>, Option<St
                     Ok(c) => found.extend(c.into_iter().map(Orphan::from)),
                     Err(e) => skipped = Some(e.to_string()),
                 }
+                // Containers of stems-owned compose projects (15); they
+                // carry no `stems.*` labels, so nothing is listed twice.
+                if cx.needs_compose() {
+                    use stems_runtime::Runtime as _;
+                    let rt = ComposeRuntime::new(
+                        d.clone(),
+                        ComposeOptions::new(ws.name.clone(), cx.input.paths.dir.join("compose")),
+                    );
+                    found.extend(rt.scan_orphans(&scope).await);
+                }
             }
             Err(e) => skipped = Some(e.message),
         }

@@ -130,6 +130,8 @@ pub enum View {
     Table,
     /// The selected stem's detail pane.
     Detail,
+    /// The dependency graph.
+    Graph,
 }
 
 /// `stems graph --format`.
@@ -201,7 +203,13 @@ pub enum Command {
     Stop(StopArgs),
     /// Restart stems (stop, then start).
     Restart(RestartArgs),
-    /// Follow the workspace daemon (plain event stream until the TUI lands).
+    /// Open the dashboard (TUI) on the workspace daemon.
+    ///
+    /// Keys: j/k move, Enter detail, Tab cycles views, / filter, s sort,
+    /// ? help, q quit (leaves the stems running). STEMS_TUI=0, a non-terminal
+    /// stdout or --json give the plain event stream instead. --headless
+    /// --script 'wait:healthy;frame;j;Enter;frame' replays keys and prints
+    /// each frame as text (see docs/tui.md).
     Attach(AttachArgs),
     /// Show the state of every stem.
     ///
@@ -232,10 +240,35 @@ pub enum Command {
     /// envelope (e.g. exit 4 DAEMON_NOT_RUNNING).
     Events(EventsArgs),
     /// Show CPU, memory and disk usage per stem.
+    ///
+    /// The table has STEM CPU% MEM CHILDREN UPTIME RESTARTS and CPU/MEM
+    /// sparklines over the last 30 samples, plus a TOTAL row. CPU% is percent
+    /// of one core (can exceed 100); MEM is resident memory of the whole
+    /// process tree (containers: usage minus cache). `--sort cpu|mem` puts
+    /// the heaviest first ("what is eating my laptop"); `--history 5m` adds
+    /// the samples of that window to --json; `--disk` also measures build
+    /// outputs (target, dist, build, node_modules, .venv) and docker
+    /// volumes (slow, cached 60 s). --json gives `{interval_ms, stems:
+    /// [{name, type, state, latest: {ts, cpu_pct, rss_bytes, children,
+    /// uptime_s, restarts}, history?, open_ports, limits, disk?}], totals:
+    /// {cpu_pct, rss_bytes, children}}`. See docs/metrics.md.
     Metrics(MetricsArgs),
-    /// Show health check results.
+    /// Show the last health probe results per stem, with latency.
+    ///
+    /// The table has one row per probe: STEM TYPE OK LATENCY DETAIL TS.
+    /// Without a stem it shows each stem's latest probe; with one, its last
+    /// 10 (`--last` changes both; the daemon keeps 50 per stem). --json
+    /// gives `{stems: [{name, type, state, consecutive_failures,
+    /// transitions_60s, results: [{ts, ok, outcome, latency_ms, detail}]}]}`.
     Health(HealthArgs),
     /// Draw the dependency graph.
+    ///
+    /// Boxes per stem with its status glyph, dependants on the left, arrows
+    /// to their dependencies; soft edges dashed; a legend line below. Live
+    /// glyphs come from the daemon when it runs (`--no-status` for config
+    /// only, `·` everywhere). `--format mermaid|dot|json` exports; --json
+    /// gives `{nodes: [{name, type, status, glyph, reason}], edges: [{from,
+    /// to, condition, soft, protocol, via}]}`.
     Graph(GraphArgs),
 
     // --- scripts -----------------------------------------------------------
@@ -296,6 +329,10 @@ pub enum Command {
 
     // --- integrations ------------------------------------------------------
     /// Run the MCP server (agent interface).
+    ///
+    /// Serves the workspace's daemon to an MCP client (Claude Code, Cursor,
+    /// ...) over stdio (default) or local HTTP: tools, custom scripts as
+    /// `<stem>__<script>` tools, resources and prompts. See docs/mcp.md.
     Mcp(McpArgs),
     /// Upgrade stems (delegates to Homebrew when installed with brew).
     Upgrade(UpgradeArgs),
@@ -305,6 +342,13 @@ pub enum Command {
     /// Print docs/cli.md (Markdown reference of every command).
     #[command(name = "__docs", hide = true)]
     Docs,
+
+    /// Write man pages (one per command) into OUTDIR (release packaging).
+    #[command(name = "__man", hide = true)]
+    Man {
+        /// Directory to write `stems.1`, `stems-up.1`, … into.
+        outdir: PathBuf,
+    },
 }
 
 /// `stems init`.
@@ -473,12 +517,17 @@ pub struct AttachArgs {
     /// Render frames as text without a terminal (for tests).
     #[arg(long)]
     pub headless: bool,
-    /// Key script to replay (with --headless).
-    #[arg(long, value_name = "FILE")]
-    pub script: Option<PathBuf>,
+    /// Key script to replay (implies --headless): tokens separated by `;`
+    /// (`wait:healthy;frame;j;Enter;frame`), or `@FILE` to read them from a
+    /// file.
+    #[arg(long, value_name = "SPEC")]
+    pub script: Option<String>,
     /// Write rendered frames into this directory (with --headless).
     #[arg(long, value_name = "DIR")]
     pub frames_out: Option<PathBuf>,
+    /// Frame size with --headless (default 80x24).
+    #[arg(long, value_name = "WxH")]
+    pub size: Option<String>,
 }
 
 /// `stems status`.
@@ -543,9 +592,10 @@ pub struct EventsArgs {
 pub struct MetricsArgs {
     /// Only these stems.
     pub stems: Vec<String>,
-    /// Refresh continuously.
-    #[arg(long)]
-    pub watch: bool,
+    /// Redraw until Ctrl-C, every INTERVAL (seconds or a duration such as
+    /// `500ms`; default 2s).
+    #[arg(long, value_name = "INTERVAL", num_args = 0..=1, default_missing_value = "2s")]
+    pub watch: Option<String>,
     /// Include samples from this window (e.g. 5m).
     #[arg(long, value_name = "DURATION")]
     pub history: Option<String>,
@@ -562,6 +612,9 @@ pub struct MetricsArgs {
 pub struct HealthArgs {
     /// Only this stem.
     pub stem: Option<String>,
+    /// Probe results per stem (default 1 without a stem, 10 with one; max 50).
+    #[arg(long, value_name = "N")]
+    pub last: Option<usize>,
 }
 
 /// `stems graph`.
@@ -570,16 +623,21 @@ pub struct GraphArgs {
     /// Output format.
     #[arg(long, value_enum, default_value = "text")]
     pub format: GraphFormat,
-    /// Colour nodes by live status (default when the daemon runs).
-    #[arg(long)]
+    /// Live status glyphs from the daemon (the default when it runs; an
+    /// error when it does not).
+    #[arg(long, overrides_with = "no_status")]
     pub status: bool,
-    /// Redraw on every state change.
-    #[arg(long)]
-    pub watch: bool,
+    /// Config only: every stem `·`, even when the daemon runs.
+    #[arg(long, overrides_with = "status")]
+    pub no_status: bool,
+    /// Redraw until Ctrl-C, every INTERVAL (seconds or a duration such as
+    /// `500ms`; default 1s).
+    #[arg(long, value_name = "INTERVAL", num_args = 0..=1, default_missing_value = "1s")]
+    pub watch: Option<String>,
     /// Only this stem and its neighbours.
     #[arg(long, value_name = "STEM")]
     pub focus: Option<String>,
-    /// Only the stems of this profile.
+    /// Only the stems of this profile (plus their hard dependencies).
     #[arg(long)]
     pub profile: Option<String>,
     /// Label edges with their protocol/via metadata.
@@ -721,19 +779,19 @@ pub struct ReposArgs {
 /// `stems watch`.
 #[derive(Debug, Subcommand)]
 pub enum WatchCommand {
-    /// Pause watchdogs (all, or one stem's).
+    /// Pause watchdogs (all, or some stems').
     Pause(WatchStemArgs),
-    /// Resume watchdogs.
+    /// Resume watchdogs (all, clearing per-stem pauses too, or some stems').
     Resume(WatchStemArgs),
-    /// Show watchdog state.
+    /// Show watchdog rules and state (--json gives `{stems, global_paused, disabled}`).
     Status,
 }
 
 /// `stems watch pause|resume`.
 #[derive(Debug, Args)]
 pub struct WatchStemArgs {
-    /// Only this stem.
-    pub stem: Option<String>,
+    /// Only these stems (default: every watchdog).
+    pub stems: Vec<String>,
 }
 
 /// `stems profiles`.
@@ -745,6 +803,9 @@ pub struct ProfilesArgs {}
 pub struct OutputsArgs {
     /// Only this stem.
     pub stem: Option<String>,
+    /// Show secret values (human output on a terminal only; JSON never reveals).
+    #[arg(long)]
+    pub reveal: bool,
 }
 
 /// `stems config`.
@@ -754,9 +815,13 @@ pub enum ConfigCommand {
     Get(ConfigGetArgs),
     /// Set a value in stems.local.yaml.
     Set(ConfigSetArgs),
-    /// Show what applying the changed config would do.
+    /// Remove a value from stems.local.yaml.
+    Unset(ConfigUnsetArgs),
+    /// Show what applying the changed config would do (the daemon's plan:
+    /// STEM ACTION FIELDS HOT).
     Diff,
-    /// Apply the changed config to running stems.
+    /// Apply the changed config to running stems: stop removed stems,
+    /// restart changed ones in dependency order, hot-apply the rest.
     Apply(ConfigApplyArgs),
 }
 
@@ -776,9 +841,18 @@ pub struct ConfigSetArgs {
     pub value: String,
 }
 
+/// `stems config unset`.
+#[derive(Debug, Args)]
+pub struct ConfigUnsetArgs {
+    /// Dotted config path.
+    pub path: String,
+}
+
 /// `stems config apply`.
 #[derive(Debug, Args)]
 pub struct ConfigApplyArgs {
+    /// Only these stems' changes (removals of running stems always apply).
+    pub stems: Vec<String>,
     /// Do not ask for confirmation.
     #[arg(short, long)]
     pub yes: bool,
@@ -817,10 +891,11 @@ pub struct McpArgs {
     /// Transport.
     #[arg(long, value_enum, default_value = "stdio")]
     pub transport: McpTransport,
-    /// Port for --transport http.
+    /// Port for --transport http (binds 127.0.0.1 only) [default: 7070].
     #[arg(long)]
     pub port: Option<u16>,
-    /// Start the daemon if it is not running.
+    /// Start the daemon if it is not running; when the client disconnects,
+    /// stop it again if this server started it and no stem is running.
     #[arg(long)]
     pub auto_start: bool,
 }

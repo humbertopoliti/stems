@@ -48,6 +48,10 @@ pub fn hash_bytes(bytes: &[u8]) -> String {
         .collect()
 }
 
+/// Hint of an `UNRESOLVED_VARIABLE` for a `${stem.<n>.outputs.X}` without a
+/// value at start time (FR-ST-6).
+pub const OUTPUTS_HINT: &str = "outputs are available only from dependencies with condition: healthy (declare `depends_on: [{stem: <name>, condition: healthy}]` and the output under that stem's `outputs:`)";
+
 /// Everything a template can reference while rendering one stem's overlays.
 #[derive(Clone, Debug, Default)]
 pub struct RenderCtx {
@@ -70,6 +74,9 @@ pub struct RenderCtx {
     pub ports: IndexMap<String, Vec<Port>>,
     /// Codebase directory per stem.
     pub codebases: IndexMap<String, PathBuf>,
+    /// Evaluated outputs per stem (`${stem.<n>.outputs.X}`, FR-ST-6): the
+    /// daemon fills in those of the stem's dependencies.
+    pub outputs: IndexMap<String, std::collections::BTreeMap<String, String>>,
 }
 
 impl RenderCtx {
@@ -94,6 +101,7 @@ impl RenderCtx {
                 .iter()
                 .filter_map(|(n, s)| Some((n.clone(), s.codebase.as_ref()?.path().to_path_buf())))
                 .collect(),
+            outputs: IndexMap::new(),
         }
     }
 
@@ -121,6 +129,7 @@ impl RenderCtx {
                     StemFacts {
                         ports: ports.clone(),
                         codebase: self.codebases.get(n).cloned(),
+                        outputs: self.outputs.get(n).cloned().unwrap_or_default(),
                     },
                 )
             })
@@ -214,6 +223,18 @@ pub fn render_overlay(overlay: &Overlay, ctx: &RenderCtx) -> Result<Vec<u8>, Err
                 .with_details(json!({ "source": src, "problems": all })));
             }
             if let Some(r) = out.deferred.first() {
+                if r.kind == stems_config::DeferredKind::Output {
+                    return Err(Error::new(
+                        ErrorCode::UnresolvedVariable,
+                        format!(
+                            "overlay template `{}`: output `${{{}}}` has no value",
+                            src.display(),
+                            r.reference
+                        ),
+                    )
+                    .with_hint(OUTPUTS_HINT)
+                    .with_details(json!({ "source": src, "reference": r.reference })));
+                }
                 return Err(Error::new(
                     ErrorCode::UnresolvedVariable,
                     format!(
@@ -566,6 +587,40 @@ mod tests {
             plan_cleanup(&rec("/x", H1, true), &ExistingFile::Absent),
             C::AlreadyGone
         );
+    }
+
+    #[test]
+    fn templates_see_outputs_of_running_stems() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        fs::write(repo.join("t.tmpl"), "url=${stem.api.outputs.URL}\n").unwrap();
+        fs::write(repo.join("missing.tmpl"), "${stem.api.outputs.NOPE}").unwrap();
+        let mut ctx = RenderCtx {
+            workspace_root: repo.clone(),
+            integration_repo: repo.clone(),
+            codebase: repo.join("code"),
+            stem_name: "web".into(),
+            ports: [("api".to_string(), Vec::new())].into_iter().collect(),
+            ..Default::default()
+        };
+        ctx.outputs.insert(
+            "api".into(),
+            [("URL".to_string(), "http://localhost:1".to_string())].into(),
+        );
+        let overlay = |src: &str| Overlay {
+            source: OverlaySource::Template(repo.join(src)),
+            dest: "x".into(),
+            keep: false,
+            mode: FileMode(0o644),
+        };
+        assert_eq!(
+            render_overlay(&overlay("t.tmpl"), &ctx).unwrap(),
+            b"url=http://localhost:1\n"
+        );
+        let e = render_overlay(&overlay("missing.tmpl"), &ctx).unwrap_err();
+        assert_eq!(e.code, ErrorCode::UnresolvedVariable);
+        assert_eq!(e.hint.as_deref(), Some(OUTPUTS_HINT));
+        assert_eq!(e.details["reference"], "stem.api.outputs.NOPE");
     }
 
     #[test]

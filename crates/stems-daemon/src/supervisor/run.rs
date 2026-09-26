@@ -231,6 +231,7 @@ impl Job {
                         actor: self.actor.clone(),
                         cancel: Some(self.cancel.clone()),
                         event_extra: extra,
+                        quiet: false,
                     },
                 )
                 .await?;

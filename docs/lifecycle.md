@@ -29,11 +29,11 @@ Unknown   (external stems: monitored, never started)
 |---|---|---|
 | `stopped` | not running | `·` |
 | `starting` | spawned, not ready yet | `↻` |
-| `healthy` | ready (see *Readiness*) | `✓` |
-| `unhealthy` | running, probe failing (deliverable 21) | `✗` |
+| `healthy` | its health check passes (see *Readiness*); `!` degraded when a warning applies ([health.md](health.md)) | `✓` / `!` |
+| `unhealthy` | running, `retries` probes in a row failed ([health.md](health.md)) | `✗` |
 | `stopping` | SIGTERM sent, waiting for the group to exit | `↻` |
 | `failed` | could not start, exited, or failed to become ready | `✗` |
-| `unknown` | external stem (no probe until 21) | `?` |
+| `unknown` | external stem whose probe has not passed or cannot run | `?` |
 | `setup` | the `setup` script runs (its stamp was missing or changed), before `starting` | `↻` |
 | `seeding` | the `seed` script runs, after `healthy` (stamp missing or changed) | `↻` |
 
@@ -51,23 +51,35 @@ Every transition emits a `stem.state` event with `from`, `to`, `reason` and
 observed, e.g. `starting → healthy` or a crash).
 
 A process that exits while `starting` is `failed` with `START_FAILED` (exit
-code and signal in `details`). One that exits later is `stopped` if its exit
-code was 0 and `failed` otherwise (restart policies arrive with 22).
+code and signal in `details`). One that exits later, without being asked to,
+goes to its restart policy ([restart.md](restart.md), FR-LC-6): with the
+default `on-failure` a non-zero exit is restarted with backoff (the stem is
+`starting`, reason `restarting in 500ms (attempt 1)`, event
+`stem.restarting`), a clean exit (code 0) is `stopped`; with `never` it is
+`stopped` (code 0) or `failed`; too many restarts in `restart.window` are
+`failed` with `MAX_RESTARTS` (event `stem.gave_up`). A stop, down or restart
+you ask for is never undone by the policy, and it cancels a pending restart.
+`healthy → starting` / `unhealthy → starting` is such a restart.
 
-## Readiness (until probes land)
+## Readiness
 
-Deliverable 21 adds health probes. Until then one component, the `Waiter`,
-decides when a started stem satisfies an edge condition:
+Since deliverable 21 readiness is the stem's health check
+([health.md](health.md)). The probe task starts with the process; the first
+passing probe moves `starting → healthy`, and a stem still `starting` after
+`health.start_timeout` is `failed` with `START_TIMEOUT` (its process is
+stopped). Edge conditions wait on the real state:
 
-* `started` — the process is alive;
-* `healthy` — the process stayed alive for `health.start_period` and, for
-  `tcp`/`http`/`grpc` checks, its port accepts TCP connections; bounded by
-  `health.start_timeout` (`HEALTH_TIMEOUT`, the process is then stopped);
+* `started` — the process is alive (spawned and not exited);
+* `healthy` — the stem's health check passed (state `healthy`);
 * `seeded` — `healthy`, then the stem's `seed` script finished (or its
   stamp was current): the stem actor runs `post_start` and `seed` after
   `healthy`, and the scheduler releases `condition: seeded` dependants (and
   counts the stem ready) only then. `condition: healthy` dependants start as
   soon as the stem is `healthy`.
+
+After readiness the probes keep running: `healthy ⇄ unhealthy` transitions
+(`stem.health` events) and the derived `degraded` flag are described in
+[health.md](health.md).
 
 ### External stems (FR-ST-3)
 
@@ -75,21 +87,31 @@ A `type: external` stem is monitored, never started or stopped. Its runtime
 is the no-op `ExternalRuntime` (`crates/stems-runtime/src/external.rs`,
 always registered in the `RuntimeRegistry`): `start` spawns nothing and the
 stem moves to `unknown`; `stop` does nothing; there is no pid, process
-group, output or adoption.
+group, output or adoption. With a health check its probe drives `unknown ⇄
+healthy/unhealthy` ([health.md](health.md)); `down` ends the monitoring
+(state `stopped`).
 
 * `up` and `down` never fail because of an external stem: `up` reports it
   in `ready` (state `unknown`), `down` in `skipped`.
 * `start`, `stop` and `restart` of an external stem fail with `NOT_MANAGED`
   (exit 1, hint "start it yourself; stems only monitors it").
 * Edges to an external stem: `condition: started` is satisfied immediately.
-  Until deliverable 21 gives externals a health probe, `condition: healthy`
-  (and `seeded`) is **also satisfied immediately** — stems cannot tell
-  whether the service is up. With 21 the edge waits for the probe and the
-  stem moves to `healthy`/`unhealthy` instead of staying `unknown`.
+  `condition: healthy` (and `seeded`) waits for the external's probe to
+  pass, bounded by its `health.start_timeout` (then the external is reported
+  `failed` in `up` with `HEALTH_TIMEOUT` and its dependants are skipped; its
+  state stays `unknown`/`unhealthy`). An external stem **without** a health
+  check stays `unknown` and such edges are satisfied immediately — stems
+  cannot tell whether the service is up.
 
 ## Commands
 
 ### `stems up [stems…] [--detach] [--fresh] [--timeout D] [--no-fail-fast] [--max-parallel N] [--pass-env VARS] [--yes|--kill-orphans|--adopt-orphans] [--kill-foreign]`
+
+Watchdogs (24, [watchdogs.md](watchdogs.md)): a stem's `watch:` rules start
+watching when its start begins (after a missing git clone, before `setup`),
+so edits during a slow start count, and stop when it becomes `stopped` or
+`failed`. `up --no-watch` starts no watchers (and stops running ones) until
+the next `up` without it; `status` shows `watch: {paused, rules}`.
 
 Before anything starts, `up` scans the workspace's declared ports for
 orphans (processes not started by stems); with orphans and no consent flag
@@ -103,9 +125,13 @@ never need Docker.
 1. Starts the workspace daemon if none runs (detached, own session) and
    remembers that `up` started it.
 2. Re-loads and validates the workspace (config errors exit 2).
-3. Plans the **closure**: the requested stems (all enabled stems if none)
-   plus their hard dependencies, transitively. Unknown or disabled names are
-   `UNKNOWN_STEM` (exit 2). `--profile` is deliverable 26 (`NOT_IMPLEMENTED`).
+3. Plans the **closure**: the requested stems (if none: the profile from
+   `--profile` / `STEMS_PROFILE` / `profile:` / `default_profile` / a profile
+   named `default`, else all enabled stems) plus their hard dependencies,
+   transitively (`stems_core::Selection`, 26; rules in `docs/config.md`).
+   Unknown or disabled names are `UNKNOWN_STEM`, an unknown profile
+   `UNKNOWN_PROFILE`, a strict profile missing a dependency
+   `PROFILE_MISSING_DEPENDENCY` (all exit 2).
 3a. Runs the workspace `bootstrap` script, if any (a failure aborts `up`
    with `SETUP_FAILED`, exit 1, before any stem starts). With `--fresh`,
    stops the planned stems that run, runs their `reset` scripts and clears
@@ -121,7 +147,9 @@ never need Docker.
    yet; stems already running stay up. `--no-fail-fast` only skips the failed
    stem's dependants.
 6. Already running stems are left alone (so `up` twice is a no-op).
-7. External stems move to `unknown` and count as ready.
+7. External stems move to `unknown` and count as ready — unless a planned
+   dependant needs them `healthy` and they have a health check: then they
+   are ready once their probe passes (see *External stems*).
 
 Before spawning a process stem the daemon checks each declared port: a port
 someone listens on fails the stem with `PORT_IN_USE`, naming the listener's
@@ -136,8 +164,10 @@ Each failure's error is also in the envelope's `errors`.
 
 Progress: human mode prints one line per `stem.state` (and port allocation);
 `--json` prints every event as an NDJSON line while `up` runs and then the
-result envelope as the **last line** (compact). Events: `up.started {requested,
-stems, layers, detach, fresh}`, `stem.state…`, `script.started` /
+result envelope as the **last line** (compact). Events: `profile.expanded
+{profile, added, requested}` (when a profile's hard dependencies were added;
+see `docs/config.md`), `up.started {profile, requested, stems, layers, detach,
+fresh}`, `stem.state…`, `script.started` /
 `script.finished`, `up.finished {requested, started, failed, skipped, ok}`.
 
 ### `stems down [stems…] [--all] [--timeout D]`
@@ -154,7 +184,11 @@ command waits until its socket and lock are gone. With no daemon running,
 `down` exits 4 (`DAEMON_NOT_RUNNING`) — unless `state.json` lists stems of a
 crashed daemon: then it starts a daemon, which adopts them, stops them all
 and exits (`data.recovered: true`; [recovery.md](recovery.md)).
-`--volumes` is deliverable 14. Stems with `pre_stop`/`post_stop` hooks or a
+Docker and compose stems' containers are removed (volumes kept); with
+`--volumes` the selected docker stems' `<ws>_*` named volumes are removed
+too (`data.volumes_removed`). `--volumes` is destructive: it needs `--yes`
+(or a `y` on a terminal), else `DESTRUCTIVE_NOT_CONFIRMED` (exit 2); with no
+daemon running it starts one briefly ([docker.md](docker.md)). Stems with `pre_stop`/`post_stop` hooks or a
 custom `stop` script run them around the stop ([scripts.md](scripts.md)).
 `--all` ends with the workspace `teardown` script; a failing teardown is
 reported in `failed` as stem `_workspace` and the daemon still stops.
@@ -175,7 +209,8 @@ unless `--cascade`, which stops those dependants first. External stems:
 ### `stems restart <stems…> [--no-deps]`
 
 Stop, then start (starting missing dependencies unless `--no-deps`); the
-stem gets a new process on the same ports. The workspace is re-read first,
+stem gets a new process on the same ports. A user restart also resets the
+restart policy's window and backoff (the lifetime `restarts` count stays). The workspace is re-read first,
 so config changes apply. `--build` runs each stem's `build` script between
 the stop and the start (a failed build is `SCRIPT_FAILED` and nothing is
 started); stems without one just restart. See [scripts.md](scripts.md).
@@ -183,12 +218,18 @@ started); stems without one just restart. See [scripts.md](scripts.md).
 ### `stems status [stems…] [--watch [INTERVAL]] [-v]`
 
 `data: { stems: [ { name, type, state, glyph, reason, pid, pgid, ports:
-[{name, port, auto}], uptime_s, started_at, restarts, seeded, health, error } ],
+[{name, port, auto}], uptime_s, started_at, restarts, restarts_in_window, seeded, degraded, health, error } ],
 summary: { healthy, degraded, failed, stopped, unknown, starting } }` —
 enabled stems in declaration order (only the named ones when given;
 `UNKNOWN_STEM` otherwise). `summary` counts stems per glyph; `starting`
 counts every transitional state (`setup`, `starting`, `seeding`,
-`stopping`). `health` is `null` until 21; `restarts` is 0 until 22. With
+`stopping`). `health` is `{type, last: {ts, ok, outcome, latency_ms,
+detail}, consecutive_failures, transitions_60s}` (`null` without a health
+check); `degraded` and `reason` follow [health.md](health.md) (`reason` is
+empty for a plain healthy stem). `restarts` counts policy restarts since
+the daemon started and `restarts_in_window` those within `restart.window`
+(3 or more degrade a healthy stem, reason `restarts (N recently)`;
+[restart.md](restart.md)). With
 `-v`/`--verbose` every running stem also has `env`: the variables stems set
 for its process (config env, env files, local overrides, `--pass-env`,
 `PORT`, `STEMS_*`), never the inherited daemon environment.
@@ -196,11 +237,12 @@ for its process (config env, env files, local overrides, `--pass-env`,
 Human output is a table and a summary line:
 
 ```
-STEM      TYPE      STATUS     REASON                                    PID    PORTS       UPTIME  RESTARTS
-api       process   ✓ healthy  ready (process alive for start_period; …  41234  http:18601  2m05s   0
-hosted    external  ? unknown  external: not managed by stems (no heal…  -      -           -       0
+STEM    TYPE      STATUS       REASON                       PID    PORTS       UPTIME  RESTARTS
+api     process   ! healthy    dependency hosted unhealthy  41234  http:18601  2m05s   0
+web     process   ✓ healthy    -                            41240  http:18602  2m03s   0
+hosted  external  ✗ unhealthy  connection refused           -      -           -       0
 
-1 healthy, 0 degraded, 0 failed, 0 starting, 0 stopped, 1 unknown
+1 healthy, 1 degraded, 1 failed, 0 starting, 0 stopped, 0 unknown
 ```
 
 * `STATUS` is the glyph and the state. Glyphs (`stems_core::Glyph`, shared
@@ -262,8 +304,12 @@ process group ([process-model.md](process-model.md)).
   from another terminal) the attached command exits 0.
 * `stems attach` follows a running daemon (human: the status table, then one
   line per transition; `--json`: NDJSON events, then a last-line envelope).
-  Leaving it (Ctrl-C, SIGTERM, SIGHUP) stops **nothing**; the TUI and its
-  "stop everything?" prompt come with deliverable 27.
+  Leaving it (Ctrl-C, SIGTERM, SIGHUP) stops **nothing**.
+* On a terminal (human mode) both open the dashboard instead of the plain
+  stream (deliverable 27, [tui.md](tui.md)): attached `up` asks "Stop
+  everything? [y/N/d(etach)]" on `q`/Ctrl-C (`y` = the `down --all`
+  teardown above, `d` = leave the daemon running); `attach` just leaves.
+  `STEMS_TUI=0`, `--json` or a non-terminal stdout keep the plain stream.
 * The daemon's own exit path (`stems daemon stop`, SIGTERM/SIGINT/SIGHUP to
   the daemon) stops every running stem in reverse order before it removes
   its socket and lock, so no stem outlives an orderly daemon exit.
@@ -271,5 +317,6 @@ process group ([process-model.md](process-model.md)).
 ## Extension points
 
 `crates/stems-daemon/src/supervisor/`: `RuntimeRegistry` (docker 14,
-compose 15), `OutputSink` (logs 12), `Waiter` (probes 21), the actor's exit
-handler (restart policies 22, watchdog triggers 24), `Host` (state store 11).
+compose 15), `OutputSink` (logs 12), `Waiter` + `probes` (health 21), the actor's exit
+handler (restart policies 22, `supervisor/restart.rs`; watchdogs 24,
+`supervisor/watch.rs`, call `StemCell::restart_bypassing_policy`), `Host` (state store 11).

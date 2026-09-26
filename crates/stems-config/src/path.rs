@@ -44,6 +44,11 @@ impl ConfigPath {
         Self(v)
     }
 
+    /// A path from its segments.
+    pub fn from_segments(segments: Vec<Segment>) -> Self {
+        Self(segments)
+    }
+
     /// The segments of this path.
     pub fn segments(&self) -> &[Segment] {
         &self.0

@@ -1,0 +1,23 @@
+# docker-build — a docker stem built from examples/repos/shop-api's
+# Dockerfile (deliverable 14, tests/features/docker/build.feature; needs
+# Docker: `make e2e-docker`). The image is tagged
+# `stems/docker-build/api:<run_id>`; the container listens on 8080 (PORT is
+# set to the container port) and is published on 18533 (remapped).
+schema_version: 1
+name: docker-build
+
+stems:
+  api:
+    type: docker
+    build: { context: ../../../../examples/repos/shop-api }
+    ports: [{ name: http, port: 18533, container_port: 8080 }]
+    env:
+      SHOP_CHAOS: "1"
+    health:
+      type: http
+      url: "http://127.0.0.1:18533/healthz"
+      interval: 400ms
+      timeout: 300ms
+      retries: 5
+      start_timeout: 180s
+    stop_grace: 2s

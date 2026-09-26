@@ -21,7 +21,7 @@ INCLUDE_NOT_FOUND: include `teams/payments.yaml` not found
   at stems.yaml:6:5 (include[0])
   hint: fix the path (it is relative to the file that names it) or create the file
 
-# exit 2 — `include:` / `extends:` files form a cycle
+# exit 2 — `include:` / `extends:` files form a cycle, or an `extends` chain is deeper than 5 files
 INCLUDE_CYCLE: include cycle: stems.yaml -> teams/a.yaml -> stems.yaml
   at stems.yaml:6:5 (include[0])
   hint: remove one of the include/extends entries
@@ -108,6 +108,10 @@ TOOL_VERSION: `node` 24.6.0 does not satisfy the required range >=99
 PROFILE_MISSING_DEPENDENCY: profile `web-only` omits `shop-api`, a hard dependency of `shop-web`, and `strict_profiles` is on
   at stems.yaml:33:5 (profiles.web-only)
   hint: add `shop-api` to the profile, or set `strict_profiles: false` to pull dependencies in automatically
+
+# exit 2 — `--profile`, `STEMS_PROFILE`, `profile:`, `default_profile` or a profile alias names a profile that is not defined (or aliases form a loop)
+UNKNOWN_PROFILE: profile `web-onyl` is not defined
+  hint: did you mean `web-only`? profiles: default, backend, web-only (see `stems profiles`)
 
 # exit 2 — a destructive operation was requested without `--yes` / `confirm: true`
 DESTRUCTIVE_NOT_CONFIRMED: `down --volumes` deletes data and needs confirmation
@@ -196,6 +200,10 @@ GIT_CLONE_FAILED: cloning git@github.com:acme/shop-api.git failed: permission de
 # exit 1 — another stems daemon holds this workspace's lock
 LOCK_HELD: another stems daemon (pid 777) holds the lock for this workspace
   hint: use that daemon (`stems status`), or stop it with `stems daemon stop`
+
+# exit 1 — `stems upgrade` could not run the upgrade command, or it failed
+UPGRADE_FAILED: `brew upgrade stems` exited with status 1
+  hint: run `brew upgrade stems` yourself to see why; `stems upgrade --dry-run` prints the command
 
 # exit 1 — the command is not implemented yet in this build
 NOT_IMPLEMENTED: `stems graph` is not implemented until deliverable 23

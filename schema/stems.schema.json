@@ -66,6 +66,13 @@
         "null"
       ]
     },
+    "profile": {
+      "description": "Profile `up` uses when none is given (`--profile` / `STEMS_PROFILE`);\nmeant for `stems.local.yaml`, wins over `default_profile`.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "agent": {
       "description": "Guard rails for the agent / MCP interface.",
       "anyOf": [
@@ -93,6 +100,17 @@
       "anyOf": [
         {
           "$ref": "#/$defs/Metrics"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "config": {
+      "description": "How the daemon handles config changes (`config.reload`, 33).",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ConfigSettings"
         },
         {
           "type": "null"
@@ -332,6 +350,56 @@
       "description": "A duration such as `200ms`, `2s`, `1m` or `1m 30s`.",
       "type": "string",
       "pattern": "^\\s*([0-9]+\\s*[a-zA-Z]+\\s*)+$|^0$"
+    },
+    "ConfigSettings": {
+      "description": "`config:` block (33).",
+      "type": "object",
+      "properties": {
+        "reload": {
+          "description": "What the daemon does when `stems.yaml`, `stems.local.yaml` or an\nincluded file changes while it runs.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Reload"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Reload": {
+      "description": "`config.reload:` block (33).",
+      "type": "object",
+      "properties": {
+        "auto_apply": {
+          "description": "Apply changes on their own: `false` (wait for `stems config apply`),\n`true` (what needs no restart) or `all` (everything).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AutoApply"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "AutoApply": {
+      "description": "`false`: wait for `stems config apply`; `true`: apply what needs no restart; `all`: apply everything, restarts included.",
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "string",
+          "enum": [
+            "all"
+          ]
+        }
+      ]
     },
     "Script": {
       "description": "A script: an inline shell string or a full spec.",
@@ -680,10 +748,10 @@
           ]
         },
         "outputs": {
-          "description": "Values published for dependants (evaluated at runtime).",
+          "description": "Values published for dependants (FR-ST-6), evaluated when the stem\nbecomes healthy: a template string, or `{command, secret}`.",
           "type": "object",
           "additionalProperties": {
-            "type": "string"
+            "$ref": "#/$defs/Output"
           },
           "default": {}
         },
@@ -1154,8 +1222,32 @@
             "null"
           ]
         },
+        "headers": {
+          "description": "(http) Extra request headers.",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "insecure": {
+          "description": "(http) Accept invalid TLS certificates (self-signed dev certs).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "command": {
           "description": "(command) Shell command; exit 0 = healthy.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cwd": {
+          "description": "(command) Working directory, relative to the stem's codebase.",
           "type": [
             "string",
             "null"
@@ -1486,10 +1578,10 @@
       "type": "object",
       "properties": {
         "memory": {
-          "description": "Memory threshold, e.g. `2GB`.",
+          "description": "Memory threshold, e.g. `2GB` or `\"2GB for 30s\"`.",
           "anyOf": [
             {
-              "$ref": "#/$defs/ByteSize"
+              "$ref": "#/$defs/MemoryLimit"
             },
             {
               "type": "null"
@@ -1497,15 +1589,78 @@
           ]
         },
         "cpu": {
-          "description": "CPU threshold in cores (1.0 = one full core).",
-          "type": [
-            "number",
-            "null"
-          ],
-          "format": "double"
+          "description": "CPU threshold: cores (`1.5`) or a percentage of one core, optionally\nsustained (`\"80% for 60s\"`).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CpuLimit"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false
+    },
+    "MemoryLimit": {
+      "description": "A memory threshold: a size (`2GB`, or bytes as an integer), optionally sustained: `2GB for 30s`.",
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0
+        },
+        {
+          "type": "string",
+          "pattern": "^\\s*[0-9]+\\s*([kKmMgGtT]([iI]?[bB])?|[bB])?(\\s+[fF][oO][rR]\\s+.+)?\\s*$"
+        }
+      ]
+    },
+    "CpuLimit": {
+      "description": "A CPU threshold: cores as a number (`1.5`), or a percentage of one core (`80%`, `150%`), optionally sustained: `80% for 60s`.",
+      "anyOf": [
+        {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        {
+          "type": "string",
+          "pattern": "^\\s*[0-9]+(\\.[0-9]+)?\\s*%?(\\s+[fF][oO][rR]\\s+.+)?\\s*$"
+        }
+      ]
+    },
+    "Output": {
+      "description": "An output (FR-ST-6): a template string (`${stem.self.port}` etc.) or a\ncommand whose trimmed stdout is the value.",
+      "anyOf": [
+        {
+          "description": "A static template, e.g. `\"http://localhost:${stem.self.port}\"`.",
+          "type": "string"
+        },
+        {
+          "description": "`{command, secret}`.",
+          "$ref": "#/$defs/OutputCommand"
+        }
+      ]
+    },
+    "OutputCommand": {
+      "description": "`{command, secret}` output form.",
+      "type": "object",
+      "properties": {
+        "command": {
+          "description": "Shell command run in the stem's environment once it is healthy; its\ntrimmed stdout is the value.",
+          "type": "string"
+        },
+        "secret": {
+          "description": "Redact the value everywhere stems shows it (`<redacted>`).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "command"
+      ]
     },
     "Overlay": {
       "description": "An overlay file.",

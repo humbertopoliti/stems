@@ -1,0 +1,24 @@
+ stems · run-scripts                        Graph [Table] Detail  Logs  Events
+  STEM     TYPE    STATUS     REASON   PID    PORTS  UPTIME RESTARTS CPU   MEM
+› shop-api process ✓ healthy  -        *      18611  *      0        *     *
+
+    ┌ Scripts: shop-api ───────────────────────────────────────────────────┐
+    │ filter: _                                                            │
+    │ shop-api                                                             │
+    │ › start               (lifecycle)                                    │
+    │   always-fails                                                       │
+    │   create-test-user …  Create a user with a known password for manual…│
+    │   echo-args                                                          │
+    │   env-args …                                                         │
+    │   flaky               Fails on its first two attempts                │
+    │   overlap                                                            │
+    │   short                                                              │
+    │   slow                Takes two seconds                              │
+    │ workspace                                                            │
+    │   needs-api           A workspace script that needs shop-api healthy │
+    │ ↑/↓ move · Enter run (… = form) · type to filter · Esc               │
+    └──────────────────────────────────────────────────────────────────────┘
+
+
+
+ run-scripts · profile - · daemon pid * · ✓1 !0 ✗0 ·0 ?0 ↻0

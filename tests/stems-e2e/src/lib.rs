@@ -10,9 +10,11 @@
 //! See `STEPS.md` for the step vocabulary and the [`runner`] module docs
 //! for the environment variables and the PENDING.txt mechanism.
 
+pub mod docker;
 pub mod golden;
 pub mod hooks;
 pub mod http;
+pub mod mcp;
 pub mod pending;
 pub mod procs;
 pub mod remap;

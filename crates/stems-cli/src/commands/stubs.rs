@@ -5,33 +5,28 @@
 use serde_json::json;
 use stems_core::{Error, ErrorCode};
 
-use crate::cli::{Command, ConfigCommand, WatchCommand};
+use crate::cli::{Command, ConfigCommand};
 use crate::output::CommandOutput;
 
 /// `(command path, deliverable)` for a stub; `deliverable` is a plan
 /// number (`"10"`) or `"unscheduled"`.
 pub fn target(cmd: &Command) -> (String, &'static str) {
     let (name, nn): (&str, &str) = match cmd {
-        Command::Metrics(_) => ("metrics", "25"),
-        Command::Health(_) => ("health", "21"),
-        Command::Graph(_) => ("graph", "23"),
         Command::Exec(_) => ("exec", "unscheduled"),
         Command::Shell(_) => ("shell", "unscheduled"),
-        Command::Watch(WatchCommand::Pause(_)) => ("watch pause", "24"),
-        Command::Watch(WatchCommand::Resume(_)) => ("watch resume", "24"),
-        Command::Watch(WatchCommand::Status) => ("watch status", "24"),
-        Command::Profiles(_) => ("profiles", "26"),
-        Command::Outputs(_) => ("outputs", "26"),
-        Command::Config(ConfigCommand::Get(_)) => ("config get", "26"),
-        Command::Config(ConfigCommand::Set(_)) => ("config set", "26"),
-        Command::Config(ConfigCommand::Diff) => ("config diff", "33"),
-        Command::Config(ConfigCommand::Apply(_)) => ("config apply", "33"),
         Command::Add(_) => ("add", "unscheduled"),
         Command::Remove(_) => ("remove", "unscheduled"),
         Command::Edit(_) => ("edit", "unscheduled"),
-        Command::Mcp(_) => ("mcp", "31"),
-        Command::Upgrade(_) => ("upgrade", "32"),
         Command::Init(_)
+        | Command::Mcp(_)
+        | Command::Profiles(_)
+        | Command::Config(
+            ConfigCommand::Get(_)
+            | ConfigCommand::Set(_)
+            | ConfigCommand::Unset(_)
+            | ConfigCommand::Diff
+            | ConfigCommand::Apply(_),
+        )
         | Command::Up(_)
         | Command::Down(_)
         | Command::Start(_)
@@ -47,12 +42,19 @@ pub fn target(cmd: &Command) -> (String, &'static str) {
         | Command::Doctor(_)
         | Command::Attach(_)
         | Command::Status(_)
+        | Command::Health(_)
+        | Command::Metrics(_)
+        | Command::Outputs(_)
+        | Command::Watch(_)
+        | Command::Graph(_)
         | Command::Logs(_)
         | Command::Events(_)
         | Command::Daemon(_)
         | Command::Validate(_)
         | Command::Show(_)
         | Command::Completions(_)
+        | Command::Upgrade(_)
+        | Command::Man { .. }
         | Command::Docs => ("", "implemented"),
     };
     (name.to_string(), nn)

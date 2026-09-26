@@ -9,12 +9,13 @@
 //! 4. `env_files` (`KEY=value` dotenv files, in order);
 //! 5. `stems.local.yaml` env (`Stem::local_env`);
 //! 6. the shell environment passed with `stems up --pass-env`;
-//! 7. `STEMS_STEM`, `STEMS_WORKSPACE`, `STEMS_CODEBASE`, `STEMS_RUN_ID` and
-//!    `STEMS_<DEP>_PORT` for each dependency with a port.
+//! 7. `STEMS_STEM`, `STEMS_WORKSPACE`, `STEMS_CODEBASE`, `STEMS_RUN_ID`,
+//!    `STEMS_<DEP>_PORT` for each dependency with a port and
+//!    `STEMS_<DEP>_OUTPUT_<X>` for each evaluated output of a dependency (26).
 //!
 //! Every value is then re-rendered: `${stem.<n>.port}` and
 //! `${stem.<n>.ports.<p>}` left in place by the loader (auto ports) become
-//! the allocated ports.
+//! the allocated ports, `${stem.<n>.outputs.<x>}` the evaluated output (26).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -35,6 +36,13 @@ pub struct EnvInputs<'a> {
     pub run_id: &'a str,
     /// Port book (auto ports).
     pub ports: &'a PortBook,
+    /// Evaluated outputs (26): `STEMS_<DEP>_OUTPUT_<X>` and
+    /// `${stem.<n>.outputs.X}`; `None` leaves output references alone.
+    pub outputs: Option<&'a super::outputs::OutputStore>,
+    /// An output reference without a value is `UNRESOLVED_VARIABLE` (the
+    /// start of the stem) instead of being kept literally (build, reset,
+    /// custom scripts).
+    pub strict_outputs: bool,
 }
 
 /// `STEMS_<NAME>_PORT` for a stem name (`shop-api` → `STEMS_SHOP_API_PORT`).
@@ -99,11 +107,34 @@ pub fn build_env(
             env.insert(port_var(&dep.stem), p.to_string());
         }
     }
-    for v in env.values_mut() {
+    if let Some(store) = inp.outputs {
+        for dep in &stem.depends_on {
+            for (name, o) in store.get(&dep.stem) {
+                env.insert(super::outputs::output_var(&dep.stem, &name), o.value);
+            }
+        }
+    }
+    for (k, v) in env.iter_mut() {
         if v.contains("${stem.") {
             *v = render_refs(v, &stem.name, &mut |n, p| {
                 inp.ports.resolve_ref(ws, n, p, allocated)
             });
+        }
+        if let Some(store) = inp.outputs
+            && v.contains("${stem.")
+        {
+            let mut missing = Vec::new();
+            *v = super::outputs::render_output_refs(
+                v,
+                &stem.name,
+                &|n, x| store.value(n, x),
+                &mut missing,
+            );
+            if inp.strict_outputs
+                && let Some(r) = missing.first()
+            {
+                return Err(super::outputs::unresolved_error(&stem.name, r, Some(k)));
+            }
         }
     }
     let mut full: BTreeMap<String, String> = inp

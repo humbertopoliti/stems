@@ -2,7 +2,11 @@
 source: crates/stems-cli/tests/help.rs
 expression: help
 ---
-Run the MCP server (agent interface)
+Run the MCP server (agent interface).
+
+Serves the workspace's daemon to an MCP client (Claude Code, Cursor, ...) over stdio (default) or
+local HTTP: tools, custom scripts as `<stem>__<script>` tools, resources and prompts. See
+docs/mcp.md.
 
 Usage: stems mcp [OPTIONS]
 
@@ -17,10 +21,11 @@ Options:
           [default: stdio]
 
       --port <PORT>
-          Port for --transport http
+          Port for --transport http (binds 127.0.0.1 only) [default: 7070]
 
       --auto-start
-          Start the daemon if it is not running
+          Start the daemon if it is not running; when the client disconnects, stop it again if this
+          server started it and no stem is running
 
   -h, --help
           Print help (see a summary with '-h')

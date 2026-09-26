@@ -1,0 +1,24 @@
+ stems · minimal                            Graph  Table  Detail [Logs] Events
+┌ Logs: echo-svc · following · level warn+ ────────────────────────────────────┐
+│   **:**:**.*** WARN chaos endpoints enabled under /__chaos/                  │
+│   **:**:**.*** ERROR chaos log line 0                                        │
+│   **:**:**.*** ERROR chaos log line 1                                        │
+│   **:**:**.*** ERROR chaos log line 2                                        │
+│   **:**:**.*** ERROR chaos log line 3                                        │
+│   **:**:**.*** ERROR chaos log line 4                                        │
+│   **:**:**.*** ERROR chaos log line 5                                        │
+│   **:**:**.*** ERROR chaos log line 6                                        │
+│   **:**:**.*** ERROR chaos log line 7                                        │
+│   **:**:**.*** ERROR chaos log line 8                                        │
+│›  **:**:**.*** ERROR chaos log line 9                                        │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+ minimal · profile - · daemon pid * · ✓1 !0 ✗0 ·0 ?0 ↻0 Space pause · ? hel…

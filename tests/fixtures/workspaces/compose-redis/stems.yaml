@@ -1,0 +1,22 @@
+# compose-redis — one compose stem wrapping the `redis` service of
+# compose.yml (deliverable 15, tests/features/compose/*.feature; needs
+# Docker with compose v2: `make e2e-docker`).
+#
+# The project is the default `stems-compose-redis`. Stem env is compose's
+# interpolation input: REDIS_PORT publishes the stem's (remapped) port and
+# REDIS_ARGS (set by a local override in a scenario) reaches the command.
+# `broken` (an image that does not exist) and `other` (a plain sleeper, for
+# a project started by hand) are selected by local overrides.
+schema_version: 1
+name: compose-redis
+
+stems:
+  cache:
+    type: compose
+    file: compose.yml
+    service: redis
+    env:
+      REDIS_PORT: "${stem.self.port}"
+    ports: [{ name: redis, port: 18534, container_port: 6379 }]
+    health: { type: tcp, interval: 400ms, timeout: 300ms, retries: 5, start_timeout: 120s }
+    stop_grace: 2s

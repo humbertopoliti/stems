@@ -2,7 +2,7 @@
 source: crates/stems-cli/tests/help.rs
 expression: help
 ---
-Show watchdog state
+Show watchdog rules and state (--json gives `{stems, global_paused, disabled}`)
 
 Usage: stems watch status [OPTIONS]
 

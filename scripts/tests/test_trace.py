@@ -27,6 +27,8 @@ class ParseTests(unittest.TestCase):
     def test_status_table_and_claims(self):
         status = trace.parse_status_table((FIXTURE / "plan" / "README.md").read_text())
         self.assertEqual(status, {"01": "done", "02": "todo"})
+        noted = trace.parse_status_table("| 32 | [Release](32-r.md) | 5 | 19 | done (pipeline unexercised: no remote) |\n")
+        self.assertEqual(noted, {"32": "done"})
         claims = trace.parse_plan_requirements(FIXTURE / "plan")
         self.assertEqual(claims["FR-LC-6"], {"01"})
         self.assertEqual(claims["FR-WS-2"], {"02"})

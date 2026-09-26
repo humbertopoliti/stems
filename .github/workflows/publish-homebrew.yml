@@ -1,0 +1,69 @@
+# Publish the Homebrew formula to the tap (deliverable 32, FR-DS-1). Called
+# by release.yml (dist-workspace.toml `publish-jobs`) once the GitHub Release
+# exists, i.e. only after release-smoke.yml passed.
+#
+# The tap is ONE variable: repository variable HOMEBREW_TAP_REPO, default
+# `<owner>/homebrew-tap` (users then run `brew install <owner>/tap/stems`).
+# Needs secret HOMEBREW_TAP_TOKEN: a token with contents:write on the tap.
+#
+# Stable tags commit Formula/stems.rb to the tap's default branch.
+# Prerelease tags (v0.1.0-rc.1) commit to the `rc` branch instead, so the
+# pipeline is exercised end to end without changing what `brew install`
+# gets; try it with `git -C "$(brew --repository <owner>/tap)" checkout rc`.
+name: publish-homebrew
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+jobs:
+  formula:
+    runs-on: ubuntu-22.04
+    env:
+      TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO || format('{0}/homebrew-tap', github.repository_owner) }}
+      TAG: ${{ fromJson(inputs.plan).announcement_tag }}
+      PRERELEASE: ${{ fromJson(inputs.plan).announcement_is_prerelease }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Fetch the released artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: artifacts-*
+          path: dist
+          merge-multiple: true
+      - name: Render Formula/stems.rb
+        run: |
+          python3 release/render_formula.py --dist dist --version "$TAG" \
+            --base-url "https://github.com/${{ github.repository }}/releases/download/$TAG" \
+            --homepage "https://github.com/${{ github.repository }}" \
+            --out "$RUNNER_TEMP/stems.rb"
+          cat "$RUNNER_TEMP/stems.rb"
+      - uses: actions/checkout@v6
+        with:
+          repository: ${{ env.TAP_REPO }}
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+      - name: Commit and push to the tap
+        run: |
+          cd tap
+          branch=$(git rev-parse --abbrev-ref HEAD)
+          if [ "$PRERELEASE" = "true" ]; then
+            branch=rc
+            git checkout -B rc
+          fi
+          mkdir -p Formula
+          cp "$RUNNER_TEMP/stems.rb" Formula/stems.rb
+          git config user.name "stems-release-bot"
+          git config user.email "stems-release-bot@users.noreply.github.com"
+          git add Formula/stems.rb
+          git commit -m "stems ${TAG#v}" || { echo "formula unchanged"; exit 0; }
+          if [ "$PRERELEASE" = "true" ]; then
+            git push --force origin rc
+          else
+            git push origin "$branch"
+          fi

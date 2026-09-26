@@ -244,3 +244,140 @@ fn empty_workspace_renders_nothing() {
     let l = layout(&load_yaml("stems: {}\n")).unwrap();
     assert_eq!(render_text(&l, &RenderOptions::default()), "\n");
 }
+
+// --- cells for the TUI graph widget (deliverable 28) -----------------------
+
+#[test]
+fn grid_matches_the_text_rendering_and_tags_boxes() {
+    use stems_core::render::render_grid;
+    let l = hello_shop();
+    let opts = RenderOptions {
+        status: Some(&live),
+        ..RenderOptions::default()
+    };
+    let g = render_grid(&l, &opts);
+    let text = render_text(&l, &opts);
+    let grid_text = g.text();
+    let trimmed: Vec<&str> = grid_text.lines().collect();
+    let expected: Vec<&str> = text.lines().collect();
+    assert_eq!(trimmed[..expected.len()], expected[..]);
+    assert_eq!(g.boxes.len(), 6);
+    let api = l.node("shop-api").unwrap();
+    let b = g.box_of(api).unwrap();
+    // The failed box carries a reason line: 4 rows.
+    assert_eq!(b.height, 4);
+    assert_eq!(g.rows[b.y + 1][b.x + 2].ch, 's');
+    assert!(
+        g.rows[b.y + 1]
+            .iter()
+            .any(|c| c.ch == '✗' && c.glyph == Some(Glyph::Failed) && c.node == Some(api))
+    );
+    assert!(g.rows.iter().flatten().any(|c| c.edge && c.ch == '▶'));
+    assert!(
+        g.rows
+            .iter()
+            .flatten()
+            .all(|c| !(c.edge && c.node.is_some()))
+    );
+}
+
+#[test]
+fn compact_boxes_are_one_row() {
+    use stems_core::render::render_grid;
+    let l = hello_shop();
+    let opts = RenderOptions {
+        compact: true,
+        status: Some(&live),
+        ..RenderOptions::default()
+    };
+    let out = render_text(&l, &opts);
+    insta::assert_snapshot!("graph-hello-shop-compact", out);
+    assert!(
+        !out.contains("dep shop-api"),
+        "no reason lines when compact"
+    );
+    let g = render_grid(&l, &opts);
+    assert!(g.boxes.iter().all(|b| b.height == 1));
+    let full = render_grid(&l, &RenderOptions::default());
+    assert!(g.height < full.height && g.width < full.width);
+}
+
+#[test]
+fn soft_edges_are_marked_in_the_grid() {
+    use stems_core::render::render_grid;
+    let l = spec(&["web: api, db?", "api: db", "db:"]);
+    let g = render_grid(&l, &RenderOptions::default());
+    assert!(g.rows.iter().flatten().any(|c| c.soft && c.ch == '╌'));
+    assert!(
+        g.rows
+            .iter()
+            .flatten()
+            .any(|c| c.edge && !c.soft && c.ch == '─')
+    );
+}
+
+#[test]
+fn graph_reasons_are_short() {
+    use stems_core::render::graph_reason;
+    assert_eq!(
+        graph_reason(Glyph::Degraded, Some("dependency shop-api unhealthy")).as_deref(),
+        Some("dep shop-api")
+    );
+    assert_eq!(
+        graph_reason(Glyph::Degraded, Some("dependency a failed; flapping")).as_deref(),
+        Some("dep a; flapping")
+    );
+    assert_eq!(
+        graph_reason(Glyph::Failed, Some("exited with\n code 1")).as_deref(),
+        Some("exited with code 1")
+    );
+    assert_eq!(graph_reason(Glyph::Healthy, Some("ready (tcp)")), None);
+    assert_eq!(graph_reason(Glyph::Failed, None), None);
+}
+
+#[test]
+fn from_parts_equals_layout_of_the_workspace() {
+    use stems_config::StemType;
+    use stems_core::layout::from_parts;
+    let ws = load_dir(&repo_root().join("examples/workspaces/hello-shop"));
+    let stems: Vec<(String, StemType)> = ws.stems().map(|s| (s.name.clone(), s.kind())).collect();
+    let deps: Vec<(String, stems_config::Dependency)> = ws
+        .stems()
+        .flat_map(|s| s.depends_on.iter().map(|d| (s.name.clone(), d.clone())))
+        .collect();
+    assert_eq!(from_parts(stems, &deps), layout(&ws).unwrap());
+    // Unknown targets are dropped.
+    let d: stems_config::Dependency =
+        serde_json::from_value(serde_json::json!({"stem": "ghost", "condition": "started", "soft": false, "protocol": null, "via": null})).unwrap();
+    let l = from_parts([("a".to_string(), StemType::Process)], &[("a".into(), d)]);
+    assert_eq!(l.edges.len(), 0);
+}
+
+#[test]
+fn restrict_keeps_named_stems_and_their_edges() {
+    let l = hello_shop().restrict(&["shop-api", "postgres", "redis", "nope"]);
+    let mut names: Vec<&str> = l.nodes.iter().map(|n| n.name.as_str()).collect();
+    names.sort();
+    assert_eq!(names, ["postgres", "redis", "shop-api"]);
+    assert_eq!(l.edges.len(), 2);
+}
+
+#[test]
+fn unrelated_parts_are_not_separated_by_tall_gaps() {
+    let l = spec(&[
+        "gateway: auth, catalog, cart",
+        "admin: auth, catalog",
+        "auth: users",
+        "catalog: search, db",
+        "cart: db, cache",
+        "search: index",
+        "users: db",
+        "index:",
+        "db:",
+        "cache:",
+        "mailer: queue",
+        "queue:",
+    ]);
+    let out = text(&l);
+    assert!(!out.contains("\n\n\n"), "{out}");
+}

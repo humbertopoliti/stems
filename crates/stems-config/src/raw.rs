@@ -10,8 +10,8 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::types::{
-    ArgType, ByteSize, Condition, Dur, FileMode, HealthType, Protocol, Requirement, RestartPolicy,
-    Scalar, StemType, StringOrList, WatchAction, WatchRoot,
+    ArgType, AutoApply, ByteSize, Condition, CpuLimit, Dur, FileMode, HealthType, MemoryLimit,
+    Protocol, Requirement, RestartPolicy, Scalar, StemType, StringOrList, WatchAction, WatchRoot,
 };
 
 /// Deserialize "a string, or else a `T`", giving `T`'s own error message
@@ -89,12 +89,17 @@ pub struct RawWorkspace {
     pub default_profile: Option<String>,
     /// Refuse to start stems outside the selected profile, even as dependencies.
     pub strict_profiles: Option<bool>,
+    /// Profile `up` uses when none is given (`--profile` / `STEMS_PROFILE`);
+    /// meant for `stems.local.yaml`, wins over `default_profile`.
+    pub profile: Option<String>,
     /// Guard rails for the agent / MCP interface.
     pub agent: Option<RawAgent>,
     /// Log retention.
     pub logs: Option<RawLogs>,
     /// Metrics sampling.
     pub metrics: Option<RawMetrics>,
+    /// How the daemon handles config changes (`config.reload`, 33).
+    pub config: Option<RawConfigSettings>,
     /// Where git codebases are cloned (default `.stems/repos`).
     pub repos_dir: Option<String>,
     /// Workspace-level scripts (`bootstrap`, `teardown`, custom).
@@ -158,6 +163,26 @@ pub struct RawMetrics {
     pub persist: Option<bool>,
 }
 
+/// `config:` block (33).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "ConfigSettings")]
+pub struct RawConfigSettings {
+    /// What the daemon does when `stems.yaml`, `stems.local.yaml` or an
+    /// included file changes while it runs.
+    pub reload: Option<RawReload>,
+}
+
+/// `config.reload:` block (33).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "Reload")]
+pub struct RawReload {
+    /// Apply changes on their own: `false` (wait for `stems config apply`),
+    /// `true` (what needs no restart) or `all` (everything).
+    pub auto_apply: Option<AutoApply>,
+}
+
 // ---------------------------------------------------------------------------
 // Stem
 // ---------------------------------------------------------------------------
@@ -201,9 +226,10 @@ pub struct RawStem {
     pub restart: Option<RawRestart>,
     /// Resource warning thresholds.
     pub limits: Option<RawLimits>,
-    /// Values published for dependants (evaluated at runtime).
+    /// Values published for dependants (FR-ST-6), evaluated when the stem
+    /// becomes healthy: a template string, or `{command, secret}`.
     #[serde(default)]
-    pub outputs: IndexMap<String, String>,
+    pub outputs: IndexMap<String, RawOutput>,
     /// Files materialised into the codebase at run time.
     pub overlays: Option<Vec<RawOverlay>>,
     /// Free-form tags.
@@ -397,6 +423,46 @@ impl<'de> Deserialize<'de> for RawDependency {
     }
 }
 
+/// An output (FR-ST-6): a template string (`${stem.self.port}` etc.) or a
+/// command whose trimmed stdout is the value.
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+#[serde(untagged)]
+#[schemars(rename = "Output")]
+pub enum RawOutput {
+    /// A static template, e.g. `"http://localhost:${stem.self.port}"`.
+    Value(String),
+    /// `{command, secret}`.
+    Command(RawOutputCommand),
+}
+
+/// `{command, secret}` output form.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "OutputCommand")]
+pub struct RawOutputCommand {
+    /// Shell command run in the stem's environment once it is healthy; its
+    /// trimmed stdout is the value.
+    pub command: String,
+    /// Redact the value everywhere stems shows it (`<redacted>`).
+    pub secret: Option<bool>,
+}
+
+impl<'de> Deserialize<'de> for RawOutput {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde_yaml_ng::Value;
+        string_or(
+            d,
+            |s| Ok(Self::Value(s)),
+            Self::Command,
+            |v| match v {
+                Value::Number(n) => Some(Ok(Self::Value(n.to_string()))),
+                Value::Bool(b) => Some(Ok(Self::Value(b.to_string()))),
+                _ => None,
+            },
+        )
+    }
+}
+
 /// A script: an inline shell string or a full spec.
 #[derive(Clone, Debug, Serialize, JsonSchema)]
 #[serde(untagged)]
@@ -486,8 +552,14 @@ pub struct RawHealth {
     pub status: Option<u16>,
     /// (http) Response body must contain this.
     pub body_contains: Option<String>,
+    /// (http) Extra request headers.
+    pub headers: Option<IndexMap<String, String>>,
+    /// (http) Accept invalid TLS certificates (self-signed dev certs).
+    pub insecure: Option<bool>,
     /// (command) Shell command; exit 0 = healthy.
     pub command: Option<String>,
+    /// (command) Working directory, relative to the stem's codebase.
+    pub cwd: Option<String>,
     /// Probe interval.
     pub interval: Option<Dur>,
     /// Probe timeout.
@@ -568,10 +640,11 @@ pub struct RawBackoff {
 #[serde(deny_unknown_fields)]
 #[schemars(rename = "Limits")]
 pub struct RawLimits {
-    /// Memory threshold, e.g. `2GB`.
-    pub memory: Option<ByteSize>,
-    /// CPU threshold in cores (1.0 = one full core).
-    pub cpu: Option<f64>,
+    /// Memory threshold, e.g. `2GB` or `"2GB for 30s"`.
+    pub memory: Option<MemoryLimit>,
+    /// CPU threshold: cores (`1.5`) or a percentage of one core, optionally
+    /// sustained (`"80% for 60s"`).
+    pub cpu: Option<CpuLimit>,
 }
 
 /// An overlay file.

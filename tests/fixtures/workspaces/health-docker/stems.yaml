@@ -1,0 +1,21 @@
+# health-docker — fixture for the @docker health/docker.feature
+# (deliverable 21): postgres with a `docker` probe, i.e. the container's own
+# healthcheck (added here with `healthcheck:`; the postgres image has none).
+# hello-shop keeps its `command` probe.
+schema_version: 1
+name: health-docker
+
+stems:
+  db:
+    type: docker
+    image: postgres:16
+    ports: [{ name: pg, port: 18741, container_port: 5432 }]
+    env:
+      POSTGRES_PASSWORD: local
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 500ms
+      timeout: 2s
+      retries: 20
+    health: { type: docker, interval: 500ms, timeout: 2s, retries: 3, start_timeout: 90s }
+    stop_grace: 2s

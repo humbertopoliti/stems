@@ -1,0 +1,14 @@
+---
+source: crates/stems-tui/src/logs.rs
+expression: "render(&p, 60, 10)"
+---
+┌ Logs: echo-svc · scrolled · level warn+ ─────────────────┐
+│   echo-svc │ line 0                                      │
+│ * echo-svc │ line 1                                      │
+│   echo-svc │ line 4                                      │
+│   echo-svc │ line 5                                      │
+│   echo-svc │ line 8                                      │
+│›  echo-svc │ line 9                                      │
+│                                                          │
+│ /line 1 · 1 match                                        │
+└──────────────────────────────────────────────────────────┘

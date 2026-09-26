@@ -1,0 +1,24 @@
+ stems · process-chain                      Graph [Table] Detail  Logs  Events
+  STEM TYPE    STATUS     REASON       PID    PORTS  UPTIME RESTARTS CPU   MEM
+  a    process ✓ healthy  -            *      18301  *      0        *     *
+› b    process ✓ healthy  -            *      18302  *      0        *     *
+  c    process ✓ healthy  -            *      18303  *      0        *     *
+  d    process ✓ healthy  -            *      18304  *      0        *     *
+
+
+               ┌ Stop b ────────────────────────────────────────┐
+               │ Stop b? Running stems depend on it:            │
+               │ d                                              │
+               │                                                │
+               │ y / X  stop them too (cascade)                 │
+               │ n      cancel                                  │
+               └────────────────────────────────────────────────┘
+
+
+
+
+
+
+
+
+ process-chain · profile - · daemon pid * · ✓4 !0 ✗0 ·0 ?0 ↻0

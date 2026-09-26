@@ -1,0 +1,24 @@
+ stems · process-chain                     [Graph] Table  Detail  Logs  Events
+       ╭──▶[b ✓]──╮
+[d ✓]──┤          ├──▶[a ✓]
+       ╰──▶[c ✓]──╯
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ✓ healthy  ! degraded  ✗ failed  · stopped  ? unknown  ↻ transitioning
+ process-chain · profile - · daemon pid * · ✓4 !0 ✗0 ·0 ?0 ↻0 ? help · q qu…

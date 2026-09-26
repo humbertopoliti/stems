@@ -14,8 +14,13 @@
 //! | `--kill-foreign` | killed (or adopted with `--adopt-orphans`) | killed |
 //!
 //! Each orphan in `--json` output is the scan's object plus `action`
-//! (`killed`, `adopted`, `ignored`, `kill_failed`, `adopt_failed`) and, on
-//! failure, `error`.
+//! (`killed`, `adopted`, `ignored`, `kill_failed`, `adopt_failed`, and for
+//! containers `removed` / `remove_failed`) and, on failure, `error`.
+//!
+//! Container orphans (14/15: `kind: container`, labelled for the workspace
+//! or in a stems-owned compose project, so `matches_start_command` is
+//! true) are "killed" by removing the container; they are never adopted
+//! here (a daemon adopts its own recorded containers on start).
 
 use std::io::{BufRead, IsTerminal, Write};
 use std::time::Duration;
@@ -24,7 +29,7 @@ use serde_json::{Value, json};
 use stems_api::Method;
 use stems_api::client::Client;
 use stems_core::{Error, ErrorCode, Errors};
-use stems_daemon::orphans::{self, Orphan};
+use stems_daemon::orphans::{self, Orphan, OrphanKind};
 use stems_daemon::state::StateFile;
 
 use crate::client::Target;
@@ -83,6 +88,45 @@ pub fn scan(ctx: &Ctx, t: &Target, ignore: &[i32]) -> Result<Vec<Orphan>, Errors
     Ok(orphans::scan(&resolved.workspace, state.as_ref(), &ignore))
 }
 
+/// Container orphans (14/15) of `t`'s workspace: labelled containers and
+/// containers of stems-owned compose projects not in its state file.
+/// Empty when the workspace has no docker/compose stem, its config does
+/// not load, or Docker is not reachable (never an error). `running_only`:
+/// see [`orphans::scan_containers`].
+pub async fn scan_containers(ctx: &Ctx, t: &Target, running_only: bool) -> Vec<Orphan> {
+    let Ok(resolved) = stems_config::load(ctx.load_options()) else {
+        return Vec::new();
+    };
+    let state = StateFile::peek(&t.paths.state);
+    orphans::scan_containers(
+        &resolved.workspace,
+        state.as_ref(),
+        ctx.env.get("DOCKER_HOST").cloned(),
+        &t.paths.dir.join("compose"),
+        running_only,
+    )
+    .await
+}
+
+/// Does `up` of `stems` (with hard dependencies) include a docker or
+/// compose stem? Only then does `up` scan for container orphans.
+pub fn selection_needs_docker(ctx: &Ctx, stems: &[String]) -> bool {
+    let Ok(resolved) = stems_config::load(ctx.load_options()) else {
+        return false;
+    };
+    let Ok(plan) = stems_daemon::supervisor::schedule::plan(&resolved, stems, false) else {
+        return false;
+    };
+    plan.order.iter().any(|n| {
+        resolved.workspace.stem(n).is_some_and(|s| {
+            matches!(
+                s.kind(),
+                stems_config::StemType::Docker | stems_config::StemType::Compose
+            )
+        })
+    })
+}
+
 /// Ports of `orphans`, for messages.
 fn ports(orphans: &[Orphan]) -> String {
     let mut v: Vec<String> = orphans
@@ -100,17 +144,32 @@ pub fn found_error(orphans: &[Value], hint: &str) -> Error {
         .iter()
         .filter_map(|o| o.get("port").and_then(Value::as_u64).map(|p| p.to_string()))
         .collect();
-    Error::new(
-        ErrorCode::OrphansFound,
+    let containers = orphans
+        .iter()
+        .filter(|o| o.get("kind").and_then(Value::as_str) == Some("container"))
+        .count();
+    let message = if containers == 0 {
         format!(
             "{n} process{} not started by stems listen{} on this workspace's ports ({})",
             if n == 1 { "" } else { "es" },
             if n == 1 { "s" } else { "" },
             ports.join(", ")
-        ),
-    )
-    .with_hint(hint.to_string())
-    .with_details(json!({ "orphans": orphans }))
+        )
+    } else {
+        format!(
+            "{n} orphan{} of this workspace not recorded by stems ({containers} container{}{})",
+            if n == 1 { "" } else { "s" },
+            if containers == 1 { "" } else { "s" },
+            if ports.is_empty() {
+                String::new()
+            } else {
+                format!("; processes on ports {}", ports.join(", "))
+            }
+        )
+    };
+    Error::new(ErrorCode::OrphansFound, message)
+        .with_hint(hint.to_string())
+        .with_details(json!({ "orphans": orphans }))
 }
 
 fn describe(o: &Orphan) -> String {
@@ -152,7 +211,9 @@ fn prompt(o: &Orphan, can_adopt: bool) -> Action {
 /// Decide what to do with `o`. Only orphans matching their stem's start
 /// command can be adopted.
 pub fn decide(o: &Orphan, p: &Policy, can_adopt: bool) -> Action {
-    let adoptable = can_adopt && o.matches_start_command && o.stem.is_some();
+    // Containers are never adopted through `adopt_orphans` (processes only).
+    let adoptable =
+        can_adopt && o.kind == OrphanKind::Process && o.matches_start_command && o.stem.is_some();
     if p.interactive {
         return prompt(o, adoptable);
     }
@@ -183,13 +244,31 @@ fn with_action(o: &Orphan, action: &str, error: Option<&Error>) -> Value {
 }
 
 /// Apply `policy` to `orphans`. Adoption goes through `daemon` (required
-/// for it; without a daemon adoptable orphans are left alone). Returns each
-/// orphan with its `action`.
-pub async fn resolve(orphans: &[Orphan], policy: &Policy, daemon: Option<&Client>) -> Vec<Value> {
+/// for it; without a daemon adoptable orphans are left alone). "Kill" of a
+/// container orphan removes the container (volumes kept; `docker_host` as
+/// the caller's `DOCKER_HOST`). Returns each orphan with its `action`.
+pub async fn resolve(
+    orphans: &[Orphan],
+    policy: &Policy,
+    daemon: Option<&Client>,
+    docker_host: Option<String>,
+) -> Vec<Value> {
     let mut out = Vec::new();
     for o in orphans {
         match decide(o, policy, daemon.is_some()) {
             Action::Ignore => out.push(with_action(o, "ignored", None)),
+            Action::Kill if o.kind == OrphanKind::Container => {
+                match orphans::remove_container(o, docker_host.clone()).await {
+                    Ok(()) => out.push(with_action(o, "removed", None)),
+                    Err(e) => {
+                        let e = Error::internal(format!(
+                            "cannot remove container {}: {e}",
+                            o.container_id.as_deref().unwrap_or("?")
+                        ));
+                        out.push(with_action(o, "remove_failed", Some(&e)));
+                    }
+                }
+            }
             Action::Kill => match orphans::kill(o, KILL_GRACE).await {
                 Ok(_) => out.push(with_action(o, "killed", None)),
                 Err(e) => {
@@ -252,7 +331,7 @@ pub fn human(resolved: &[Value]) -> String {
 pub fn remaining(resolved: &[Value]) -> Vec<Value> {
     resolved
         .iter()
-        .filter(|v| !matches!(v["action"].as_str(), Some("killed" | "adopted")))
+        .filter(|v| !matches!(v["action"].as_str(), Some("killed" | "adopted" | "removed")))
         .cloned()
         .collect()
 }

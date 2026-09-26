@@ -44,12 +44,12 @@ Commands:
   start        Start stems (and unstarted hard dependencies)
   stop         Stop stems
   restart      Restart stems (stop, then start)
-  attach       Follow the workspace daemon (plain event stream until the TUI lands)
+  attach       Open the dashboard (TUI) on the workspace daemon
   status       Show the state of every stem
   logs         Show or follow stem and script logs
   events       Show or follow the event stream (NDJSON with --json)
   metrics      Show CPU, memory and disk usage per stem
-  health       Show health check results
+  health       Show the last health probe results per stem, with latency
   graph        Draw the dependency graph
   run          Run a stem or workspace script
   scripts      List scripts
@@ -616,7 +616,12 @@ Global options:
 ### `stems attach`
 
 ```text
-Follow the workspace daemon (plain event stream until the TUI lands)
+Open the dashboard (TUI) on the workspace daemon.
+
+Keys: j/k move, Enter detail, Tab cycles views, / filter, s sort, ? help, q quit (leaves the stems
+running). STEMS_TUI=0, a non-terminal stdout or --json give the plain event stream instead.
+--headless --script 'wait:healthy;frame;j;Enter;frame' replays keys and prints each frame as text
+(see docs/tui.md).
 
 Usage: stems attach [OPTIONS]
 
@@ -627,15 +632,20 @@ Options:
           Possible values:
           - table:  The stem table
           - detail: The selected stem's detail pane
+          - graph:  The dependency graph
 
       --headless
           Render frames as text without a terminal (for tests)
 
-      --script <FILE>
-          Key script to replay (with --headless)
+      --script <SPEC>
+          Key script to replay (implies --headless): tokens separated by `;`
+          (`wait:healthy;frame;j;Enter;frame`), or `@FILE` to read them from a file
 
       --frames-out <DIR>
           Write rendered frames into this directory (with --headless)
+
+      --size <WxH>
+          Frame size with --headless (default 80x24)
 
   -h, --help
           Print help (see a summary with '-h')
@@ -852,7 +862,16 @@ Global options:
 ### `stems metrics`
 
 ```text
-Show CPU, memory and disk usage per stem
+Show CPU, memory and disk usage per stem.
+
+The table has STEM CPU% MEM CHILDREN UPTIME RESTARTS and CPU/MEM sparklines over the last 30
+samples, plus a TOTAL row. CPU% is percent of one core (can exceed 100); MEM is resident memory of
+the whole process tree (containers: usage minus cache). `--sort cpu|mem` puts the heaviest first
+("what is eating my laptop"); `--history 5m` adds the samples of that window to --json; `--disk`
+also measures build outputs (target, dist, build, node_modules, .venv) and docker volumes (slow,
+cached 60 s). --json gives `{interval_ms, stems: [{name, type, state, latest: {ts, cpu_pct,
+rss_bytes, children, uptime_s, restarts}, history?, open_ports, limits, disk?}], totals: {cpu_pct,
+rss_bytes, children}}`. See docs/metrics.md.
 
 Usage: stems metrics [OPTIONS] [STEMS]...
 
@@ -861,8 +880,8 @@ Arguments:
           Only these stems
 
 Options:
-      --watch
-          Refresh continuously
+      --watch [<INTERVAL>]
+          Redraw until Ctrl-C, every INTERVAL (seconds or a duration such as `500ms`; default 2s)
 
       --history <DURATION>
           Include samples from this window (e.g. 5m)
@@ -912,7 +931,12 @@ Global options:
 ### `stems health`
 
 ```text
-Show health check results
+Show the last health probe results per stem, with latency.
+
+The table has one row per probe: STEM TYPE OK LATENCY DETAIL TS. Without a stem it shows each stem's
+latest probe; with one, its last 10 (`--last` changes both; the daemon keeps 50 per stem). --json
+gives `{stems: [{name, type, state, consecutive_failures, transitions_60s, results: [{ts, ok,
+outcome, latency_ms, detail}]}]}`.
 
 Usage: stems health [OPTIONS] [STEM]
 
@@ -921,8 +945,11 @@ Arguments:
           Only this stem
 
 Options:
+      --last <N>
+          Probe results per stem (default 1 without a stem, 10 with one; max 50)
+
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -956,7 +983,12 @@ Global options:
 ### `stems graph`
 
 ```text
-Draw the dependency graph
+Draw the dependency graph.
+
+Boxes per stem with its status glyph, dependants on the left, arrows to their dependencies; soft
+edges dashed; a legend line below. Live glyphs come from the daemon when it runs (`--no-status` for
+config only, `·` everywhere). `--format mermaid|dot|json` exports; --json gives `{nodes: [{name,
+type, status, glyph, reason}], edges: [{from, to, condition, soft, protocol, via}]}`.
 
 Usage: stems graph [OPTIONS]
 
@@ -973,16 +1005,19 @@ Options:
           [default: text]
 
       --status
-          Colour nodes by live status (default when the daemon runs)
+          Live status glyphs from the daemon (the default when it runs; an error when it does not)
 
-      --watch
-          Redraw on every state change
+      --no-status
+          Config only: every stem `·`, even when the daemon runs
+
+      --watch [<INTERVAL>]
+          Redraw until Ctrl-C, every INTERVAL (seconds or a duration such as `500ms`; default 1s)
 
       --focus <STEM>
           Only this stem and its neighbours
 
       --profile <PROFILE>
-          Only the stems of this profile
+          Only the stems of this profile (plus their hard dependencies)
 
       --edges
           Label edges with their protocol/via metadata
@@ -1613,9 +1648,9 @@ Pause or resume watchdogs
 Usage: stems watch [OPTIONS] <COMMAND>
 
 Commands:
-  pause   Pause watchdogs (all, or one stem's)
-  resume  Resume watchdogs
-  status  Show watchdog state
+  pause   Pause watchdogs (all, or some stems')
+  resume  Resume watchdogs (all, clearing per-stem pauses too, or some stems')
+  status  Show watchdog rules and state (--json gives `{stems, global_paused, disabled}`)
   help    Print this message or the help of the given subcommand(s)
 
 Options:
@@ -1654,13 +1689,13 @@ Global options:
 ### `stems watch pause`
 
 ```text
-Pause watchdogs (all, or one stem's)
+Pause watchdogs (all, or some stems')
 
-Usage: stems watch pause [OPTIONS] [STEM]
+Usage: stems watch pause [OPTIONS] [STEMS]...
 
 Arguments:
-  [STEM]
-          Only this stem
+  [STEMS]...
+          Only these stems (default: every watchdog)
 
 Options:
   -h, --help
@@ -1698,13 +1733,13 @@ Global options:
 ### `stems watch resume`
 
 ```text
-Resume watchdogs
+Resume watchdogs (all, clearing per-stem pauses too, or some stems')
 
-Usage: stems watch resume [OPTIONS] [STEM]
+Usage: stems watch resume [OPTIONS] [STEMS]...
 
 Arguments:
-  [STEM]
-          Only this stem
+  [STEMS]...
+          Only these stems (default: every watchdog)
 
 Options:
   -h, --help
@@ -1742,7 +1777,7 @@ Global options:
 ### `stems watch status`
 
 ```text
-Show watchdog state
+Show watchdog rules and state (--json gives `{stems, global_paused, disabled}`)
 
 Usage: stems watch status [OPTIONS]
 
@@ -1831,6 +1866,9 @@ Arguments:
           Only this stem
 
 Options:
+      --reveal
+          Show secret values (human output on a terminal only; JSON never reveals)
+
   -h, --help
           Print help
 
@@ -1873,8 +1911,10 @@ Usage: stems config [OPTIONS] <COMMAND>
 Commands:
   get    Print the value at a config path (e.g. stems.shop-api.env.PORT)
   set    Set a value in stems.local.yaml
-  diff   Show what applying the changed config would do
-  apply  Apply the changed config to running stems
+  unset  Remove a value from stems.local.yaml
+  diff   Show what applying the changed config would do (the daemon's plan: STEM ACTION FIELDS HOT)
+  apply  Apply the changed config to running stems: stop removed stems, restart changed ones in
+         dependency order, hot-apply the rest
   help   Print this message or the help of the given subcommand(s)
 
 Options:
@@ -2001,10 +2041,54 @@ Global options:
           [env: STEMS_HOME]
 ```
 
+### `stems config unset`
+
+```text
+Remove a value from stems.local.yaml
+
+Usage: stems config unset [OPTIONS] <PATH>
+
+Arguments:
+  <PATH>
+          Dotted config path
+
+Options:
+  -h, --help
+          Print help
+
+Global options:
+      --workspace <PATH>
+          Workspace directory or stems.yaml path (default: $STEMS_WORKSPACE, else walk up from the
+          current directory)
+
+      --json
+          Emit the JSON envelope (the default when stdout is not a terminal)
+
+      --human
+          Emit human text even when stdout is not a terminal
+
+      --no-color
+          Disable colours in human output
+          
+          [env: STEMS_NO_COLOR]
+
+  -q, --quiet
+          Print only errors in human mode
+
+  -v, --verbose...
+          More detail (repeat for more: -vv)
+
+      --home <PATH>
+          Root for daemon state, sockets, locks and logs (default: ~/Library/Application
+          Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
+          
+          [env: STEMS_HOME]
+```
+
 ### `stems config diff`
 
 ```text
-Show what applying the changed config would do
+Show what applying the changed config would do (the daemon's plan: STEM ACTION FIELDS HOT)
 
 Usage: stems config diff [OPTIONS]
 
@@ -2044,9 +2128,14 @@ Global options:
 ### `stems config apply`
 
 ```text
-Apply the changed config to running stems
+Apply the changed config to running stems: stop removed stems, restart changed ones in dependency
+order, hot-apply the rest
 
-Usage: stems config apply [OPTIONS]
+Usage: stems config apply [OPTIONS] [STEMS]...
+
+Arguments:
+  [STEMS]...
+          Only these stems' changes (removals of running stems always apply)
 
 Options:
   -y, --yes
@@ -2231,7 +2320,11 @@ Global options:
 ### `stems mcp`
 
 ```text
-Run the MCP server (agent interface)
+Run the MCP server (agent interface).
+
+Serves the workspace's daemon to an MCP client (Claude Code, Cursor, ...) over stdio (default) or
+local HTTP: tools, custom scripts as `<stem>__<script>` tools, resources and prompts. See
+docs/mcp.md.
 
 Usage: stems mcp [OPTIONS]
 
@@ -2246,10 +2339,11 @@ Options:
           [default: stdio]
 
       --port <PORT>
-          Port for --transport http
+          Port for --transport http (binds 127.0.0.1 only) [default: 7070]
 
       --auto-start
-          Start the daemon if it is not running
+          Start the daemon if it is not running; when the client disconnects, stop it again if this
+          server started it and no stem is running
 
   -h, --help
           Print help (see a summary with '-h')

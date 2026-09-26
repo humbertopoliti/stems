@@ -1,0 +1,647 @@
+{
+  "tools": [
+    {
+      "name": "list_stems",
+      "description": "List the workspace's stems (services): type, description, enabled, dependencies, ports, custom scripts, and the live state when the daemon runs. Works without a daemon.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_status",
+      "description": "Live state of each stem: lifecycle state, glyph (healthy/degraded/failed/stopped/...), reason, pid, ports, uptime, restarts, health summary, latest metrics. Secrets are redacted.",
+      "inputSchema": {
+        "properties": {
+          "stems": {
+            "description": "Only these stems (default: every enabled stem).",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": []
+          }
+        },
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_graph",
+      "description": "The dependency graph: nodes {name, type, status, glyph, reason} and edges {from, to, condition, soft, protocol, via}. Live status when the daemon runs, config only otherwise.",
+      "inputSchema": {
+        "properties": {
+          "focus": {
+            "description": "Only this stem, its dependencies and its dependants.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "profile": {
+            "description": "Only the stems of this profile (with their hard dependencies).",
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "start",
+      "description": "Start stems (and their unstarted hard dependencies unless no_deps) and wait until they are ready. Returns {ok, ready, failed, skipped}.",
+      "inputSchema": {
+        "required": [
+          "stems"
+        ],
+        "properties": {
+          "stems": {
+            "description": "Stems to start.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "no_deps": {
+            "description": "Do not start unstarted hard dependencies.",
+            "type": "boolean",
+            "default": false
+          },
+          "timeout_ms": {
+            "description": "Overall deadline in milliseconds.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null,
+            "minimum": 0
+          }
+        },
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "stop",
+      "description": "Stop stems. Running dependants make this fail with HAS_DEPENDANTS unless cascade is true.",
+      "inputSchema": {
+        "required": [
+          "stems"
+        ],
+        "properties": {
+          "stems": {
+            "description": "Stems to stop.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cascade": {
+            "description": "Also stop running dependants (otherwise `HAS_DEPENDANTS`).",
+            "type": "boolean",
+            "default": false
+          },
+          "timeout_ms": {
+            "description": "Per-stem stop grace override in milliseconds.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null,
+            "minimum": 0
+          }
+        },
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "restart",
+      "description": "Restart stems keeping their ports; with build, run each stem's build script between stop and start.",
+      "inputSchema": {
+        "required": [
+          "stems"
+        ],
+        "properties": {
+          "stems": {
+            "description": "Stems to restart (allocated ports are kept).",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "no_deps": {
+            "description": "Do not start unstarted hard dependencies.",
+            "type": "boolean",
+            "default": false
+          },
+          "build": {
+            "description": "Stop, run each stem's `build` script, then start (deliverable 16).",
+            "type": "boolean",
+            "default": false
+          },
+          "timeout_ms": {
+            "description": "Overall deadline in milliseconds.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null,
+            "minimum": 0
+          }
+        },
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "up",
+      "description": "Bring stems up (a profile, or named stems with their dependencies) and wait until ready; sends progress notifications. fresh is destructive (needs confirm and agent.allow_destructive).",
+      "inputSchema": {
+        "properties": {
+          "stems": {
+            "description": "Stems to start (their hard dependencies are added); empty = the profile's stems.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": []
+          },
+          "profile": {
+            "description": "Profile to bring up when `stems` is empty (default: the workspace's default profile, else every enabled stem).",
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "fresh": {
+            "description": "Destructive: stop the planned stems, run their `reset` scripts and clear their stamps first so `setup`/`seed` run again. Needs `confirm: true` and `agent.allow_destructive`.",
+            "type": "boolean",
+            "default": false
+          },
+          "confirm": {
+            "description": "Confirms a destructive call (`fresh`), after asking the user.",
+            "type": "boolean",
+            "default": false
+          },
+          "timeout_ms": {
+            "description": "Overall deadline in milliseconds (default: each stem's start timeout).",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null,
+            "minimum": 0
+          }
+        },
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "down",
+      "description": "Stop stems (default: every running stem). all (also stops the daemon) and volumes (removes docker volumes) are destructive (need confirm and agent.allow_destructive).",
+      "inputSchema": {
+        "properties": {
+          "stems": {
+            "description": "Stems to stop; empty = every running stem.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": []
+          },
+          "all": {
+            "description": "Destructive: stop everything and shut the daemon down. Needs `confirm: true` and `agent.allow_destructive`.",
+            "type": "boolean",
+            "default": false
+          },
+          "volumes": {
+            "description": "Destructive: also remove the docker volumes of the selected stems. Needs `confirm: true` and `agent.allow_destructive`.",
+            "type": "boolean",
+            "default": false
+          },
+          "confirm": {
+            "description": "Confirms a destructive call (`all`, `volumes`), after asking the user.",
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "run_script",
+      "description": "Run a stem or workspace script with arguments by name and wait for it: {ok, exit, duration_ms, tail (last output lines), error}. Custom scripts are also published as <stem>__<script> tools.",
+      "inputSchema": {
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "stem": {
+            "description": "Owning stem; omit for a workspace-level script.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "name": {
+            "description": "Script name (see the `<stem>__<script>` tools for custom scripts).",
+            "type": "string"
+          },
+          "args": {
+            "description": "Arguments by name, validated against the script's declared `args` (`{\"email\": \"a@b.c\"}`); invalid ones fail with `SCRIPT_ARGS_INVALID`.",
+            "type": "object",
+            "additionalProperties": true,
+            "default": {}
+          },
+          "start_deps": {
+            "description": "Start the script's `requires:` stems first if they are not healthy.",
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_logs",
+      "description": "Captured log records (oldest first, at most 500 per call) filtered by stems, time, level, regex; paginate with next_cursor. truncated is true when not every matching record is in the result.",
+      "inputSchema": {
+        "properties": {
+          "stems": {
+            "description": "Only these stems (default: all).",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": []
+          },
+          "since": {
+            "description": "Records at or after this time: a duration before now (`10m`, `1h30m`) or an RFC 3339 instant.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "level": {
+            "description": "Level: `error` (exactly) or `warn+` (warn and above).",
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "grep": {
+            "description": "Only records whose text matches this regex.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "tail": {
+            "description": "Only the last `n` matching records (then paged oldest first).",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null,
+            "minimum": 0
+          },
+          "cursor": {
+            "description": "`next_cursor` of a previous call: continue after it (the other filters are taken from the cursor).",
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "limit": {
+            "description": "Records per call (default and maximum 500).",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null,
+            "minimum": 0
+          }
+        },
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_metrics",
+      "description": "CPU, memory and process counts per stem (latest sample, optional history), with totals.",
+      "inputSchema": {
+        "properties": {
+          "stems": {
+            "description": "Only these stems (default: every enabled stem).",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": []
+          },
+          "history": {
+            "description": "Include the samples of this last period (`5m`, `30s`).",
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_events",
+      "description": "The daemon's event log (state changes, scripts, health, watchdogs, ...) with who caused each event (actor), oldest first; filter by kinds and actor, page with since_seq.",
+      "inputSchema": {
+        "properties": {
+          "since_seq": {
+            "description": "Only events with a greater `seq` (use the previous result's `next_since_seq`); default: every buffered event.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null,
+            "minimum": 0
+          },
+          "kinds": {
+            "description": "Only these kinds (`stem.state`, or a prefix with `*`: `script.*`).",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": []
+          },
+          "actor": {
+            "description": "Only events caused by this actor (`mcp:<client>`, `cli:<user>`, `daemon`).",
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "limit": {
+            "description": "Events per call, oldest first (default 100, at most 500).",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null,
+            "minimum": 0
+          }
+        },
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_config",
+      "description": "The resolved workspace config (or one stem's), secrets redacted. Works without a daemon.",
+      "inputSchema": {
+        "properties": {
+          "stem": {
+            "description": "Only this stem's resolved config.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "effective": {
+            "description": "Add the table of defaults applied to unset fields.",
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "doctor",
+      "description": "Check that this machine can run the workspace (tools, ports, Docker, daemon, orphans). fix is destructive (needs confirm and agent.allow_destructive). Works without a daemon.",
+      "inputSchema": {
+        "properties": {
+          "fix": {
+            "description": "Destructive: apply the safe fixes (stale locks, orphans, ...), then check again. Needs `confirm: true` and `agent.allow_destructive`.",
+            "type": "boolean",
+            "default": false
+          },
+          "confirm": {
+            "description": "Confirms a destructive call (`fix`), after asking the user.",
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "reset",
+      "description": "Destructive: stop stems, run their reset scripts and clear their stamps (data is lost). Needs confirm and agent.allow_destructive.",
+      "inputSchema": {
+        "required": [
+          "stems"
+        ],
+        "properties": {
+          "stems": {
+            "description": "Stems to reset: stopped, their `reset` scripts run, stamps cleared.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "confirm": {
+            "description": "Required (destructive): confirms the call, after asking the user. The workspace must also set `agent.allow_destructive`.",
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "watch_pause",
+      "description": "Pause file watchdogs (all, or some stems').",
+      "inputSchema": {
+        "properties": {
+          "stems": {
+            "description": "Only these stems; empty = every watchdog (global pause; a global resume also clears every per-stem pause).",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": []
+          }
+        },
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "watch_resume",
+      "description": "Resume file watchdogs (all, or some stems').",
+      "inputSchema": {
+        "properties": {
+          "stems": {
+            "description": "Only these stems; empty = every watchdog (global pause; a global resume also clears every per-stem pause).",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": []
+          }
+        },
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_health",
+      "description": "The last health probe results per stem (outcome, latency, detail), failures in a row and recent transitions.",
+      "inputSchema": {
+        "properties": {
+          "stems": {
+            "description": "Only these stems (default: every stem).",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": []
+          },
+          "last": {
+            "description": "Probe results per stem, newest last (default 10, at most 50).",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null,
+            "minimum": 0
+          }
+        },
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_outputs",
+      "description": "Evaluated stem outputs (URLs, connection strings, ...); secret outputs are always redacted.",
+      "inputSchema": {
+        "properties": {
+          "stems": {
+            "description": "Only these stems (default: every stem that declares outputs).",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": []
+          }
+        },
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "echo_svc__ping",
+      "description": "Prints pong (custom script `ping` of stem `echo-svc`; returns the run_script result)",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    }
+  ]
+}

@@ -188,12 +188,49 @@ fn down_output(r: &DownResult) -> CommandOutput {
     for f in &r.failed {
         human.push_str(&format!("failed: {}: {}\n", f.stem, f.error.message));
     }
+    if !r.volumes_removed.is_empty() {
+        human.push_str(&format!("volumes removed: {}\n", list(&r.volumes_removed)));
+    }
     if r.daemon_stopping {
         human.push_str("daemon stopped\n");
     }
     CommandOutput::data(to_value(r))
         .with_human(human)
         .with_errors(Errors(errors))
+}
+
+/// `down --volumes` is destructive (14): `--yes`, or a `y` on a terminal
+/// (human mode only); otherwise `DESTRUCTIVE_NOT_CONFIRMED` (exit 2), like
+/// `stems reset`.
+fn confirm_volumes(args: &DownArgs, mode: Mode) -> Result<(), Error> {
+    if !args.volumes || args.yes {
+        return Ok(());
+    }
+    let what = if args.stems.is_empty() {
+        "every docker stem".to_string()
+    } else {
+        args.stems.join(", ")
+    };
+    if mode == Mode::Human && std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        let mut err = std::io::stderr();
+        let _ = write!(
+            err,
+            "`stems down --volumes` deletes the docker volumes (and their data) of {what}. Continue? [y/N] "
+        );
+        let _ = err.flush();
+        let mut line = String::new();
+        if std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line).is_ok()
+            && matches!(line.trim().to_lowercase().as_str(), "y" | "yes")
+        {
+            return Ok(());
+        }
+    }
+    Err(Error::new(
+        ErrorCode::DestructiveNotConfirmed,
+        format!("`stems down --volumes` deletes the docker volumes (and their data) of {what}"),
+    )
+    .with_hint("rerun with `--yes` to confirm")
+    .with_details(json!({ "command": "down", "flag": "--volumes", "stems": args.stems })))
 }
 
 fn list(v: &[String]) -> String {
@@ -320,16 +357,36 @@ async fn up_async(
         .filter(|k| !k.is_empty())
         .filter_map(|k| ctx.env.get(k).map(|v| (k.clone(), v.clone())))
         .collect();
+    if args.profile.is_some() && !args.stems.is_empty() {
+        return Err(Error::usage(
+            "`--profile` cannot be combined with stem names",
+            "name the stems to start, or pass --profile alone (names always win over profiles)",
+        )
+        .into());
+    }
+    // `--profile`, else `STEMS_PROFILE` (26); the daemon falls back to the
+    // workspace default (`profile:`, `default_profile`, `default`).
+    let profile = args.profile.clone().or_else(|| {
+        ctx.env
+            .get(stems_core::selection::ENV_PROFILE)
+            .filter(|p| !p.is_empty())
+            .cloned()
+    });
     let t = client::target(ctx)?;
     // The fast doctor subset (19): Docker must be reachable if the selection
-    // needs it, before anything (even the daemon) starts. Config errors are
-    // left to the `up` RPC (so is `--profile`, until 26 resolves profiles).
-    if args.profile.is_none()
-        && let Ok(resolved) = stems_config::load(ctx.load_options())
+    // needs it, before anything (even the daemon) starts. Config errors
+    // (profile ones included) are left to the `up` RPC.
+    if let Ok(resolved) = stems_config::load(ctx.load_options())
+        && let Ok(sel) = stems_core::Selection::resolve(
+            &resolved.workspace,
+            profile.as_deref(),
+            &args.stems,
+            stems_core::SelectOptions::default(),
+        )
     {
         stems_daemon::doctor::preflight_up(
             &resolved,
-            &args.stems,
+            &sel.closure,
             ctx.env.get("DOCKER_HOST").cloned(),
         )
         .await?;
@@ -339,10 +396,12 @@ async fn up_async(
     let may_prompt = mode == Mode::Human
         && std::io::IsTerminal::is_terminal(&std::io::stdin())
         && !(args.yes || args.adopt_orphans || args.kill_orphans || args.kill_foreign);
+    // The TUI (27) reads the keyboard itself: no stdin EOF watcher then.
+    let tui = tui_choice_up(ctx, args, mode)?;
     let mut exit = if args.detach {
         None
     } else {
-        Some(Exit::install(!may_prompt)?)
+        Some(Exit::install(!may_prompt && tui.is_plain())?)
     };
     let (c, auto_started) = connect_or_start(ctx, &t).await?;
     let orphans = match handle_orphans(ctx, args, mode, &t, &c).await {
@@ -354,13 +413,13 @@ async fn up_async(
             return Err(e);
         }
     };
-    if may_prompt && exit.is_some() {
+    if may_prompt && exit.is_some() && tui.is_plain() {
         exit = Some(Exit::install(true)?);
     }
     let mut events = subscribe_now(&c).await?;
     let params = UpParams {
         stems: args.stems.clone(),
-        profile: args.profile.clone(),
+        profile,
         detach: args.detach,
         timeout_ms: ms(timeout),
         fail_fast: !args.no_fail_fast,
@@ -370,6 +429,7 @@ async fn up_async(
         fresh: args.fresh,
         force_overlays: args.force_overlays,
         sync: args.sync,
+        no_watch: args.no_watch,
     };
     let rpc_timeout = timeout.map_or(LONG, |d| d + Duration::from_secs(10));
     let call = c.call_with_timeout::<UpResult>(Method::UP, &params, rpc_timeout);
@@ -435,6 +495,16 @@ async fn up_async(
         stdout,
         &mut std::io::stderr(),
     );
+    if !tui.is_plain() {
+        drop(events);
+        let session = TuiSession {
+            mode: stems_tui::AttachMode::Up,
+            profile: args.profile.clone(),
+            view: None,
+            owns_daemon: auto_started,
+        };
+        return Ok(run_tui_session(ctx, &t, &c, tui, session, mode, stdout).await);
+    }
     if mode == Mode::Human {
         let _ = writeln!(
             stdout,
@@ -472,11 +542,16 @@ async fn handle_orphans(
     t: &Target,
     c: &Client,
 ) -> Result<Vec<Value>, Errors> {
-    let found = match orphans::scan(ctx, t, &[c.info().pid as i32]) {
+    let mut found = match orphans::scan(ctx, t, &[c.info().pid as i32]) {
         Ok(f) => f,
         // Config errors are reported by the `up` RPC itself.
         Err(_) => return Ok(Vec::new()),
     };
+    // Running containers of this workspace not in state (14/15), only when
+    // the selection needs Docker (process-only `up` never talks to Docker).
+    if args.profile.is_none() && orphans::selection_needs_docker(ctx, &args.stems) {
+        found.extend(orphans::scan_containers(ctx, t, true).await);
+    }
     if found.is_empty() {
         return Ok(Vec::new());
     }
@@ -504,7 +579,13 @@ async fn handle_orphans(
         )
         .into());
     }
-    Ok(orphans::resolve(&found, &policy, Some(c)).await)
+    Ok(orphans::resolve(
+        &found,
+        &policy,
+        Some(c),
+        ctx.env.get("DOCKER_HOST").cloned(),
+    )
+    .await)
 }
 
 /// Shut an auto-started daemon down again if it runs nothing (an `up` that
@@ -569,34 +650,39 @@ async fn teardown(
 // --------------------------------------------------------------------------
 
 /// `stems down`.
-pub fn down(ctx: &Ctx, args: &DownArgs) -> CommandOutput {
+pub fn down(ctx: &Ctx, args: &DownArgs, mode: Mode) -> CommandOutput {
     block_on(async {
-        if args.volumes {
-            return Err(Errors::from(
-                Error::not_implemented("`stems down --volumes`", "14")
-                    .with_details(json!({ "flag": "--volumes", "deliverable": "14" })),
-            ));
-        }
+        confirm_volumes(args, mode).map_err(Errors::from)?;
         let timeout = parse_timeout(args.timeout.as_deref())?;
         let t = client::target(ctx)?;
         // No daemon but the state file lists stems (a crashed daemon): start
         // one, which adopts what is still alive, and tear it all down
-        // (deliverable 11, FR-CR-3).
-        let (c, recovered) = match connect_to(&t, client::options(ctx)).await {
-            Ok(c) => (c, false),
+        // (deliverable 11, FR-CR-3). `--volumes` without a daemon (the
+        // stems are already down) also needs one, briefly (14).
+        let (c, recovered, temporary) = match connect_to(&t, client::options(ctx)).await {
+            Ok(c) => (c, false, false),
             Err(e) if e.code == ErrorCode::DaemonNotRunning && has_recorded_stems(&t) => {
                 let (c, _) = connect_or_start(ctx, &t).await?;
-                (c, true)
+                (c, true, false)
             }
-            Err(e) => return Err(e.into()),
+            Err(e) if e.code == ErrorCode::DaemonNotRunning && args.volumes => {
+                let (c, _) = connect_or_start(ctx, &t).await?;
+                (c, false, true)
+            }
+            Err(e) => return Err(Errors::from(e)),
         };
         let params = DownParams {
             stems: args.stems.clone(),
             all: args.all || (recovered && args.stems.is_empty()),
             timeout_ms: ms(timeout),
+            volumes: args.volumes,
         };
         let bound = grace_sum(ctx) + Duration::from_secs(10);
         let res: DownResult = c.call_with_timeout(Method::DOWN, &params, bound).await?;
+        if temporary && !res.daemon_stopping {
+            let _ = c.shutdown().await;
+            wait_daemon_gone(&t, WAIT).await;
+        }
         if res.daemon_stopping {
             wait_daemon_gone(&t, WAIT).await;
         }
@@ -675,13 +761,31 @@ pub fn restart(ctx: &Ctx, args: &RestartArgs) -> CommandOutput {
 // attach
 // --------------------------------------------------------------------------
 
-/// `stems attach`: follow the daemon; exiting never stops anything.
+/// `stems attach`: the dashboard (27), or the plain event stream
+/// (`STEMS_TUI=0`, `--json`, stdout not a terminal); exiting never stops
+/// anything.
 pub fn attach(ctx: &Ctx, args: &AttachArgs, mode: Mode, stdout: &mut dyn Write) -> CommandOutput {
-    if args.headless || args.script.is_some() || args.frames_out.is_some() || args.view.is_some() {
-        return CommandOutput::failed(
-            Error::not_implemented("the TUI (`stems attach --view/--headless`)", "27")
-                .with_details(json!({ "deliverable": "27" })),
-        );
+    let tui = match tui_choice_attach(ctx, args) {
+        Ok(t) => t,
+        Err(e) => return CommandOutput::failed(e),
+    };
+    if !tui.is_plain() {
+        return block_on(async {
+            let t = client::target(ctx)?;
+            let c = connect_to(&t, client::options(ctx)).await?;
+            let session = TuiSession {
+                mode: stems_tui::AttachMode::Attach,
+                profile: None,
+                view: args.view.map(|v| match v {
+                    crate::cli::View::Table => stems_tui::ViewKind::Table,
+                    crate::cli::View::Detail => stems_tui::ViewKind::Detail,
+                    crate::cli::View::Graph => stems_tui::ViewKind::Graph,
+                }),
+                owns_daemon: false,
+            };
+            Ok::<_, Errors>(run_tui_session(ctx, &t, &c, tui, session, mode, stdout).await)
+        })
+        .unwrap_or_else(CommandOutput::failed);
     }
     block_on(async {
         let c = client::connect(ctx).await?;
@@ -712,6 +816,230 @@ pub fn attach(ctx: &Ctx, args: &AttachArgs, mode: Mode, stdout: &mut dyn Write) 
         )
     })
     .unwrap_or_else(CommandOutput::failed)
+}
+
+// --------------------------------------------------------------------------
+// The TUI (deliverable 27)
+// --------------------------------------------------------------------------
+
+/// How `attach` / attached `up` present the daemon.
+#[derive(Debug)]
+pub enum TuiChoice {
+    /// The plain event stream (`STEMS_TUI=0`, `--json`, no terminal).
+    Plain,
+    /// The dashboard in the terminal.
+    Terminal,
+    /// Replay a key script, frames as text.
+    Headless(stems_tui::HeadlessOptions),
+}
+
+impl TuiChoice {
+    fn is_plain(&self) -> bool {
+        matches!(self, TuiChoice::Plain)
+    }
+}
+
+/// What the TUI session is for.
+pub struct TuiSession {
+    mode: stems_tui::AttachMode,
+    profile: Option<String>,
+    view: Option<stems_tui::ViewKind>,
+    owns_daemon: bool,
+}
+
+fn env_flag(ctx: &Ctx, k: &str) -> Option<bool> {
+    ctx.env
+        .get(k)
+        .filter(|v| !v.is_empty())
+        .map(|v| !matches!(v.trim(), "0" | "false" | "no" | "off" | "n" | "f"))
+}
+
+fn headless_options(
+    script: Option<&str>,
+    size: Option<&str>,
+    frames_out: Option<std::path::PathBuf>,
+) -> Result<stems_tui::HeadlessOptions, Error> {
+    let text = match script {
+        None => "frame".to_string(),
+        Some(s) => match s.strip_prefix('@') {
+            Some(path) => std::fs::read_to_string(path).map_err(|e| {
+                Error::usage(
+                    format!("cannot read the script {path}: {e}"),
+                    "pass `--script @FILE` with a readable file, or the tokens inline",
+                )
+            })?,
+            None => s.to_string(),
+        },
+    };
+    let tokens = stems_tui::script::parse(&text).map_err(|e| {
+        Error::usage(
+            format!("invalid headless script: {e}"),
+            "see docs/tui.md for the tokens (keys, wait:<state>, frame, view:<name>)",
+        )
+    })?;
+    let mut opts = stems_tui::HeadlessOptions::new(tokens);
+    if let Some(sz) = size {
+        opts.size = stems_tui::parse_size(sz).ok_or_else(|| {
+            Error::usage(format!("invalid size `{sz}`"), "use e.g. `--size 120x40`")
+        })?;
+    }
+    opts.frames_out = frames_out;
+    Ok(opts)
+}
+
+fn stdout_is_tty() -> bool {
+    std::io::IsTerminal::is_terminal(&std::io::stdout())
+}
+
+/// `stems attach`: `--headless`/`--script` replay; else the dashboard on a
+/// terminal (or with `STEMS_TUI_FORCE=1`) unless `STEMS_TUI=0` or `--json`.
+fn tui_choice_attach(ctx: &Ctx, args: &AttachArgs) -> Result<TuiChoice, Error> {
+    if args.headless || args.script.is_some() {
+        return Ok(TuiChoice::Headless(headless_options(
+            args.script.as_deref(),
+            args.size.as_deref(),
+            args.frames_out.clone(),
+        )?));
+    }
+    if env_flag(ctx, stems_tui::ENV_TUI) == Some(false) || ctx.global.json {
+        return Ok(TuiChoice::Plain);
+    }
+    if env_flag(ctx, stems_tui::ENV_TUI_FORCE) == Some(true) || stdout_is_tty() {
+        return Ok(TuiChoice::Terminal);
+    }
+    Ok(TuiChoice::Plain)
+}
+
+/// Attached `stems up`: `STEMS_TUI_SCRIPT` replays headless (tests); else
+/// the dashboard on a terminal in human mode (or `STEMS_TUI_FORCE=1`)
+/// unless `STEMS_TUI=0`; else the plain stream.
+fn tui_choice_up(ctx: &Ctx, args: &UpArgs, mode: Mode) -> Result<TuiChoice, Error> {
+    if args.detach {
+        return Ok(TuiChoice::Plain);
+    }
+    if let Some(script) = ctx
+        .env
+        .get(stems_tui::ENV_TUI_SCRIPT)
+        .filter(|s| !s.is_empty())
+    {
+        return Ok(TuiChoice::Headless(headless_options(
+            Some(script),
+            ctx.env.get(stems_tui::ENV_TUI_SIZE).map(String::as_str),
+            ctx.env
+                .get(stems_tui::ENV_TUI_FRAMES_OUT)
+                .filter(|s| !s.is_empty())
+                .map(std::path::PathBuf::from),
+        )?));
+    }
+    if env_flag(ctx, stems_tui::ENV_TUI) == Some(false) {
+        return Ok(TuiChoice::Plain);
+    }
+    if env_flag(ctx, stems_tui::ENV_TUI_FORCE) == Some(true)
+        || (mode == Mode::Human && stdout_is_tty())
+    {
+        return Ok(TuiChoice::Terminal);
+    }
+    Ok(TuiChoice::Plain)
+}
+
+/// Run the TUI on `t`'s daemon, then act on how it ended: `StopAll` runs
+/// the attached-mode teardown (`down --all`), `Detach` leaves everything.
+async fn run_tui_session(
+    ctx: &Ctx,
+    t: &Target,
+    c: &Client,
+    choice: TuiChoice,
+    session: TuiSession,
+    mode: Mode,
+    stdout: &mut dyn Write,
+) -> CommandOutput {
+    let mut opts = client::options(ctx);
+    opts.actor = opts.actor.replacen("cli:", "tui:", 1);
+    let tc = match connect_to(t, opts).await {
+        Ok(c) => std::sync::Arc::new(c),
+        Err(e) => return CommandOutput::failed(e).compact(),
+    };
+    let env = |k: &str| ctx.env.get(k).cloned();
+    // Headless frames must not depend on the developer's ~/.config: only
+    // STEMS_UI_CONFIG is honoured there.
+    let headless = matches!(choice, TuiChoice::Headless(_));
+    let (prefs, warning) = stems_tui::Prefs::load(|k: &str| {
+        if headless && k != stems_tui::prefs::ENV_UI_CONFIG {
+            None
+        } else {
+            env(k)
+        }
+    });
+    let mut model = stems_tui::Model::new(session.mode, prefs, session.view);
+    model.profile = session.profile;
+    model.owns_daemon = session.owns_daemon && session.mode == stems_tui::AttachMode::Attach;
+    model.message = warning;
+    // `o` (30): $EDITOR, else $VISUAL (the TUI falls back to `vi`).
+    model.editor = env("EDITOR")
+        .filter(|e| !e.trim().is_empty())
+        .or_else(|| env("VISUAL"));
+    let mut frames: Option<Vec<String>> = None;
+    let result = match choice {
+        TuiChoice::Plain => Ok(stems_tui::Outcome::Detach),
+        TuiChoice::Terminal => {
+            model.ascii = stems_core::status::prefers_ascii(env);
+            let panic_test = env_flag(ctx, stems_tui::ENV_PANIC_TEST) == Some(true);
+            stems_tui::run_terminal(tc, model, stems_tui::TerminalOptions { panic_test }).await
+        }
+        TuiChoice::Headless(h) => {
+            // Deterministic frames: ASCII only when asked for explicitly.
+            model.ascii = env_flag(ctx, "STEMS_ASCII") == Some(true);
+            let print = !(ctx.global.json && session.mode == stems_tui::AttachMode::Attach);
+            let r = stems_tui::run_headless_output(tc, model, h, |out| {
+                if print {
+                    match out {
+                        stems_tui::HeadlessOutput::Frame(n, text) => {
+                            let _ = writeln!(stdout, "{}", stems_tui::frame_header(n));
+                            let _ = write!(stdout, "{text}");
+                        }
+                        // The OSC 52 sequence of a copy (`y`, 29), on its own line.
+                        stems_tui::HeadlessOutput::Raw(raw) => {
+                            let _ = writeln!(stdout, "{raw}");
+                        }
+                    }
+                    let _ = stdout.flush();
+                }
+            })
+            .await;
+            r.map(|run| {
+                frames = Some(run.frames);
+                run.outcome
+            })
+        }
+    };
+    match result {
+        Ok(stems_tui::Outcome::StopAll) => teardown(ctx, t, c, "quit", mode, stdout).await,
+        Ok(stems_tui::Outcome::Detach) => {
+            let mut data = json!({ "detached": true });
+            if let Some(f) = frames {
+                data["frames"] = json!(f);
+            }
+            let human = if session.mode == stems_tui::AttachMode::Up {
+                "detached: the stems keep running (`stems attach` reconnects, `stems down --all` stops them)\n"
+            } else {
+                ""
+            };
+            let out = CommandOutput::data(data).with_human(human).compact();
+            if session.mode == stems_tui::AttachMode::Attach {
+                // Frames were printed as they were taken; the envelope only
+                // with an explicit --json.
+                out.with_raw("")
+            } else {
+                out
+            }
+        }
+        Err(e) => {
+            if session.mode == stems_tui::AttachMode::Up {
+                let _ = teardown(ctx, t, c, "the dashboard failed", mode, stdout).await;
+            }
+            CommandOutput::failed(e).compact()
+        }
+    }
 }
 
 #[cfg(test)]

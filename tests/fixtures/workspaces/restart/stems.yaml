@@ -1,0 +1,43 @@
+# restart — fixture for tests/features/restart/*.feature (deliverable 22).
+#
+# `api` is shop-api standalone (no DB) with an http probe on /healthz, so
+# the chaos endpoints can crash it (`/__chaos/crash?code=N`) or make it
+# unhealthy (`/__chaos/unhealthy?for=10s`). Its restart settings are the
+# defaults (on-failure, max 5, window 10m, backoff 500ms x2 up to 30s);
+# scenarios change them with local overrides (stems.api.restart.*).
+#
+# `hooked` is the same service with lifecycle scripts that append to
+# hooks.log in the workspace: a policy restart runs pre_start/post_start
+# again but never setup/seed (their stamps are intact).
+schema_version: 1
+name: restart
+
+stems:
+  api:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    env: { SHOP_CHAOS: "1" }
+    ports: [{ name: http, port: 18491 }]
+    health:
+      type: http
+      url: "http://127.0.0.1:${stem.api.port}/healthz"
+      interval: 200ms
+      timeout: 150ms
+      retries: 2
+      start_timeout: 15s
+    stop_grace: 1s
+    scripts: { start: python3 app.py }
+  hooked:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    env: { SHOP_CHAOS: "1" }
+    ports: [{ name: http, port: 18492 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 2, start_timeout: 15s }
+    stop_grace: 1s
+    restart: { policy: on-failure }
+    scripts:
+      start: python3 app.py
+      setup: { command: 'echo setup >> hooks.log', cwd: workspace }
+      pre_start: { command: 'echo pre_start >> hooks.log', cwd: workspace }
+      post_start: { command: 'echo post_start >> hooks.log', cwd: workspace }
+      seed: { command: 'echo seed >> hooks.log', cwd: workspace }

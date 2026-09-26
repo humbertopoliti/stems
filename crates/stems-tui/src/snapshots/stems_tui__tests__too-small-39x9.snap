@@ -1,0 +1,9 @@
+---
+source: crates/stems-tui/src/tests.rs
+expression: text
+---
+
+
+
+          terminal too small
+           39x9 (need 40x10)

@@ -247,7 +247,8 @@ pub fn parse_log_line(raw: &str, stream: OutputStreamKind) -> OutputLine {
     }
 }
 
-fn labels_of(inspect: &ContainerInspectResponse) -> Option<&HashMap<String, String>> {
+/// The container's labels (`Config.Labels`).
+pub fn labels_of(inspect: &ContainerInspectResponse) -> Option<&HashMap<String, String>> {
     inspect.config.as_ref()?.labels.as_ref()
 }
 
@@ -915,6 +916,21 @@ impl DockerRuntime {
         Ok(())
     }
 
+    /// Remove the named volume `name` (as Docker knows it, e.g.
+    /// `hello-shop_pgdata`). `Ok(false)` when it does not exist. A volume
+    /// still used by a container is an error (`Container`).
+    pub async fn remove_volume(&self, name: &str) -> Result<bool, RuntimeError> {
+        match self
+            .docker
+            .remove_volume(name, None::<RemoveVolumeOptions>)
+            .await
+        {
+            Ok(()) => Ok(true),
+            Err(e) if is_not_found(&e) => Ok(false),
+            Err(e) => Err(self.map_err(e)),
+        }
+    }
+
     /// Restart with `spec`: recreate when its hash differs from the running
     /// container's `stems.spec_hash` label, else `docker restart`. Either
     /// way the old handle is released and a new one returned.
@@ -973,6 +989,125 @@ impl DockerRuntime {
         self.registry()
             .get(&h.id())
             .map_or(0, |l| l.dropped.load(Ordering::Relaxed))
+    }
+
+    /// One `GET /containers/<id>/stats?stream=false` reading (metrics, 25):
+    /// Docker collects two CPU readings ~1 s apart, so the CPU % is ready
+    /// without keeping a stream open. `Ok(None)` when the container is gone.
+    pub async fn stats(&self, container_id: &str) -> Result<Option<ContainerStats>, RuntimeError> {
+        let opts = bollard::query_parameters::StatsOptions {
+            stream: false,
+            one_shot: false,
+        };
+        let mut s = self.docker.stats(container_id, Some(opts));
+        match s.next().await {
+            Some(Ok(r)) => Ok(Some(container_stats(&r))),
+            Some(Err(e)) if is_not_found(&e) => Ok(None),
+            Some(Err(e)) => Err(self.map_err(e)),
+            None => Ok(None),
+        }
+    }
+
+    /// Sizes of the named volumes that exist (`GET /system/df?type=volume`;
+    /// `--disk`, FR-MT-3). Volumes Docker reports without a size (`-1`) are
+    /// left out.
+    pub async fn volume_sizes(
+        &self,
+        names: &[String],
+    ) -> Result<HashMap<String, u64>, RuntimeError> {
+        let opts = bollard::query_parameters::DataUsageOptions {
+            _type: Some(vec!["volume".into()]),
+            verbose: false,
+        };
+        let df = self
+            .docker
+            .df(Some(opts))
+            .await
+            .map_err(|e| self.map_err(e))?;
+        let items = df.volume_usage.and_then(|v| v.items).unwrap_or_default();
+        Ok(volume_sizes_of(items, names))
+    }
+}
+
+/// `{name: size}` for `names` from `df` volume items (`{Name, UsageData:
+/// {Size}}`).
+pub fn volume_sizes_of(
+    items: impl IntoIterator<Item = serde_json::Value>,
+    names: &[String],
+) -> HashMap<String, u64> {
+    items
+        .into_iter()
+        .filter_map(|v| {
+            let name = v.get("Name")?.as_str()?.to_string();
+            let size = v.get("UsageData")?.get("Size")?.as_i64()?;
+            (names.contains(&name) && size >= 0).then_some((name, size as u64))
+        })
+        .collect()
+}
+
+/// A container's resource usage from one stats reading (metrics, 25).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ContainerStats {
+    /// CPU % by Docker's formula (100 = one core).
+    pub cpu_pct: f64,
+    /// Memory usage minus the page cache (`inactive_file` on cgroup v2,
+    /// `total_inactive_file` / `cache` on v1), like `docker stats`.
+    pub mem_bytes: u64,
+    /// Processes in the container (`pids_stats.current`), at least 1.
+    pub pids: u32,
+}
+
+/// [`ContainerStats`] from a raw stats response: `cpu_delta / system_delta
+/// × online_cpus × 100` ([`stems_core::metrics::docker_cpu_percent`]).
+pub fn container_stats(r: &bollard::models::ContainerStatsResponse) -> ContainerStats {
+    let total = |c: &Option<bollard::models::ContainerCpuStats>| {
+        let c = c.as_ref();
+        (
+            c.and_then(|c| c.cpu_usage.as_ref())
+                .and_then(|u| u.total_usage)
+                .unwrap_or(0),
+            c.and_then(|c| c.system_cpu_usage).unwrap_or(0),
+        )
+    };
+    let (cpu, sys) = total(&r.cpu_stats);
+    let (pre_cpu, pre_sys) = total(&r.precpu_stats);
+    let online = r
+        .cpu_stats
+        .as_ref()
+        .and_then(|c| {
+            c.online_cpus.or_else(|| {
+                c.cpu_usage
+                    .as_ref()
+                    .and_then(|u| u.percpu_usage.as_ref())
+                    .map(|p| p.len() as u32)
+            })
+        })
+        .unwrap_or(1);
+    let cpu_pct = stems_core::metrics::docker_cpu_percent(
+        cpu.saturating_sub(pre_cpu),
+        sys.saturating_sub(pre_sys),
+        online,
+    );
+    let mem = r.memory_stats.as_ref();
+    let usage = mem.and_then(|m| m.usage).unwrap_or(0);
+    let cache = mem
+        .and_then(|m| m.stats.as_ref())
+        .and_then(|s| {
+            s.get("inactive_file")
+                .or_else(|| s.get("total_inactive_file"))
+                .or_else(|| s.get("cache"))
+                .copied()
+        })
+        .unwrap_or(0);
+    let pids = r
+        .pids_stats
+        .as_ref()
+        .and_then(|p| p.current)
+        .map_or(1, |n| u32::try_from(n).unwrap_or(u32::MAX).max(1));
+    ContainerStats {
+        cpu_pct,
+        mem_bytes: usage.saturating_sub(cache),
+        pids,
     }
 }
 

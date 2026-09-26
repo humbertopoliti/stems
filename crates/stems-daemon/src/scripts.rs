@@ -75,6 +75,9 @@ pub struct RunContext {
     /// Extra fields for the `script.started` / `script.finished` events'
     /// `data` (17: `run_id`, `attempt`).
     pub event_extra: serde_json::Map<String, serde_json::Value>,
+    /// Health `command` probes (21): no `script.*` events, no run record,
+    /// no log output (the caller logs the tail when it matters).
+    pub quiet: bool,
 }
 
 /// How a script run ended.
@@ -394,7 +397,9 @@ impl ScriptRunner {
         if let Some(s) = stem {
             ev = ev.stem(s);
         }
-        self.events.emit(ev);
+        if !ctx.quiet {
+            self.events.emit(ev);
+        }
 
         let handle = match self.runtime.start(&StartSpec::Process(spec)).await {
             Ok(h) => h,
@@ -402,8 +407,10 @@ impl ScriptRunner {
                 let err = Error::new(ErrorCode::ScriptFailed, format!("cannot start {what}: {e}"))
                     .with_hint("check the script's file (it must be readable) and `cwd`")
                     .with_details(json!({ "stem": stem, "script": name, "reason": "spawn" }));
-                self.finished(stem, name, &ctx, ExitStatus::UNKNOWN, t0, false, false);
-                self.record(stem, name, started, None, false);
+                if !ctx.quiet {
+                    self.finished(stem, name, &ctx, ExitStatus::UNKNOWN, t0, false, false);
+                    self.record(stem, name, started, None, false);
+                }
                 return Err(err);
             }
         };
@@ -411,7 +418,11 @@ impl ScriptRunner {
         // Output: log it (tagged) and keep the tail.
         let tail: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
         let pump = self.runtime.output_stream(&handle).map(|mut stream| {
-            let writer = self.sink.script_writer(owner, name);
+            let writer = if ctx.quiet {
+                None
+            } else {
+                self.sink.script_writer(owner, name)
+            };
             let tail = tail.clone();
             tokio::spawn(async move {
                 while let Some(ev) = stream.recv_event().await {
@@ -467,7 +478,10 @@ impl ScriptRunner {
             }
         }
         self.runtime.release(&handle);
-        if timed_out && let Some(w) = self.sink.script_writer(owner, name) {
+        if timed_out
+            && !ctx.quiet
+            && let Some(w) = self.sink.script_writer(owner, name)
+        {
             let t = timeout.map_or(0.0, |d| d.as_secs_f64());
             w.line(format!(
                 "[stems] script `{name}` timed out after {t}s; killed"
@@ -475,8 +489,10 @@ impl ScriptRunner {
             .await;
         }
 
-        self.finished(stem, name, &ctx, status, t0, timed_out, cancelled);
-        self.record(stem, name, started, status.code, timed_out);
+        if !ctx.quiet {
+            self.finished(stem, name, &ctx, status, t0, timed_out, cancelled);
+            self.record(stem, name, started, status.code, timed_out);
+        }
         let tail = tail
             .lock()
             .unwrap_or_else(|e| e.into_inner())

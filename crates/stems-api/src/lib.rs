@@ -21,21 +21,35 @@ use stems_core::{Error, ErrorCode};
 
 #[cfg(feature = "client")]
 pub mod client;
+pub mod health;
 pub mod lifecycle;
 pub mod logs;
+pub mod metrics;
 pub mod overlays;
+pub mod reload;
 pub mod repos;
 pub mod scripts;
+pub mod watch;
 
+pub use health::{HealthParams, HealthResult, HealthStatus, ProbeOutcome, ProbeRecord, StemHealth};
 pub use lifecycle::{
     DownParams, DownResult, PortStatus, RestartParams, StartParams, StatusParams, StatusResult,
     StatusSummary, StemFailure, StemStatus, StopParams, UpParams, UpResult,
 };
+pub use lifecycle::{OutputValue, OutputsParams, OutputsResult, REDACTED, StemOutputs};
 pub use logs::{
     ExportLogsParams, ExportLogsResult, LogFilter, LogRecord, QUERY_LOGS_CAP, QueryLogsParams,
     QueryLogsResult, SubscribeLogsAck, SubscribeLogsParams,
 };
+pub use metrics::{
+    DiskDir, DiskUsage, LimitStatus, MetricsParams, MetricsResult, MetricsSort, MetricsSummary,
+    MetricsTotals, StemMetrics,
+};
 pub use overlays::{OverlayEntry, OverlayFileStatus, OverlaysParams, OverlaysResult};
+pub use reload::{
+    AppliedChange, ConfigApplyParams, ConfigApplyResult, ConfigDiffParams, ConfigDiffResult,
+    FailedChange, ReloadAction, ReloadPlan, SkippedChange, StemChange,
+};
 pub use repos::{
     RepoAction, RepoSource, RepoStatus, RepoSyncResult, ReposStatusParams, ReposStatusResult,
     ReposSyncParams, ReposSyncResult,
@@ -44,6 +58,10 @@ pub use scripts::{
     BuildParams, BuildResult, CatalogScript, ResetParams, ResetResult, RunScriptAccepted,
     RunScriptParams, RunScriptResult, ScriptArgsInput, ScriptCatalogParams, ScriptCatalogResult,
     ScriptRunSummary, StampEntry, StampsParams, StampsResult,
+};
+pub use watch::{
+    StemWatchStatus, WatchPauseParams, WatchPauseResult, WatchRuleStatus, WatchStatusParams,
+    WatchStatusResult, WatchSummary,
 };
 
 /// Version of the wire protocol. Bumped on any incompatible change.
@@ -181,11 +199,36 @@ string_newtype! {
         RUN_SCRIPT = "run_script";
         /// Every runnable script ([`ScriptCatalogParams`] -> [`ScriptCatalogResult`]).
         SCRIPT_CATALOG = "script_catalog";
+        // --- TUI (27) ------------------------------------------------------------
+        /// One stem's resolved config as the daemon loaded it (`{stem}` ->
+        /// the `stems_config::Stem` JSON, as `stems show` prints a stem).
+        STEM_CONFIG = "stem_config";
         // --- git codebases (20) -----------------------------------------------
         /// Clone / fetch / check out git codebases ([`ReposSyncParams`] -> [`ReposSyncResult`]).
         REPOS_SYNC = "repos_sync";
         /// Per-stem codebase state ([`ReposStatusParams`] -> [`ReposStatusResult`]).
         REPOS_STATUS = "repos_status";
+        // --- health (21) -------------------------------------------------------
+        /// Last probe results per stem ([`HealthParams`] -> [`HealthResult`]).
+        HEALTH = "health";
+        // --- metrics (25) ------------------------------------------------------
+        /// Latest samples, history, totals, disk ([`MetricsParams`] -> [`MetricsResult`]).
+        METRICS = "metrics";
+        // --- outputs (26) --------------------------------------------------------
+        /// Evaluated stem outputs, secrets redacted ([`OutputsParams`] -> [`OutputsResult`]).
+        OUTPUTS = "outputs";
+        // --- watchdogs (24) ------------------------------------------------------
+        /// Pause watchdogs, all or some stems' ([`WatchPauseParams`] -> [`WatchPauseResult`]).
+        WATCH_PAUSE = "watch_pause";
+        /// Resume watchdogs ([`WatchPauseParams`] -> [`WatchPauseResult`]).
+        WATCH_RESUME = "watch_resume";
+        /// Rules and state of every watchdog ([`WatchStatusParams`] -> [`WatchStatusResult`]).
+        WATCH_STATUS = "watch_status";
+        // --- config reload (33) --------------------------------------------------
+        /// The pending reload plan ([`ConfigDiffParams`] -> [`ConfigDiffResult`]).
+        CONFIG_DIFF = "config_diff";
+        /// Apply the pending plan ([`ConfigApplyParams`] -> [`ConfigApplyResult`]).
+        CONFIG_APPLY = "config_apply";
         // --- crash recovery (11) ----------------------------------------------
         /// Adopt orphaned processes as their stems (`{orphans: [{stem, pid}]}`
         /// -> `{adopted: [{stem, pid, pgid}], failed: [{stem, pid, error}]}`).
@@ -223,8 +266,14 @@ string_newtype! {
         STEM_RESTARTING = "stem.restarting";
         /// A stem exhausted its restart budget.
         STEM_GAVE_UP = "stem.gave_up";
-        /// A health probe result changed.
+        /// A stem's health changed (`healthy` <-> `unhealthy`/`unknown`, 21):
+        /// one per transition, never per probe. `data: {probe, detail, latency_ms, consecutive_failures}`.
         STEM_HEALTH = "stem.health";
+        /// A metric threshold (`limits:`) was crossed or cleared (25; `data:
+        /// {metric, value, limit, for_s, state: crossed|cleared}`).
+        STEM_THRESHOLD = "stem.threshold";
+        /// A stem's outputs were evaluated (26; `data: {names}`, never values).
+        STEM_OUTPUTS = "stem.outputs";
         /// A process exited (`data: {code, signal}`).
         PROCESS_EXITED = "process.exited";
         /// A line of output of a debug-started process (`data: {stream, text}`).
@@ -233,6 +282,9 @@ string_newtype! {
         UP_STARTED = "up.started";
         /// `up` finished.
         UP_FINISHED = "up.finished";
+        /// A profile's hard dependencies were added to `up` (26; `data:
+        /// {profile, added, requested}`).
+        PROFILE_EXPANDED = "profile.expanded";
         /// `down` began.
         DOWN_STARTED = "down.started";
         /// `down` finished.
@@ -243,16 +295,34 @@ string_newtype! {
         SCRIPT_STARTED = "script.started";
         /// A script finished.
         SCRIPT_FINISHED = "script.finished";
-        /// A file watch fired.
+        /// A file watch fired (24; `data: {paths (≤ 10), path_count, action,
+        /// rule_index}`).
         WATCH_TRIGGERED = "watch.triggered";
-        /// Watching was paused.
+        /// Watching was paused (24; `stem` or `data: {global: true}`).
         WATCH_PAUSED = "watch.paused";
-        /// Watch config changed.
+        /// Watching was resumed (24; `stem` or `data: {global: true}`).
+        WATCH_RESUMED = "watch.resumed";
+        /// A watchdog action finished (24; `data: {action, rule_index, ok, error?}`).
+        WATCH_ACTION_FINISHED = "watch.action_finished";
+        /// A running stem's watch rules were re-applied in place (33; `data:
+        /// {rules, running}`).
         WATCH_RECONFIGURED = "watch.reconfigured";
-        /// The config changed on disk.
+        /// The config changed on disk (33; `data: {plan, sources}` with the
+        /// [`ReloadPlan`]); nothing is applied yet.
         CONFIG_CHANGED = "config.changed";
-        /// The config on disk is invalid.
+        /// The config on disk is invalid; the applied one stays (33; `data:
+        /// {errors}`).
         CONFIG_INVALID = "config.invalid";
+        /// A reload plan was applied (33; `data: {applied, failed, skipped,
+        /// workspace, auto}`).
+        CONFIG_APPLIED = "config.applied";
+        /// A command used the applied config while a change is pending (33;
+        /// `data: {method, stems}`).
+        CONFIG_PENDING = "config.pending";
+        /// The script catalog (MCP tools) of the applied config changed (33;
+        /// `data: {added, removed}` tool names). `stems mcp` sends
+        /// `notifications/tools/list_changed`.
+        TOOLS_CHANGED = "tools.changed";
         /// An overlay was written (`data: {dest, backup}`; 18).
         OVERLAY_MATERIALISED = "overlay.materialised";
         /// An unmodified overlay was removed on stop (`data: {dest}`).
@@ -271,6 +341,11 @@ string_newtype! {
         REPO_SKIPPED_DIRTY = "repo.skipped_dirty";
         /// Cloning / fetching / checking out failed (20; `data: {error}`).
         REPO_FAILED = "repo.failed";
+        /// Image pull progress of a docker stem, one per layer status change
+        /// (14; `data: {stem, image, layer, status}`).
+        DOCKER_PULL = "docker.pull";
+        /// One line of a docker stem's image build output (14; `data: {stem, line}`).
+        DOCKER_BUILD = "docker.build";
     }
 }
 
@@ -557,6 +632,25 @@ pub struct EventsParams {
     /// At most this many (the oldest first).
     #[serde(default)]
     pub limit: Option<usize>,
+    /// Only these kinds (`stem.state`; a trailing `*` matches a prefix:
+    /// `stem.*`). Empty: every kind (31).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kinds: Vec<String>,
+    /// Only events caused by this actor (`mcp:claude-code`, `cli:alice`) (31).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor: Option<String>,
+}
+
+impl EventsParams {
+    /// Whether `ev` passes the `kinds` / `actor` filters (not `since_seq`).
+    pub fn matches(&self, ev: &Event) -> bool {
+        let kind_ok = self.kinds.is_empty()
+            || self.kinds.iter().any(|k| match k.strip_suffix('*') {
+                Some(prefix) => ev.kind.as_str().starts_with(prefix),
+                None => ev.kind == k.as_str(),
+            });
+        kind_ok && self.actor.as_ref().is_none_or(|a| &ev.actor == a)
+    }
 }
 
 /// `events` result.
@@ -792,6 +886,24 @@ mod tests {
             Some("restart the daemon: stems daemon stop && stems daemon start")
         );
         assert_eq!(e.exit_code(), 4);
+    }
+
+    #[test]
+    fn events_filters() {
+        let ev = sample_event();
+        let p = |kinds: &[&str], actor: Option<&str>| EventsParams {
+            kinds: kinds.iter().map(|k| k.to_string()).collect(),
+            actor: actor.map(str::to_string),
+            ..EventsParams::default()
+        };
+        assert!(p(&[], None).matches(&ev));
+        assert!(p(&["stem.state"], Some("cli:alice")).matches(&ev));
+        assert!(p(&["stem.*"], None).matches(&ev));
+        assert!(!p(&["script.*"], None).matches(&ev));
+        assert!(!p(&[], Some("mcp:x")).matches(&ev));
+        // Old clients omit the new fields.
+        let old: EventsParams = serde_json::from_value(json!({"since_seq": 3})).unwrap();
+        assert!(old.matches(&ev));
     }
 
     #[test]

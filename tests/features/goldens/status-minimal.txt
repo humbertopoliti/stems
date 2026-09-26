@@ -1,4 +1,4 @@
-STEM      TYPE     STATUS      REASON                                    PID    PORTS       UPTIME  RESTARTS
-echo-svc  process  OK healthy  ready (process alive for start_period...  94322  http:18090  0s      0
+STEM      TYPE     STATUS      REASON  PID    PORTS       UPTIME  RESTARTS
+echo-svc  process  OK healthy  -       50762  http:18090  0s      0
 
 1 healthy, 0 degraded, 0 failed, 0 starting, 0 stopped, 0 unknown

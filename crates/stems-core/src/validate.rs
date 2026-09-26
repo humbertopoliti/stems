@@ -20,8 +20,9 @@ use crate::graph;
 use crate::tools::{SystemTools, ToolVersion, ToolVersions, version_command};
 use crate::version::{Version, VersionReq};
 
-/// `schema_version` values this binary understands.
-pub const SUPPORTED_SCHEMA_VERSIONS: &[u32] = &[1];
+/// `schema_version` values this binary understands (the table with the
+/// minimum stems version per schema lives in [`stems_config::compat`]).
+pub use stems_config::compat::SUPPORTED_SCHEMA_VERSIONS;
 
 /// Knobs for [`validate`].
 #[derive(Clone, Debug, Default)]
@@ -172,23 +173,25 @@ impl Validator<'_> {
             .iter()
             .map(ToString::to_string)
             .collect();
+        let this = env!("CARGO_PKG_VERSION");
+        let required = stems_config::compat::required_stems(n, this);
         let e = Error::new(
             ErrorCode::SchemaVersionUnsupported,
             format!(
-                "schema_version {n} requires a newer stems than {} (supported: {})",
-                env!("CARGO_PKG_VERSION"),
+                "schema_version {n} requires stems {required} (this is stems {this}, which supports schema_version {})",
                 supported.join(", ")
             ),
         )
         .with_path(ConfigPath::root().key("schema_version"))
         .with_hint(format!(
-            "upgrade stems (`brew upgrade stems`) to one that supports schema_version {n}, or set `schema_version: {}`",
-            SUPPORTED_SCHEMA_VERSIONS.last().copied().unwrap_or(1)
+            "upgrade stems (`stems upgrade`) to a release that supports schema_version {n}, or set `schema_version: {}`",
+            stems_config::compat::LATEST_SCHEMA_VERSION
         ))
         .with_details(json!({
             "schema_version": n,
             "supported": SUPPORTED_SCHEMA_VERSIONS,
-            "stems_version": env!("CARGO_PKG_VERSION"),
+            "stems_version": this,
+            "required_stems": required,
         }));
         self.push(e, None);
     }
@@ -555,6 +558,30 @@ impl Validator<'_> {
                 self.push(e, None);
             }
         }
+        // Aliases, `default_profile` and the local `profile:` name defined
+        // profiles and resolve to a stem list (26).
+        for (name, profile) in &self.ws.profiles {
+            if let Profile::Alias(_) = profile
+                && let Err(e) = crate::selection::resolve_profile(self.ws, name)
+            {
+                let at = ConfigPath::root().key("profiles").key(name);
+                self.push(e.with_path(at.clone()), Some(&at));
+            }
+        }
+        for (key, value) in [
+            ("default_profile", &self.ws.default_profile),
+            ("profile", &self.ws.profile),
+        ] {
+            if let Some(p) = value
+                && !self.ws.profiles.contains_key(p)
+            {
+                let at = ConfigPath::root().key(key);
+                let e = crate::selection::resolve_profile(self.ws, p)
+                    .err()
+                    .unwrap_or_else(|| Error::internal("profile lookup"));
+                self.push(e.with_path(at.clone()), Some(&at));
+            }
+        }
     }
 
     /// `requires:` tool versions.
@@ -628,6 +655,15 @@ pub fn check_requirement(
         }
     };
     Err(e.with_path(path))
+}
+
+/// The candidate within edit distance 2 of `name` (closest first), for
+/// "did you mean" hints elsewhere in the crate.
+pub(crate) fn closest_name<'a>(
+    name: &str,
+    candidates: impl Iterator<Item = &'a String>,
+) -> Option<&'a str> {
+    closest(name, candidates)
 }
 
 /// The candidate within edit distance 2 of `name` (closest first).

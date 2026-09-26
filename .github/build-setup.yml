@@ -1,0 +1,6 @@
+# Steps cargo-dist splices into release.yml's build-local-artifacts job
+# (dist-workspace.toml: github-build-setup) before `dist build`: generate the
+# completions and man pages that `include` packs into every tarball.
+- name: Generate completions and man pages
+  shell: bash
+  run: release/build-extras.sh target/dist-extras "${{ join(matrix.targets, ',') }}"

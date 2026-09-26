@@ -1,0 +1,28 @@
+---
+source: crates/stems-tui/src/tests.rs
+expression: text
+---
+ stems · minimal                            Graph  Table  Detail [Logs] Events
+┌ Logs: echo-svc · scrolled · level warn+ ─────────────────────────────────────┐
+│›* 12:00:00.010 ERROR chaos log line 1                                        │
+│   12:00:00.030 ERROR chaos log line 3                                        │
+│   12:00:00.050 ERROR chaos log line 5                                        │
+│     ┌ Help ────────────────────────────────────────────────────────────┐     │
+│     │ Space           pause / resume following                         │     │
+│     │ /  n / N        search (Enter keeps) · next / previous match     │     │
+│     │ L               level: all, info+, warn+, error                  │     │
+│     │ s               show / hide script output lines                  │     │
+│     │ m               merged: every stem, with prefixes                │     │
+│     │ [ / ]           previous / next stem                             │     │
+│     │ j / k, g / G    move · top / bottom (follows)                    │     │
+│     │ Enter           expand the fields of a structured line           │     │
+│     │ V, y            visual range · copy line or range                │     │
+│     │ w / t           wrap long lines / timestamps (UTC)               │     │
+│     │ Tab, Ctrl-L     next view · split pane elsewhere                 │     │
+│     │ q               quit                                             │     │
+│     └──────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│                                                                              │
+│ /line 1 · 1 match · 1/1 (n/N)                                                │
+└──────────────────────────────────────────────────────────────────────────────┘
+ minimal · profile - · daemon pid 4242 · ✓1 !0 ✗0 ·0 ?0 ↻0 Space pause · ? help…

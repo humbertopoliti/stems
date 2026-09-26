@@ -87,9 +87,9 @@ error_codes! {
     /// `include`/`extends` target missing.
     IncludeNotFound = "INCLUDE_NOT_FOUND", CONFIG,
         "an `include:` or `extends:` target does not exist or cannot be read";
-    /// `include`/`extends` loop.
+    /// `include`/`extends` loop, or an `extends` chain deeper than 5.
     IncludeCycle = "INCLUDE_CYCLE", CONFIG,
-        "`include:` / `extends:` files form a cycle";
+        "`include:` / `extends:` files form a cycle, or an `extends` chain is deeper than 5 files";
     /// Config file unreadable.
     ConfigReadFailed = "CONFIG_READ_FAILED", CONFIG,
         "a config file exists but cannot be read";
@@ -141,6 +141,9 @@ error_codes! {
     /// Strict profile misses a dependency.
     ProfileMissingDependency = "PROFILE_MISSING_DEPENDENCY", CONFIG,
         "with `strict_profiles: true`, a profile omits a hard dependency of one of its stems";
+    /// A profile name that is not defined.
+    UnknownProfile = "UNKNOWN_PROFILE", CONFIG,
+        "`--profile`, `STEMS_PROFILE`, `profile:`, `default_profile` or a profile alias names a profile that is not defined (or aliases form a loop)";
     /// Destructive op without confirmation.
     DestructiveNotConfirmed = "DESTRUCTIVE_NOT_CONFIRMED", CONFIG,
         "a destructive operation was requested without `--yes` / `confirm: true`";
@@ -208,6 +211,9 @@ error_codes! {
     /// Another daemon holds the workspace lock.
     LockHeld = "LOCK_HELD", RUNTIME,
         "another stems daemon holds this workspace's lock";
+    /// `stems upgrade` could not run the package manager, or it failed.
+    UpgradeFailed = "UPGRADE_FAILED", RUNTIME,
+        "`stems upgrade` could not run the upgrade command, or it failed";
     /// Command exists but its deliverable has not landed.
     NotImplemented = "NOT_IMPLEMENTED", RUNTIME,
         "the command is not implemented yet in this build";
@@ -447,7 +453,9 @@ impl From<Diagnostic> for Error {
             path: d.path,
             span: d.location,
             hint,
-            details: Value::Object(Default::default()),
+            details: d
+                .details
+                .unwrap_or_else(|| Value::Object(Default::default())),
         }
     }
 }

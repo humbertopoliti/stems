@@ -2,9 +2,14 @@
 source: crates/stems-cli/tests/help.rs
 expression: help
 ---
-Apply the changed config to running stems
+Apply the changed config to running stems: stop removed stems, restart changed ones in dependency
+order, hot-apply the rest
 
-Usage: stems config apply [OPTIONS]
+Usage: stems config apply [OPTIONS] [STEMS]...
+
+Arguments:
+  [STEMS]...
+          Only these stems' changes (removals of running stems always apply)
 
 Options:
   -y, --yes

@@ -11,9 +11,10 @@ TAGS ?=
 E2E_ENV = STEMS_E2E_FEATURE="$(FEATURE)" STEMS_E2E_TAGS="$(TAGS)"
 
 .PHONY: check check-docker fmt fmt-check clippy test test-python lint-yaml \
-        build e2e e2e-docker e2e-selftest trace docs
+        build e2e e2e-docker e2e-selftest trace docs \
+        test-release smoke size dist-plan
 
-check: fmt-check clippy test test-python lint-yaml e2e e2e-selftest trace
+check: fmt-check clippy test test-python test-release lint-yaml e2e e2e-selftest trace
 
 check-docker: check e2e-docker
 
@@ -65,10 +66,12 @@ e2e:
 	$(CARGO) build -p stems-cli
 	$(E2E_ENV) $(E2E_RUN)
 
-# Docker tier: also @docker scenarios (run serially; needs a Docker daemon).
+# Docker tier: also @docker scenarios (run serially; needs a Docker daemon
+# with compose v2). Image pulls/builds are slow: 300 s per scenario unless
+# STEMS_E2E_SCENARIO_TIMEOUT says otherwise (see docs/docker.md).
 e2e-docker:
 	$(CARGO) build -p stems-cli
-	$(E2E_ENV) STEMS_E2E_DOCKER=1 $(E2E_RUN)
+	$(E2E_ENV) STEMS_E2E_DOCKER=1 STEMS_E2E_SCENARIO_TIMEOUT=$${STEMS_E2E_SCENARIO_TIMEOUT:-300} $(E2E_RUN)
 
 # Harness self-test: runs only @harness-selftest and passes iff the After
 # hook reported LEAK: (it then kills the stray process itself).
@@ -86,3 +89,30 @@ trace:
 docs:
 	$(CARGO) doc --workspace --no-deps
 	$(CARGO) run -q -p stems-cli -- __docs > docs/cli.md
+
+# --- release (deliverable 32; see release/RELEASING.md) ----------------------
+
+# Formula template golden and render script tests.
+test-release:
+	$(PYTHON) -m unittest discover -s release/tests
+
+# Smoke-test an installed or built binary end to end (Docker-free):
+#   make smoke                         builds target/release/stems first
+#   make smoke BIN=/opt/homebrew/bin/stems SMOKE_BREW=1
+BIN ?=
+smoke:
+	@if [ -z "$(BIN)" ]; then $(CARGO) build --release -p stems-cli; fi
+	release/smoke.sh $(if $(BIN),$(BIN),target/release/stems)
+
+# Binary size budget: the release binary must stay under 25 MB
+# (strip + thin LTO in [profile.release]).
+SIZE_BUDGET_BYTES ?= 26214400
+size:
+	$(CARGO) build --release -p stems-cli
+	@bytes=$$(wc -c < target/release/stems | tr -d ' '); \
+	echo "target/release/stems: $$bytes bytes ($$((bytes / 1048576)) MiB; budget $$(($(SIZE_BUDGET_BYTES) / 1048576)) MiB)"; \
+	[ "$$bytes" -le $(SIZE_BUDGET_BYTES) ] || { echo "size: over budget" >&2; exit 1; }
+
+# What a tag would build and publish (needs `dist`: cargo install cargo-dist).
+dist-plan:
+	dist plan

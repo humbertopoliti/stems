@@ -82,3 +82,27 @@ jobs:
           path: target/e2e-failures/
           if-no-files-found: ignore
           retention-days: 7
+
+  # Release packaging (deliverable 32): binary size budget (< 25 MB),
+  # formula template golden, completions/man generation, cargo-dist config.
+  release-checks:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain (from rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: make test-release
+      - run: make size
+      - run: STEMS_BIN=target/release/stems release/build-extras.sh
+      - run: release/smoke.sh target/release/stems
+        env:
+          SMOKE_STRICT_LEAKS: "1"
+      - name: cargo-dist plan
+        run: |
+          curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.32.0/cargo-dist-installer.sh | sh
+          dist plan

@@ -1,0 +1,35 @@
+---
+source: crates/stems-daemon/src/supervisor/containers/tests.rs
+expression: golden
+---
+{
+  "name": "hello-shop-postgres",
+  "image": "postgres:16",
+  "ports": [
+    {
+      "host": 15432,
+      "container": 5432,
+      "proto": "tcp"
+    }
+  ],
+  "env": {
+    "PORT": "5432",
+    "POSTGRES_DB": "shop",
+    "POSTGRES_PASSWORD": "local",
+    "POSTGRES_USER": "shop",
+    "STEMS_RUN_ID": "RUN",
+    "STEMS_STEM": "postgres",
+    "STEMS_WORKSPACE": "<ws>"
+  },
+  "binds": [
+    "hello-shop_pgdata:/var/lib/postgresql/data"
+  ],
+  "labels": {
+    "stems.run_id": "RUN",
+    "stems.spec_hash": "[hash]",
+    "stems.stem": "postgres",
+    "stems.workspace": "hello-shop"
+  },
+  "stop_timeout": 2,
+  "network": "hello-shop_net"
+}

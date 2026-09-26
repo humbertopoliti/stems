@@ -1,0 +1,29 @@
+# docker-pg — one postgres docker stem (deliverable 14,
+# tests/features/docker/*.feature; needs Docker: `make e2e-docker`).
+#
+# Container `docker-pg-db`, labels stems.workspace/stems.stem/team, named
+# volume `docker-pg_pgdata` (config name `pgdata`, prefixed `<ws>_`), host
+# port 18532 (remapped by the harness) -> container port 5432. Readiness
+# comes from the container's own healthcheck (`pg_isready`) through the
+# `docker` probe.
+schema_version: 1
+name: docker-pg
+
+stems:
+  db:
+    type: docker
+    image: postgres:16
+    ports: [{ name: pg, port: 18532, container_port: 5432 }]
+    env:
+      POSTGRES_USER: shop
+      POSTGRES_PASSWORD: local
+      POSTGRES_DB: shop
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    labels: { team: shop }
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shop -d shop"]
+      interval: 500ms
+      timeout: 2s
+      retries: 60
+    health: { type: docker, interval: 400ms, timeout: 300ms, retries: 3, start_timeout: 120s }
+    stop_grace: 2s

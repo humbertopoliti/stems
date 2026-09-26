@@ -1,7 +1,7 @@
 //! Every default value, in one place. `defaults_table()` is golden-tested so
 //! that any change is a reviewed diff.
 
-use crate::types::{ArgType, WatchAction, WatchRoot};
+use crate::types::{ArgType, AutoApply, WatchAction, WatchRoot};
 use crate::types::{ByteSize, Condition, Dur, FileMode, HealthType, RestartPolicy, StemType};
 
 /// `schema_version`.
@@ -20,6 +20,8 @@ pub const LOGS_RING: u32 = 10_000;
 pub const METRICS_INTERVAL: Dur = Dur::from_secs(2);
 /// `metrics.persist`.
 pub const METRICS_PERSIST: bool = false;
+/// `config.reload.auto_apply` (33): changes wait for `stems config apply`.
+pub const RELOAD_AUTO_APPLY: AutoApply = AutoApply::Off;
 /// `repos_dir`, relative to the workspace root.
 pub const REPOS_DIR: &str = ".stems/repos";
 
@@ -135,6 +137,7 @@ pub fn defaults_table() -> Vec<(&'static str, String)> {
         ("logs.ring", LOGS_RING.to_string()),
         ("metrics.interval", t(METRICS_INTERVAL)),
         ("metrics.persist", METRICS_PERSIST.to_string()),
+        ("config.reload.auto_apply", "false".into()),
         ("repos_dir", REPOS_DIR.into()),
         ("stems.<n>.enabled", STEM_ENABLED.to_string()),
         ("stems.<n>.stop_grace", t(STOP_GRACE)),
@@ -157,7 +160,7 @@ pub fn defaults_table() -> Vec<(&'static str, String)> {
         ("stems.<n>.service (compose)", "<stem name>".into()),
         (
             "stems.<n>.project_name (compose)",
-            "<workspace name>".into(),
+            "stems-<workspace name>".into(),
         ),
         ("stems.<n>.adopt (compose)", COMPOSE_ADOPT.to_string()),
         ("stems.<n>.depends_on[].condition", json(&DEP_CONDITION)),

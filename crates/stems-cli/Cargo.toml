@@ -16,6 +16,7 @@ path = "src/main.rs"
 clap = { workspace = true, features = ["derive", "env", "wrap_help"] }
 stems-config = { workspace = true }
 clap_complete = "4.6.11"
+clap_mangen = "0.3.3"
 anyhow = "1.0.104"
 serde_json.workspace = true
 serde.workspace = true
@@ -23,6 +24,8 @@ serde_yaml_ng.workspace = true
 stems-core.workspace = true
 stems-api = { workspace = true }
 stems-daemon = { workspace = true }
+stems-tui = { workspace = true }
+stems-mcp = { workspace = true }
 tokio = { workspace = true }
 futures = { workspace = true }
 nix = { workspace = true }
@@ -32,3 +35,8 @@ chrono = { workspace = true }
 [dev-dependencies]
 insta.workspace = true
 tempfile.workspace = true
+
+# Release packaging (deliverable 32): cargo-dist only builds packages that
+# opt in; this is the one shipped (config in /dist-workspace.toml).
+[package.metadata.dist]
+dist = true

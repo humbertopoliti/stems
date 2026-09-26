@@ -410,6 +410,17 @@ impl ComposeRuntime {
         Ok(())
     }
 
+    /// `docker compose rm -f -s <service>` for `spec` without a handle
+    /// (the daemon's `down` of a compose stem that was already stopped).
+    pub async fn remove_service(&self, spec: &ComposeSpec) -> Result<(), RuntimeError> {
+        let inv = self.spec_invocation(spec);
+        let lock = self.project_lock(&inv.target.project);
+        let _guard = lock.lock().await;
+        self.run(&inv, ComposeCommand::rm(&inv.target), Some(QUICK_TIMEOUT))
+            .await
+            .map(|_| ())
+    }
+
     /// Adopt the recorded container of `spec` after a daemon restart: same
     /// id, compose labels name `spec.project_name`/`spec.service`, running.
     pub async fn adopt_service(&self, record: &AdoptRecord, spec: &ComposeSpec) -> Option<Handle> {

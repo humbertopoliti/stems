@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
+use indexmap::IndexMap;
 use serde_yaml_ng::{Mapping, Value};
 
 use crate::codebase::normalize;
@@ -10,6 +11,12 @@ use crate::merge::merge;
 use crate::path::ConfigPath;
 use crate::raw::RawWorkspace;
 use crate::spans::SpanIndex;
+
+/// Maximum number of `extends` hops followed from a file.
+pub const MAX_EXTENDS_DEPTH: usize = 5;
+
+/// Which file defined each stem.
+type Origins = IndexMap<String, PathBuf>;
 
 /// Loads a file and everything it pulls in, in merge order.
 #[derive(Default)]
@@ -67,6 +74,17 @@ impl Loader {
     /// Load `file` with its `extends` and `include`s expanded. Errors are
     /// collected in `self.errors`; `None` means the file could not be used.
     pub fn load(&mut self, file: &Path, from: Option<&Path>) -> Option<Value> {
+        self.load_file(file, from, 0).map(|(v, _)| v)
+    }
+
+    /// [`Self::load`], also returning which file defined each stem, with
+    /// `extends_depth` = `extends` hops from the top file.
+    fn load_file(
+        &mut self,
+        file: &Path,
+        from: Option<&Path>,
+        extends_depth: usize,
+    ) -> Option<(Value, Origins)> {
         let file = normalize(file);
         if self.stack.contains(&file) {
             let mut chain: Vec<String> =
@@ -137,17 +155,55 @@ impl Loader {
         let dir = file.parent().map(Path::to_path_buf).unwrap_or_default();
         self.stack.push(file.clone());
         let mut result = Value::Mapping(Mapping::new());
-        if let Some(base) = &raw.extends
-            && let Some(v) = self.load(&dir.join(base), Some(&file))
-        {
-            merge(&mut result, v, &ConfigPath::root());
-        }
-        for inc in &raw.include {
-            if let Some(v) = self.load(&dir.join(inc), Some(&file)) {
+        let mut origins = Origins::new();
+        if let Some(base) = &raw.extends {
+            if extends_depth >= MAX_EXTENDS_DEPTH {
+                self.errors.push(
+                    Diagnostic::new(
+                        codes::INCLUDE_CYCLE,
+                        format!(
+                            "`extends` chain deeper than {MAX_EXTENDS_DEPTH} files: {} extends {base}",
+                            file.display()
+                        ),
+                    )
+                    .with_path(ConfigPath::root().key("extends"))
+                    .with_location(local_spans.get(&ConfigPath::root().key("extends")).cloned())
+                    .with_hint(format!(
+                        "flatten the chain: at most {MAX_EXTENDS_DEPTH} levels of `extends` are followed (use `include:` for side-by-side files)"
+                    ))
+                    .with_details(serde_json::json!({
+                        "file": file,
+                        "extends": base,
+                        "max_depth": MAX_EXTENDS_DEPTH,
+                    })),
+                );
+            } else if let Some((v, o)) =
+                self.load_file(&dir.join(base), Some(&file), extends_depth + 1)
+            {
+                // A base is meant to be overridden: its stems are not duplicates.
                 merge(&mut result, v, &ConfigPath::root());
+                origins.extend(o);
+            }
+        }
+        // Stems contributed by each file of this level: every include, then
+        // this file's own content. Two contributors of one stem = DUPLICATE_STEM.
+        let mut level: IndexMap<String, PathBuf> = IndexMap::new();
+        for inc in &raw.include {
+            if let Some((v, o)) = self.load_file(&dir.join(inc), Some(&file), extends_depth) {
+                merge(&mut result, v, &ConfigPath::root());
+                for (stem, def) in o {
+                    self.check_duplicate(&mut level, &stem, &def, None);
+                }
             }
         }
         self.stack.pop();
+        for stem in raw.stems.keys() {
+            let at = local_spans
+                .get(&ConfigPath::root().key("stems").key(stem))
+                .cloned();
+            self.check_duplicate(&mut level, stem, &file, at);
+        }
+        origins.extend(level);
 
         let mut own = value;
         if let Value::Mapping(m) = &mut own {
@@ -157,7 +213,46 @@ impl Loader {
         merge(&mut result, own, &ConfigPath::root());
         self.spans_extend(local_spans);
         self.sources.push(file);
-        Some(result)
+        Some((result, origins))
+    }
+
+    /// Record that `def` defines `stem` at this include level; a second
+    /// file doing so is `DUPLICATE_STEM` (both paths in `details.files`).
+    fn check_duplicate(
+        &mut self,
+        level: &mut IndexMap<String, PathBuf>,
+        stem: &str,
+        def: &Path,
+        at: Option<Span>,
+    ) {
+        match level.get(stem) {
+            Some(first) if first != def => {
+                let path = ConfigPath::root().key("stems").key(stem);
+                let location = at.or_else(|| self.spans.get(&path).cloned());
+                self.errors.push(
+                    Diagnostic::new(
+                        codes::DUPLICATE_STEM,
+                        format!(
+                            "stem `{stem}` is defined in both {} and {}",
+                            first.display(),
+                            def.display()
+                        ),
+                    )
+                    .with_path(path)
+                    .with_location(location)
+                    .with_hint(
+                        "keep one definition; override fields from stems.local.yaml (or an `extends` base) instead of redefining the stem",
+                    )
+                    .with_details(serde_json::json!({
+                        "stem": stem,
+                        "files": [first, def],
+                    })),
+                );
+            }
+            _ => {
+                level.insert(stem.to_string(), def.to_path_buf());
+            }
+        }
     }
 
     fn spans_extend(&mut self, other: SpanIndex) {

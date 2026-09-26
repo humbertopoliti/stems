@@ -1,0 +1,12 @@
+---
+source: crates/stems-tui/src/logs.rs
+expression: text
+---
+┌ Logs: echo-svc · following ────────────────────────────────────────┐
+│   12:00:00.000 line 0                                              │
+│   12:00:00.010 line 1                                              │
+│›  12:00:00.010 WARN  slow request ▸ request_id=a1b2 ms=812         │
+│                                                                    │
+│                                                                    │
+│                                                                    │
+└────────────────────────────────────────────────────────────────────┘

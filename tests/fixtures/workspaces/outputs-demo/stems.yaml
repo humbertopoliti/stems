@@ -1,0 +1,60 @@
+# outputs-demo — fixture for tests/features/outputs (FR-ST-6, deliverable 26).
+#
+# `api` publishes a static output (its URL) and a secret command output;
+# `web` depends on it (condition: healthy) and prints the URL it received at
+# startup. `counter` publishes the content of `counter.txt` (the harness
+# rewrites it between restarts); `broken-output` has an output command that
+# exits 2; `needs-missing` references an output `api` does not declare.
+# Every stem is a tiny Python HTTP server; start only what a scenario needs.
+schema_version: 1
+name: outputs-demo
+
+stems:
+  api:
+    type: process
+    ports: [{ name: http, port: 18481 }]
+    scripts:
+      start: exec python3 -m http.server ${stem.self.port} --bind 127.0.0.1
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    outputs:
+      API_URL: "http://localhost:${stem.self.port}"
+      TOKEN: { command: "echo tok-$PORT", secret: true }
+    stop_grace: 1s
+  web:
+    type: process
+    depends_on: [api]
+    ports: [{ name: http, port: 18482 }]
+    env:
+      API_URL: "${stem.api.outputs.API_URL}"
+    scripts:
+      start: echo "api_url=$API_URL" && exec python3 -m http.server ${stem.self.port} --bind 127.0.0.1
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+  counter:
+    type: process
+    ports: [{ name: http, port: 18483 }]
+    scripts:
+      start: exec python3 -m http.server ${stem.self.port} --bind 127.0.0.1
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    outputs:
+      COUNT: { command: "cat '${workspace.root}/counter.txt'" }
+    stop_grace: 1s
+  broken-output:
+    type: process
+    ports: [{ name: http, port: 18484 }]
+    scripts:
+      start: exec python3 -m http.server ${stem.self.port} --bind 127.0.0.1
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    outputs:
+      BAD: { command: "echo cannot read the token >&2; exit 2" }
+    stop_grace: 1s
+  needs-missing:
+    type: process
+    depends_on: [api]
+    ports: [{ name: http, port: 18485 }]
+    env:
+      X: "${stem.api.outputs.NOPE}"
+    scripts:
+      start: exec python3 -m http.server ${stem.self.port} --bind 127.0.0.1
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s

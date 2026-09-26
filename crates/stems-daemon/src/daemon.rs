@@ -14,7 +14,7 @@ use stems_api::{
     LoadWorkspaceParams, Method, ShutdownResult, VERSION, WorkspaceLoaded,
 };
 use stems_config::{LoadOptions, Resolved};
-use stems_core::{Error, ErrorCode, ValidateOptions};
+use stems_core::{Error, ErrorCode, Errors, ValidateOptions};
 use tokio::sync::watch;
 
 use crate::debug::{DebugRpc, ENV_DEBUG_RPC};
@@ -239,6 +239,24 @@ impl Daemon {
 
     /// Load + validate a workspace, store it and emit `workspace.loaded`.
     pub fn load_workspace(&self, path: &Path, actor: &str) -> Result<WorkspaceLoaded, Error> {
+        let resolved = self.load_candidate(path, false).map_err(|errs| {
+            let all = to_value(&errs).unwrap_or(Value::Null);
+            let mut first =
+                errs.0.into_iter().next().unwrap_or_else(|| {
+                    Error::internal("workspace failed to load without an error")
+                });
+            if all.as_array().is_some_and(|a| a.len() > 1) {
+                first.details = json!({ "errors": all });
+            }
+            first
+        })?;
+        Ok(self.install_workspace(Arc::new(resolved), actor))
+    }
+
+    /// Load + validate the workspace at `path` without installing it (33:
+    /// the config watcher compares it with the applied one first). Every
+    /// error is returned. `skip_requires` skips probing `requires:` tools.
+    pub fn load_candidate(&self, path: &Path, skip_requires: bool) -> Result<Resolved, Errors> {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
         let load = LoadOptions {
             workspace: Some(path.to_path_buf()),
@@ -250,19 +268,15 @@ impl Daemon {
         // honouring `--force-overlays`), not at load (18).
         let opts = ValidateOptions {
             skip_overlays: true,
+            skip_requires,
             ..ValidateOptions::default()
         };
-        let resolved = stems_core::load_and_validate(load, &opts).map_err(|errs| {
-            let all = to_value(&errs).unwrap_or(Value::Null);
-            let mut first =
-                errs.0.into_iter().next().unwrap_or_else(|| {
-                    Error::internal("workspace failed to load without an error")
-                });
-            if all.as_array().is_some_and(|a| a.len() > 1) {
-                first.details = json!({ "errors": all });
-            }
-            first
-        })?;
+        stems_core::load_and_validate(load, &opts)
+    }
+
+    /// Make `resolved` the applied workspace: log settings, the stored
+    /// config, event `workspace.loaded` (also 33's `config apply`).
+    pub fn install_workspace(&self, resolved: Arc<Resolved>, actor: &str) -> WorkspaceLoaded {
         let ws = &resolved.workspace;
         let out = WorkspaceLoaded {
             root: ws.root.clone(),
@@ -275,7 +289,7 @@ impl Daemon {
         {
             let mut w = write(&self.workspace);
             w.root = ws.root.clone();
-            w.resolved = Some(Arc::new(resolved));
+            w.resolved = Some(resolved.clone());
         }
         tracing::info!(root = %out.root.display(), name = %out.name, stems = out.stems.len(), "workspace loaded");
         self.events.emit(
@@ -285,7 +299,7 @@ impl Daemon {
                 "stems": out.stems,
             })),
         );
-        Ok(out)
+        out
     }
 
     /// Run a daemon with the [`Supervisor`](crate::supervisor::Supervisor)
@@ -454,6 +468,7 @@ impl Handler for Daemon {
             m if m == Method::EVENTS => {
                 let p: EventsParams = params(m, p)?;
                 let mut events = self.events.replay(p.since_seq.unwrap_or(0));
+                events.retain(|e| p.matches(e));
                 if let Some(n) = p.limit {
                     events.truncate(n);
                 }

@@ -1,0 +1,28 @@
+# health-external — fixture for health/external.feature (deliverable 21,
+# FR-ST-3). `hosted` is an external stem probed over http; the scenarios
+# serve it with a stray `python3 -m http.server` on its port (declared so
+# the harness remaps it). `api` depends on it with `condition: healthy`, so
+# `up` really waits for the external probe to pass.
+schema_version: 1
+name: health-external
+
+stems:
+  hosted:
+    type: external
+    description: A hosted dependency stems only monitors
+    ports: [{ name: http, port: 18731 }]
+    health:
+      type: http
+      url: http://127.0.0.1:18731/
+      interval: 200ms
+      timeout: 500ms
+      retries: 2
+      start_timeout: 10s
+  api:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    depends_on: [{ stem: hosted, condition: healthy }]
+    ports: [{ name: http, port: 18732 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts: { start: python3 app.py }

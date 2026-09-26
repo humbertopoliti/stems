@@ -1,0 +1,28 @@
+---
+source: crates/stems-tui/src/tests.rs
+expression: text
+---
+ stems · minimal                            Graph  Table  Detail  Logs [Events]
+┌ Events · /restart_ ──────────────────────────────────────────────────────────┐
+│  TIME     KIND            STEM       FROM→TO             REASON      ACTOR   │
+│› 12:00:04 stem.restarting echo-svc   -                   failed: ex… daemon  │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+ minimal · profile - · daemon pid 4242 · ✓0 !0 ✗1 ·0 ?0 ↻0 Enter logs · ? help …

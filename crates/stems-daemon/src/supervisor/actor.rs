@@ -4,11 +4,13 @@
 //! snapshot plus a `watch` of the [`Phase`]).
 //!
 //! Per start the actor spawns two helper tasks tagged with the start's
-//! *generation*: an exit watcher (`runtime.wait`) and the readiness wait
-//! ([`Waiter`]). Their results come back as [`Cmd::Exited`] /
-//! [`Cmd::Ready`]; a result from an older generation is ignored, so a stop
-//! or restart never races a stale exit. Deliverable 22's restart loop and
-//! 24's watchdog triggers belong here.
+//! *generation*: an exit watcher (`runtime.wait`) and the health probe loop
+//! (21, [`super::probes`]; a test [`Waiter`] instead waits once). Their
+//! results come back as [`Cmd::Exited`] / [`Cmd::Ready`] / [`Cmd::Health`];
+//! a result from an older generation is ignored, so a stop or restart never
+//! races a stale exit. An exit nobody asked for goes to the restart policy
+//! (22, [`super::restart`]); 24's watchdogs use
+//! [`StemCell::restart_bypassing_policy`].
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -29,7 +31,7 @@ use super::Core;
 use super::env::{EnvInputs, build_env, render_refs};
 use super::ports::check_free;
 use super::state;
-use super::waiter::{WaitTarget, exited_error};
+use super::waiter::WaitTarget;
 use crate::events::EventDraft;
 use crate::state::{PortRecord, StemRecord};
 
@@ -69,6 +71,22 @@ pub(crate) enum Cmd {
         generation: u64,
         result: Result<(), Error>,
     },
+    /// The health probes of `generation` ask for a transition (21).
+    Health {
+        generation: u64,
+        action: super::probes::Action,
+        result: super::probes::ProbeResult,
+    },
+    /// The restart backoff of `generation` elapsed (22).
+    Respawn { generation: u64 },
+    /// The stem stayed `unhealthy` for `restart.unhealthy_grace` (22).
+    UnhealthyGrace { generation: u64 },
+    /// Restart now, bypassing the policy (watchdogs, 24).
+    ForceRestart {
+        actor: String,
+        reason: String,
+        reply: oneshot::Sender<Result<(), Error>>,
+    },
 }
 
 /// Outcome of a stop.
@@ -104,6 +122,12 @@ pub(crate) struct StemInfo {
     pub pending: bool,
     /// Cancels the script currently running for this stem (a stop kills it).
     pub script_cancel: Option<tokio_util::sync::CancellationToken>,
+    /// Probe history, failure streak, health transitions (21).
+    pub health: super::probes::HealthLog,
+    /// What evaluating the outputs needs once the start is ready (26).
+    pub outputs_ctx: Option<super::outputs::OutputsCtx>,
+    /// Restart policy state: tracker, backoff timer, respawn flags (22).
+    pub restart: super::restart::RestartState,
 }
 
 /// A stem as seen by the supervisor: shared snapshot + actor mailbox.
@@ -138,6 +162,9 @@ impl StemCell {
                 seeded: false,
                 pending: false,
                 script_cancel: None,
+                health: Default::default(),
+                outputs_ctx: None,
+                restart: Default::default(),
             }),
             phase: watch::Sender::new(Phase {
                 state: StemState::Stopped,
@@ -207,8 +234,46 @@ impl StemCell {
             .unwrap_or_else(|_| StopReply::Failed(Error::internal("stem actor went away")))
     }
 
-    fn send(&self, cmd: Cmd) {
+    pub(crate) fn send(&self, cmd: Cmd) {
         let _ = self.tx.send(cmd);
+    }
+
+    /// Restart the stem now, bypassing the restart policy: not counted
+    /// against `restart.max`, no backoff (`stem.restarting` with `attempt:
+    /// 0`, `counted: false`). The entry point for watchdogs (24). Replies
+    /// once the old unit is stopped and the restart is scheduled; refused
+    /// (`USAGE`) when the stem does not run.
+    pub async fn restart_bypassing_policy(&self, actor: &str, reason: &str) -> Result<(), Error> {
+        let (reply, rx) = oneshot::channel();
+        self.send(Cmd::ForceRestart {
+            actor: actor.into(),
+            reason: reason.into(),
+            reply,
+        });
+        rx.await
+            .unwrap_or_else(|_| Err(Error::internal("stem actor went away")))
+    }
+
+    /// Remember the workspace an adopted unit belongs to, so the restart
+    /// policy applies to it (crash recovery, `adopt_orphans`).
+    pub(crate) fn remember_workspace(&self, ws: &Arc<Resolved>) {
+        if let Some(stem) = ws.workspace.stem(&self.name) {
+            self.info().restart.adopted(ws, stem);
+        }
+    }
+
+    /// Remember the task to abort on the next stop/exit (readiness wait or
+    /// probe loop).
+    pub(crate) fn set_ready_task(&self, task: AbortHandle) {
+        self.info().ready_task = Some(task);
+    }
+
+    /// Abort the readiness wait / probe loop without a new generation (33:
+    /// a reloaded health check restarts the prober of a running stem).
+    pub(crate) fn abort_ready_task(&self) {
+        if let Some(t) = self.info().ready_task.take() {
+            t.abort();
+        }
     }
 
     /// Move to `to`, emitting `stem.state`. Illegal transitions (a bug) are
@@ -235,6 +300,13 @@ impl StemCell {
             }
             info.state = to;
             info.reason = Some(reason.clone());
+            // Outputs live only while the stem runs (26).
+            super::outputs::on_transition(core, &self.name, to);
+            // Watchdogs stop with the stem (24).
+            super::watch::on_transition(core, &self.name, to);
+            // Healthy uptime and the `on_unhealthy` timer (22).
+            let generation = info.generation;
+            info.restart.observe(to, generation, &self.tx);
             (
                 from,
                 info.generation,
@@ -274,7 +346,8 @@ impl StemCell {
                 pid: h.pid(),
                 pgid: h.pgid(),
                 start_time: h.start_time(),
-                container_id: None,
+                // Docker/compose stems (14/15): adoption verifies it.
+                container_id: h.container_id().map(str::to_string),
                 ports: info
                     .ports
                     .iter()
@@ -370,10 +443,19 @@ impl StemCell {
             uptime_s: info.started_at.map(|(i, _)| i.elapsed().as_secs()),
             started_at: info.started_at.map(|(_, t)| t),
             restarts: info.restarts,
+            restarts_in_window: info.restart.in_window(Instant::now()),
             seeded: info.seeded,
-            health: None,
+            degraded: false,
+            health: info.health.status(Instant::now()),
+            metrics: None,
             error: info.error.clone(),
-            env: (verbose && running).then(|| info.env.clone()),
+            env: (verbose && running).then(|| {
+                let mut env = info.env.clone();
+                super::outputs::redact_env(core, stem, &mut env);
+                env
+            }),
+            outputs: super::outputs::shown(core, &stem.name),
+            watch: core.watch.summary(stem),
         }
     }
 }
@@ -403,6 +485,25 @@ async fn run(core: Arc<Core>, cell: Arc<StemCell>, mut rx: mpsc::UnboundedReceiv
             }
             Cmd::Exited { generation, status } => on_exit(&core, &cell, generation, status).await,
             Cmd::Ready { generation, result } => on_ready(&core, &cell, generation, result).await,
+            Cmd::Health {
+                generation,
+                action,
+                result,
+            } => super::probes::on_health(&core, &cell, generation, action, result).await,
+            Cmd::Respawn { generation } => {
+                super::restart::respawn(&core, &cell, generation).await;
+            }
+            Cmd::UnhealthyGrace { generation } => {
+                super::restart::on_unhealthy_grace(&core, &cell, generation).await;
+            }
+            Cmd::ForceRestart {
+                actor,
+                reason,
+                reply,
+            } => {
+                let r = super::restart::bypass(&core, &cell, &actor, &reason).await;
+                let _ = reply.send(r);
+            }
         }
     }
 }
@@ -425,22 +526,27 @@ async fn start(
     if stem.kind() == StemType::External {
         if current == StemState::Stopped {
             // The external runtime spawns nothing; its handle is not kept
-            // (nothing to stop, persist or adopt). Hook for 21: once a probe
-            // exists, wait on it here and move to `healthy`/`unhealthy`.
-            core.runtimes
-                .get(StemType::External)?
+            // (nothing to stop, persist or adopt). With a health check the
+            // probes drive `unknown ⇄ healthy/unhealthy` (21).
+            // Outputs of an external stem: evaluated when monitoring starts (26).
+            if let Err(e) = super::outputs::for_external(core, ws, stem, actor).await {
+                cell.fail(core, e.clone(), actor);
+                return Err(e);
+            }
+            let rt = core.runtimes.get(StemType::External)?;
+            let handle = rt
                 .start(&StartSpec::External {
                     stem: stem.name.clone(),
                 })
                 .await
                 .map_err(|e| Error::internal(e.to_string()))?;
-            cell.transition(
-                core,
-                StemState::Unknown,
-                "external: not managed by stems (no health probe yet)",
-                actor,
-                json!({}),
-            );
+            let reason = if stem.health.is_some() {
+                "external: monitored, not managed by stems"
+            } else {
+                "external: not managed by stems (no health check)"
+            };
+            cell.transition(core, StemState::Unknown, reason, actor, json!({}));
+            super::probes::start_external(core, cell, ws, stem, rt, handle);
         }
         return Ok(());
     }
@@ -448,6 +554,8 @@ async fn start(
         return Ok(());
     }
     cell.info().grace = stem.stop_grace.as_duration();
+    // A user start: fresh restart window and backoff (22).
+    cell.info().restart.begin(ws, stem, pass_env);
     // A git codebase whose managed clone is missing is cloned first (20).
     let repo_ctx = crate::repos::RepoCtx::for_core(core, actor);
     if let Err(e) =
@@ -456,6 +564,9 @@ async fn start(
         cell.fail(core, e.clone(), actor);
         return Err(e);
     }
+    // Watchdogs start with the start (after a clone, before `setup`), so
+    // edits during a slow start count (24).
+    super::watch::on_start(core, ws, stem);
     // setup (when its stamp changed) and pre_start (16).
     super::hooks::before_start(core, cell, ws, stem, actor, pass_env).await?;
     cell.transition(core, StemState::Starting, reason, actor, json!({}));
@@ -503,7 +614,7 @@ fn port_of_url(url: &str) -> Option<u16> {
     port.parse().ok()
 }
 
-async fn spawn(
+pub(crate) async fn spawn(
     core: &Arc<Core>,
     cell: &Arc<StemCell>,
     ws: &Arc<Resolved>,
@@ -541,9 +652,20 @@ async fn spawn(
             pass_env,
             run_id: &core.run_id,
             ports: &core.ports,
+            outputs: Some(&core.outputs),
+            strict_outputs: true,
         },
         &mut allocated,
     )?;
+    let outputs_ctx = super::outputs::OutputsCtx {
+        ws: ws.clone(),
+        env: env.full.clone(),
+        actor: cell
+            .info()
+            .launch
+            .as_ref()
+            .map_or_else(|| stems_api::DAEMON_ACTOR.to_string(), |l| l.actor.clone()),
+    };
     let mut lookup =
         |n: &str, p: Option<&str>| core.ports.resolve_ref(workspace, n, p, &mut allocated);
     let health: Option<Health> = stem.health.clone().map(|mut h| {
@@ -572,23 +694,29 @@ async fn spawn(
         })
         .or_else(|| ports.first().map(|(_, p)| *p));
 
-    let (shell, script, cwd) = start_script(stem)?;
-    let spec = StartSpec::Process(ProcessSpec {
-        command: shell,
-        args: vec!["-c".into(), script],
-        shell: false,
-        cwd,
-        env: env.full,
-        clear_env: true,
-    });
-    let handle = runtime.start(&spec).await.map_err(|e| {
-        Error::new(
-            ErrorCode::StartFailed,
-            format!("cannot start `{}`: {e}", stem.name),
-        )
-        .with_hint("check the stem's `command`/`scripts.start`, `shell` and `cwd`")
-        .with_details(json!({ "stem": stem.name }))
-    })?;
+    let handle = if matches!(stem.kind(), StemType::Docker | StemType::Compose) {
+        // Containers (14/15): spec from config, errors mapped to §7.5.
+        let spec = super::containers::start_spec(core, workspace, stem, &env.own, &ports)?;
+        super::containers::start(core, &stem.name, stem.kind(), &runtime, &spec).await?
+    } else {
+        let (shell, script, cwd) = start_script(stem)?;
+        let spec = StartSpec::Process(ProcessSpec {
+            command: shell,
+            args: vec!["-c".into(), script],
+            shell: false,
+            cwd,
+            env: env.full,
+            clear_env: true,
+        });
+        runtime.start(&spec).await.map_err(|e| {
+            Error::new(
+                ErrorCode::StartFailed,
+                format!("cannot start `{}`: {e}", stem.name),
+            )
+            .with_hint("check the stem's `command`/`scripts.start`, `shell` and `cwd`")
+            .with_details(json!({ "stem": stem.name }))
+        })?
+    };
 
     let generation = {
         let mut info = cell.info();
@@ -599,6 +727,7 @@ async fn spawn(
         info.started_at = Some((Instant::now(), Utc::now()));
         info.env = env.own;
         info.error = None;
+        info.outputs_ctx = (!stem.outputs.is_empty()).then_some(outputs_ctx);
         info.generation
     };
     cell.phase.send_replace(Phase {
@@ -608,6 +737,7 @@ async fn spawn(
     });
     cell.persist(core);
     core.sink.attach(&stem.name, runtime.output_stream(&handle));
+    super::containers::watch_health(core, cell, runtime.clone(), handle.clone(), generation);
 
     // Exit watcher.
     let (tx, rt, h) = (cell.tx.clone(), runtime.clone(), handle.clone());
@@ -623,6 +753,11 @@ async fn spawn(
         health,
         probe_port,
     };
+    if core.waiter.probes() {
+        // Health probes (21): readiness, then healthy ⇄ unhealthy.
+        super::probes::start(core, cell, ws, stem, &target, generation);
+        return Ok(());
+    }
     let (tx, waiter) = (cell.tx.clone(), core.waiter.clone());
     let task = tokio::spawn(async move {
         let result = waiter.wait_condition(&target, Condition::Healthy).await;
@@ -673,6 +808,7 @@ pub(crate) fn adopt(
                 "pid": handle.pid(),
                 "pgid": handle.pgid(),
                 "started_at": rec.started_at,
+                "container_id": handle.container_id(),
             })),
     );
     cell.transition(
@@ -684,6 +820,7 @@ pub(crate) fn adopt(
     );
     cell.persist(core);
     core.sink.attach(&cell.name, runtime.output_stream(&handle));
+    super::containers::watch_health(core, cell, runtime.clone(), handle.clone(), generation);
     let tx = cell.tx.clone();
     tokio::spawn(async move {
         let status = runtime.wait(&handle).await.unwrap_or(ExitStatus::UNKNOWN);
@@ -691,27 +828,39 @@ pub(crate) fn adopt(
     });
 }
 
-async fn on_ready(core: &Arc<Core>, cell: &Arc<StemCell>, generation: u64, r: Result<(), Error>) {
+pub(crate) async fn on_ready(
+    core: &Arc<Core>,
+    cell: &Arc<StemCell>,
+    generation: u64,
+    r: Result<(), Error>,
+) {
     {
         let info = cell.info();
         if info.generation != generation || info.state != StemState::Starting {
             return;
         }
     }
-    cell.info().ready_task = None;
     match r {
         Ok(()) => {
+            // Outputs first (26): `healthy` (what `condition: healthy`
+            // dependants wait for) only once they are evaluated.
+            if !super::outputs::on_ready(core, cell, generation).await {
+                return;
+            }
             // post_start and seed follow `healthy` (16); `pending` keeps the
             // scheduler (and `condition: seeded`) waiting for them.
             let more = super::hooks::has_after_ready(cell);
             cell.info().pending = more;
-            cell.transition(
+            if cell.transition(
                 core,
                 StemState::Healthy,
-                "ready (process alive for start_period; probes land in 21)",
+                "health check passed",
                 stems_api::DAEMON_ACTOR,
                 json!({}),
-            );
+            ) {
+                // A plain healthy stem shows no reason in `status`.
+                cell.info().reason = None;
+            }
             if more {
                 super::hooks::after_ready(core, cell, generation).await;
             }
@@ -747,26 +896,11 @@ async fn on_exit(core: &Arc<Core>, cell: &Arc<StemCell>, generation: u64, status
             .data(json!({ "pid": pid, "code": status.code, "signal": status.signal })),
     );
     cell.bump_generation();
-    if let Some((h, rt)) = cell.clear_process() {
-        rt.release(&h);
-    }
-    let actor = stems_api::DAEMON_ACTOR;
-    if state == StemState::Starting {
-        cell.fail(core, exited_error(&cell.name, status), actor);
-        return;
-    }
-    // Deliverable 22 decides about restarts here.
-    let how = match (status.code, status.signal) {
-        (Some(c), _) => format!("exited with code {c}"),
-        (None, Some(s)) => format!("killed by signal {s}"),
-        _ => "exited".into(),
-    };
-    let data = json!({ "exit_code": status.code, "signal": status.signal });
-    if status.success() {
-        cell.transition(core, StemState::Stopped, how, actor, data);
-    } else {
-        cell.transition(core, StemState::Failed, how, actor, data);
-    }
+    // The restart policy decides (22): restart with backoff, give up,
+    // `stopped` or `failed`. A user stop never gets here (it bumped the
+    // generation before signalling), so the intent is always a crash.
+    let unit = cell.clear_process();
+    super::restart::on_exit(core, cell, state, status, unit).await;
 }
 
 async fn stop(
@@ -779,6 +913,14 @@ async fn stop(
     let state = cell.state();
     let running = cell.info().handle.is_some();
     if !running {
+        // Waiting for a policy restart (22): cancel it, `stopped`.
+        if cell.info().restart.cancel_backoff() {
+            cell.bump_generation();
+            cell.transition(core, StemState::Stopping, reason, actor, json!({}));
+            super::overlays::cleanup(core, &cell.name, actor);
+            cell.transition(core, StemState::Stopped, reason, actor, json!({}));
+            return StopReply::Stopped;
+        }
         if state == StemState::Failed {
             cell.transition(core, StemState::Stopped, reason, actor, json!({}));
         }
@@ -796,6 +938,8 @@ async fn stop(
     // pre_stop, the custom `stop` script (else SIGTERM), post_stop (16).
     super::hooks::pre_stop(core, cell, actor).await;
     let outcome = super::hooks::stop_unit(core, cell, &h, &rt, grace, actor).await;
+    // Containers (14/15): removed on `down`, kept on `stop`/`restart`.
+    super::containers::after_stop(core, &cell.name, &h, reason).await;
     rt.release(&h);
     super::hooks::post_stop(core, cell, actor).await;
     // Remove the overlays stems wrote (unless modified or `keep`) (18).

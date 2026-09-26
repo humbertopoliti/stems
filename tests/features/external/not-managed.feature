@@ -1,9 +1,10 @@
 @FR-ST-3
 Feature: External stems are monitored, never started or stopped
   An external stem is shown in `status` but `up` and `down` leave it alone:
-  until health probes (21) its state is `unknown`, and a dependency edge to
-  it (even `condition: healthy`) is satisfied immediately. `start`, `stop`
-  and `restart` of an external stem fail with NOT_MANAGED (exit 1).
+  without a health check its state is `unknown`, and a dependency edge to
+  it (even `condition: healthy`) is satisfied immediately (with one, see
+  health/external.feature). `start`, `stop` and `restart` of an external
+  stem fail with NOT_MANAGED (exit 1).
 
   @FR-HS-2
   Scenario: up reports the external stem unknown and starts its dependant

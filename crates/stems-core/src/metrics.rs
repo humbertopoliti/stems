@@ -278,24 +278,39 @@ pub struct Threshold {
 
 impl Threshold {
     /// Thresholds from resolved `limits:` (memory in bytes; `cpu` in cores
-    /// → `cores × 100` percent), both with `for_secs = 0`.
+    /// → `cores × 100` percent), with `for_secs` from `memory_for` /
+    /// `cpu_for` (`"80% for 60s"`; 0 when absent).
     pub fn from_limits(limits: &Limits) -> Vec<Threshold> {
+        let secs = |d: Option<Dur>| d.map_or(0, |d| d.as_duration().as_secs());
         let mut out = Vec::new();
         if let Some(m) = limits.memory {
             out.push(Threshold {
                 metric: Metric::Memory,
                 limit: m.0 as f64,
-                for_secs: 0,
+                for_secs: secs(limits.memory_for),
             });
         }
         if let Some(c) = limits.cpu {
             out.push(Threshold {
                 metric: Metric::Cpu,
                 limit: c * 100.0,
-                for_secs: 0,
+                for_secs: secs(limits.cpu_for),
             });
         }
         out
+    }
+
+    /// Human form: `memory > 100MB`, `cpu > 80% for 1m`.
+    pub fn describe(&self) -> String {
+        let limit = match self.metric {
+            Metric::Memory => ByteSize(self.limit as u64).to_string(),
+            Metric::Cpu => format!("{}%", (self.limit * 10.0).round() / 10.0),
+        };
+        let mut s = format!("{} > {limit}", self.metric);
+        if self.for_secs > 0 {
+            s.push_str(&format!(" for {}", Dur::from_secs(self.for_secs)));
+        }
+        s
     }
 }
 
@@ -644,13 +659,20 @@ mod tests {
         let l = Limits {
             memory: Some(ByteSize(1024)),
             cpu: Some(0.8),
+            memory_for: None,
+            cpu_for: Some(Dur::from_secs(60)),
         };
         let t = Threshold::from_limits(&l);
         assert_eq!(t.len(), 2);
         assert_eq!(t[0].metric, Metric::Memory);
         assert_eq!(t[0].limit, 1024.0);
+        assert_eq!(t[0].for_secs, 0);
         assert_eq!(t[1].metric, Metric::Cpu);
         assert!((t[1].limit - 80.0).abs() < 1e-9);
+        assert_eq!(t[1].for_secs, 60);
+        assert_eq!(t[0].describe(), "memory > 1KB");
+        assert_eq!(t[1].describe(), "cpu > 80% for 1m");
+        assert_eq!(parse_limit("100MB").unwrap().describe(), "memory > 100MB");
         assert!(Threshold::from_limits(&Limits::default()).is_empty());
     }
 

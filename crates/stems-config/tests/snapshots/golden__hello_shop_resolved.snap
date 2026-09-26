@@ -114,7 +114,7 @@ workspace:
       depends_on: []
       scripts:
         reset:
-          command: docker volume rm hello-shop-pgdata
+          command: docker rm -f hello-shop-postgres >/dev/null 2>&1; docker volume rm -f hello-shop_pgdata
           description: null
           args: []
           inputs: []
@@ -193,7 +193,8 @@ workspace:
       description: Redis 7, used as shop-worker's queue and shop-api's cache
       codebase: null
       enabled: true
-      env: {}
+      env:
+        REDIS_PORT: '16379'
       local_env: {}
       env_files: []
       ports:
@@ -479,7 +480,7 @@ workspace:
       - stem: shop-api
         condition: healthy
         soft: false
-        protocol: null
+        protocol: http
         via: null
       scripts:
         start:

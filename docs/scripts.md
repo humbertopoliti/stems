@@ -86,6 +86,7 @@ A stem script gets the stem's resolved environment
 | `STEMS_STATE_DIR` | `$STEMS_HOME/<ws-hash>/stems/<stem>/`, created before the script runs: the place for venvs, caches, build output — never the codebase |
 | `STEMS_SCRIPT` | the script's name (`setup`, `seed`, …) |
 | `STEMS_<DEP>_PORT` | the primary host port of each dependency (`shop-api` → `STEMS_SHOP_API_PORT`) |
+| `STEMS_<DEP>_OUTPUT_<X>` | each evaluated output `X` of each dependency (`shop-api`'s `TOKEN` → `STEMS_SHOP_API_OUTPUT_TOKEN`; see [config.md](config.md#outputs-fr-st-6)) |
 | `PORT` | the stem's own primary host port (when it declares ports) |
 
 Workspace scripts get the daemon's environment (minus `STEMS_*`), workspace

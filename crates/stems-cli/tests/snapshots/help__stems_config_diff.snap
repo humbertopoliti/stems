@@ -2,7 +2,7 @@
 source: crates/stems-cli/tests/help.rs
 expression: help
 ---
-Show what applying the changed config would do
+Show what applying the changed config would do (the daemon's plan: STEM ACTION FIELDS HOT)
 
 Usage: stems config diff [OPTIONS]
 

@@ -19,10 +19,14 @@ pub mod codes {
     pub const UNRESOLVED_VARIABLE: &str = "UNRESOLVED_VARIABLE";
     /// An `include:` / `extends:` target does not exist or cannot be read.
     pub const INCLUDE_NOT_FOUND: &str = "INCLUDE_NOT_FOUND";
-    /// `include:` / `extends:` files form a cycle.
+    /// `include:` / `extends:` files form a cycle, or an `extends` chain is
+    /// deeper than [`crate::MAX_EXTENDS_DEPTH`].
     pub const INCLUDE_CYCLE: &str = "INCLUDE_CYCLE";
     /// A config file exists but cannot be read.
     pub const CONFIG_READ_FAILED: &str = "CONFIG_READ_FAILED";
+    /// The same stem is defined by two files of one `include:` level
+    /// (two included files, or an included file and the including file).
+    pub const DUPLICATE_STEM: &str = "DUPLICATE_STEM";
 }
 
 /// A source location (1-based line and column).
@@ -56,6 +60,10 @@ pub struct Diagnostic {
     pub hint: Option<String>,
     /// Source location, when known.
     pub location: Option<Span>,
+    /// Structured data (e.g. `DUPLICATE_STEM`: `{stem, files}`), carried
+    /// into `stems_core::Error::details`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
 }
 
 impl Diagnostic {
@@ -67,7 +75,14 @@ impl Diagnostic {
             path: None,
             hint: None,
             location: None,
+            details: None,
         }
+    }
+    /// Attach structured details.
+    #[must_use]
+    pub fn with_details(mut self, details: serde_json::Value) -> Self {
+        self.details = Some(details);
+        self
     }
     /// Attach a config path.
     #[must_use]

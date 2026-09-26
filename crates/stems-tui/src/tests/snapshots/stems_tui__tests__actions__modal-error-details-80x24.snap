@@ -1,0 +1,28 @@
+---
+source: crates/stems-tui/src/tests/actions.rs
+expression: text
+---
+ stems · process-chain                      Graph [Table] Detail  Logs  Events
+  STEM TYPE    STATUS     REASON       PID    PORTS  UPTIME RESTARTS CPU   MEM
+  a    process ✓ healthy  ready (tcp)  101    18301  9s     0
+› b    process ✓ healthy  ready (tcp)  102    18302  8s     0
+  c    process ↻ starting -            103    18303  1s     0
+  d    process · stopped  -            -      18304  -      0
+
+    ┌ UNKNOWN_STEM ────────────────────────────────────────────────────────┐
+    │ start zz                                                             │
+    │                                                                      │
+    │ UNKNOWN_STEM: no stem `zz`                                           │
+    │                                                                      │
+    │ hint: see `stems status`                                             │
+    │                                                                      │
+    │ Esc close                                                            │
+    └──────────────────────────────────────────────────────────────────────┘───┐
+                                                                │ ✓ started b  │
+                                                                └──────────────┘
+                                       ┌───────────────────────────────────────┐
+                                       │ ✗ UNKNOWN_STEM start zz: no stem `zz` │
+                                       │   hint: see `stems status`            │
+                                       │   e details · Esc dismiss             │
+                                       └───────────────────────────────────────┘
+ process-chain · profile - · daemon pid 4242 · ✓2 !0 ✗0 ·1 ?0 ↻1 ? help · q qui…

@@ -46,6 +46,7 @@ fn every_later_command_is_a_stub_with_help() {
         "stems outputs",
         "stems config get",
         "stems config set",
+        "stems config unset",
         "stems config diff",
         "stems config apply",
         "stems add",

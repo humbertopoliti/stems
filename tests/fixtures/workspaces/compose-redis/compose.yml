@@ -1,0 +1,12 @@
+# compose.yml — wrapped one service at a time by the compose-redis stems.
+services:
+  redis:
+    image: "redis:7"
+    ports:
+      - "${REDIS_PORT:-18534}:6379"
+    command: redis-server ${REDIS_ARGS:-}
+  broken:
+    image: "stems-does-not-exist:1"
+  other:
+    image: "alpine:3"
+    command: ["sleep", "300"]

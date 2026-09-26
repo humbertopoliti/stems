@@ -13,7 +13,7 @@ graph LR
   shop_api -->|healthy| redis
   shop_worker -->|healthy| redis
   shop_worker -->|seeded| postgres
-  shop_web -->|healthy| shop_api
+  shop_web -->|"healthy http"| shop_api
   classDef healthy stroke:#2e7d32,stroke-width:2px
   class postgres,redis healthy
   classDef failed stroke:#c62828,stroke-width:2px

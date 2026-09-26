@@ -4,7 +4,8 @@
 //! * [`actor`] — one task per stem owning its runtime handle and state.
 //! * [`state`] — the legal state transitions (§6.4).
 //! * [`schedule`] — the layer scheduler (parallel starts, edge conditions, fail-fast).
-//! * [`waiter`] — when a started stem counts as `started` / `healthy` (21 swaps in probes).
+//! * [`waiter`] — when a started stem counts as `started` / `healthy` / `seeded`.
+//! * [`probes`] — health probes, transitions, degraded derivation (21).
 //! * [`env`] — a stem's environment (FR-ST-4) and deferred `${stem.x.port}` rendering.
 //! * [`ports`] — `PORT_IN_USE` checks and sticky `port: auto` allocation.
 //!
@@ -13,14 +14,21 @@
 //! handler (restart policies 22), [`Host`] (its `state_store` is 11's state file).
 
 pub mod actor;
+pub mod containers;
 pub mod env;
 pub mod hooks;
+pub mod metrics;
+pub mod outputs;
 pub mod overlays;
 pub mod ports;
+pub mod probes;
+pub mod reload;
+pub mod restart;
 pub mod run;
 pub mod schedule;
 pub mod state;
 pub mod waiter;
+pub mod watch;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex, Weak};
@@ -41,7 +49,7 @@ use tokio_util::sync::CancellationToken;
 pub use actor::{Phase, StemCell, StopReply};
 pub use ports::PortBook;
 pub use schedule::Plan;
-pub use waiter::{AliveWaiter, WaitTarget, Waiter};
+pub use waiter::{ProbeWaiter, WaitTarget, Waiter};
 
 use crate::daemon::Daemon;
 use crate::events::{EventBus, EventDraft};
@@ -66,13 +74,18 @@ pub const DEFAULT_MAX_PARALLEL: usize = 4;
 #[derive(Clone)]
 pub struct RuntimeRegistry {
     by_type: HashMap<StemType, Arc<dyn Runtime>>,
+    /// Lazily connected docker/compose runtimes (14/15), when registered.
+    containers: Option<Arc<containers::Containers>>,
 }
 
 impl Default for RuntimeRegistry {
     fn default() -> Self {
         let mut by_type: HashMap<StemType, Arc<dyn Runtime>> = HashMap::new();
         by_type.insert(StemType::External, Arc::new(ExternalRuntime::new()));
-        Self { by_type }
+        Self {
+            by_type,
+            containers: None,
+        }
     }
 }
 
@@ -82,6 +95,24 @@ impl RuntimeRegistry {
         let mut r = Self::default();
         r.register(StemType::Process, Arc::new(ProcessRuntime::new()));
         r
+    }
+
+    /// Register the lazily connected docker and compose runtimes (14/15):
+    /// Docker is contacted only when a docker/compose stem is started.
+    pub fn with_containers(mut self, c: Arc<containers::Containers>) -> Self {
+        for kind in [StemType::Docker, StemType::Compose] {
+            self.register(
+                kind,
+                Arc::new(containers::LazyRuntime::new(c.clone(), kind)),
+            );
+        }
+        self.containers = Some(c);
+        self
+    }
+
+    /// The docker/compose runtimes, if registered.
+    pub fn containers(&self) -> Option<&Arc<containers::Containers>> {
+        self.containers.as_ref()
     }
 
     /// Register (or replace) the runtime for `kind`.
@@ -128,6 +159,19 @@ pub trait Host: Send + Sync {
     fn resolved(&self) -> Option<Arc<Resolved>>;
     /// Re-load the workspace from disk (validation errors are returned).
     fn reload(&self, actor: &str) -> Result<Arc<Resolved>, Error>;
+    /// Load + validate the workspace from disk *without* installing it
+    /// (33: compared with the applied one first). Every error is returned;
+    /// `requires:` tools are probed only with `check_requires` (commands,
+    /// not the file watcher). Default: [`Host::reload`].
+    fn load_candidate(
+        &self,
+        actor: &str,
+        _check_requires: bool,
+    ) -> Result<Arc<Resolved>, stems_core::Errors> {
+        self.reload(actor).map_err(|e| stems_core::Errors(vec![e]))
+    }
+    /// Make `resolved` the applied workspace (33). Default: nothing.
+    fn install(&self, _resolved: Arc<Resolved>, _actor: &str) {}
     /// Trigger the daemon's orderly shutdown.
     fn request_shutdown(&self, actor: &str, reason: &str);
     /// The daemon was auto-started by `up`.
@@ -179,6 +223,25 @@ impl Host for DaemonHost {
         d.resolved()
             .ok_or_else(|| Error::internal("workspace vanished after loading"))
     }
+    fn load_candidate(
+        &self,
+        _actor: &str,
+        check_requires: bool,
+    ) -> Result<Arc<Resolved>, stems_core::Errors> {
+        let d = self.daemon().map_err(|e| stems_core::Errors(vec![e]))?;
+        let Some(root) = d.info().workspace else {
+            return Err(stems_core::Errors(vec![Error::usage(
+                "this daemon has no workspace",
+                "start it with `stems daemon start` inside a workspace, or call `load_workspace`",
+            )]));
+        };
+        d.load_candidate(&root, !check_requires).map(Arc::new)
+    }
+    fn install(&self, resolved: Arc<Resolved>, actor: &str) {
+        if let Some(d) = self.0.upgrade() {
+            d.install_workspace(resolved, actor);
+        }
+    }
     fn request_shutdown(&self, actor: &str, reason: &str) {
         if let Some(d) = self.0.upgrade() {
             d.request_shutdown(actor, reason);
@@ -218,6 +281,12 @@ pub struct Core {
     /// `up --force-overlays` is in progress (18): overlay destinations stems
     /// does not own are backed up and overwritten instead of refused.
     pub(crate) force_overlays: std::sync::atomic::AtomicBool,
+    /// Evaluated outputs of running stems (26, FR-ST-6).
+    pub(crate) outputs: outputs::OutputStore,
+    /// Samples, history and thresholds (25).
+    pub(crate) metrics: metrics::MetricsStore,
+    /// Watchdogs: per-stem watchers, pause flags (24).
+    pub(crate) watch: watch::WatchHub,
 }
 
 /// The supervisor. Installed into the daemon by [`Daemon::run`].
@@ -231,6 +300,8 @@ pub struct Supervisor {
     cancel: Mutex<CancellationToken>,
     /// Custom script runs: per-stem slots, shutdown (17).
     runs: run::ScriptRuns,
+    /// Config reload: pending plan, last error, last `up` selection (33).
+    reload: reload::ReloadState,
 }
 
 /// A fresh run id (a ULID, unique per daemon run).
@@ -284,7 +355,7 @@ impl Supervisor {
             data_dir,
             run_id.clone(),
         );
-        Arc::new(Self {
+        let sup = Arc::new(Self {
             core: Arc::new(Core {
                 events,
                 runtimes,
@@ -296,23 +367,37 @@ impl Supervisor {
                 state: Some(state),
                 scripts,
                 force_overlays: std::sync::atomic::AtomicBool::new(false),
+                outputs: outputs::OutputStore::default(),
+                metrics: metrics::MetricsStore::default(),
+                watch: watch::WatchHub::default(),
             }),
             host,
             cells: Mutex::new(IndexMap::new()),
             ops: tokio::sync::Mutex::new(()),
             cancel: Mutex::new(CancellationToken::new()),
             runs: run::ScriptRuns::default(),
-        })
+            reload: reload::ReloadState::default(),
+        });
+        // Watchdog actions run through the supervisor (24).
+        sup.core.watch.bind(&sup);
+        sup
     }
 
-    /// The production supervisor for `daemon`: process runtime, alive waiter.
+    /// The production supervisor for `daemon`: process runtime, lazily
+    /// connected docker/compose runtimes (14/15), health probes (21).
     pub fn for_daemon(daemon: &Arc<Daemon>) -> Arc<Self> {
-        Self::new(
+        let compose_dir = containers::compose_dir_for(daemon.state_store().path());
+        let sup = Self::new(
             daemon.events().clone(),
             Arc::new(DaemonHost(Arc::downgrade(daemon))),
-            RuntimeRegistry::with_process(),
-            Arc::new(AliveWaiter),
-        )
+            RuntimeRegistry::with_process()
+                .with_containers(Arc::new(containers::Containers::production(compose_dir))),
+            Arc::new(ProbeWaiter),
+        );
+        metrics::spawn_sampler(&sup);
+        // The config watcher (33).
+        reload::spawn_watcher(&sup);
+        sup
     }
 
     /// This daemon run's id (`STEMS_RUN_ID`).
@@ -344,7 +429,9 @@ impl Supervisor {
 
     fn workspace(&self, reload: bool, actor: &str) -> Result<Arc<Resolved>, Error> {
         if reload {
-            return self.host.reload(actor);
+            // The latest *applied* config; a disk change that would restart
+            // running stems stays pending (33, `config apply`).
+            return reload::refresh(self, actor);
         }
         match self.host.resolved() {
             Some(r) => Ok(r),
@@ -372,17 +459,28 @@ impl Supervisor {
 
     /// `up`.
     pub async fn up(&self, p: UpParams, actor: &str) -> Result<UpResult, Error> {
-        if let Some(profile) = &p.profile {
-            return Err(Error::not_implemented("`up --profile`", "26")
-                .with_details(json!({ "profile": profile, "deliverable": "26" })));
-        }
         if p.daemon_auto_started {
             self.host.set_started_by_up();
         }
         let ws = self.workspace(true, actor)?;
-        let plan = schedule::plan(&ws, &p.stems, false)?;
+        // Stems, else the profile, else everything; plus hard deps (26).
+        let (plan, selection) = schedule::plan_up(&ws, p.profile.as_deref(), &p.stems)?;
         let _ops = self.ops.lock().await;
+        // `config apply` starts an added stem this selection covers (33).
+        self.reload.note_up(p.profile.clone(), p.stems.clone());
+        if let Some(profile) = &selection.profile
+            && !selection.expanded.is_empty()
+        {
+            self.emit(
+                EventDraft::new(EventKind::PROFILE_EXPANDED, actor).data(json!({
+                    "profile": profile,
+                    "added": selection.expanded,
+                    "requested": selection.requested,
+                })),
+            );
+        }
         self.emit(EventDraft::new(EventKind::UP_STARTED, actor).data(json!({
+            "profile": selection.profile,
             "requested": p.stems,
             "stems": plan.order,
             "layers": plan.layers,
@@ -417,6 +515,8 @@ impl Supervisor {
         self.core
             .force_overlays
             .store(p.force_overlays, std::sync::atomic::Ordering::SeqCst);
+        // `up --no-watch` switches watchdogs off until the next `up` (24).
+        self.core.watch.set_disabled(p.no_watch);
         let mut res = self.run_plan(&plan, &ws, &p, actor, "up").await;
         self.core
             .force_overlays
@@ -656,9 +756,34 @@ impl Supervisor {
         let mut res = self
             .stop_set(&ws, &names, ms(p.timeout_ms), actor, "down")
             .await;
+        // Externals are never stopped, but `down` ends their monitoring (21).
+        let unmonitor: Vec<String> = if p.stems.is_empty() {
+            ws.workspace
+                .stems()
+                .filter(|s| s.kind() == StemType::External)
+                .map(|s| s.name.clone())
+                .collect()
+        } else {
+            externals.clone()
+        };
+        for n in &unmonitor {
+            probes::unmonitor(&self.core, &self.cell(n), actor, "down");
+        }
         res.skipped.extend(externals);
         // Overlays of stems that are not running (exited on their own) (18).
         self.cleanup_idle_overlays(&p.stems, actor);
+        // Stopped containers left by `stop`/crashes, and `--volumes` (14).
+        let running = |n: &str| {
+            let cells = self.cells.lock().unwrap_or_else(|e| e.into_inner());
+            cells.get(n).is_some_and(|c| c.state().is_running())
+        };
+        let (volumes, vol_failed) =
+            containers::after_down(&self.core, &ws.workspace, &p.stems, &running, p.volumes).await;
+        res.volumes_removed = volumes;
+        if !vol_failed.is_empty() {
+            res.failed.extend(vol_failed);
+            res.ok = false;
+        }
         if p.all
             && let Err(error) = self.teardown(&ws.workspace, actor).await
         {
@@ -757,14 +882,48 @@ impl Supervisor {
         if !p.stems.is_empty() {
             schedule::plan(&ws, &p.stems, true)?;
         }
-        let stems: Vec<_> = ws
+        let mut stems: Vec<_> = ws
             .workspace
             .stems()
             .filter(|s| p.stems.is_empty() || p.stems.contains(&s.name))
-            .map(|s| self.cell(&s.name).status(s, &self.core, p.verbose))
+            .map(|s| {
+                let mut st = self.cell(&s.name).status(s, &self.core, p.verbose);
+                containers::decorate_status(
+                    self.core.runtimes.containers().map(|c| &**c),
+                    s.kind(),
+                    &mut st,
+                );
+                st
+            })
             .collect();
+        self.core.metrics.decorate(&mut stems);
+        watch::decorate(&self.core, &ws, &mut stems);
+        // Degraded is derived here, never stored (21; metric thresholds 25).
+        probes::apply_degraded(
+            &ws,
+            &mut stems,
+            |n| self.cell(n).state(),
+            |n| self.core.metrics.crossed(n),
+        );
         let summary = StatusSummary::of(&stems);
         Ok(StatusResult { stems, summary })
+    }
+
+    /// `stem_config {stem}` (27): the stem's resolved config as JSON, for the
+    /// TUI's detail view.
+    pub fn stem_config(&self, p: &Value, actor: &str) -> Result<Value, Error> {
+        let name = p.get("stem").and_then(Value::as_str).ok_or_else(|| {
+            Error::usage(
+                "invalid params for `stem_config`: missing `stem`",
+                "pass `{\"stem\": \"<name>\"}`",
+            )
+        })?;
+        let ws = self.workspace(false, actor)?;
+        let stem = ws.workspace.stem(name).ok_or_else(|| {
+            Error::new(ErrorCode::UnknownStem, format!("unknown stem `{name}`"))
+                .with_hint("run `stems status` for the stems of this workspace")
+        })?;
+        to_value(stem)
     }
 
     /// Crash recovery (deliverable 11): adopt every stem the previous run
@@ -798,6 +957,13 @@ impl Supervisor {
                 .as_ref()
                 .map_or(Duration::from_secs(10), |s| s.stop_grace.as_duration());
             let adopted = match self.core.runtimes.get(kind) {
+                // Containers are verified by id + labels (14/15).
+                Ok(rt) if matches!(kind, StemType::Docker | StemType::Compose) => {
+                    let w = ws.as_ref().map(|w| &w.workspace);
+                    containers::adopt(&self.core, kind, &rec.adopt_record(), w, &name)
+                        .await
+                        .map(|h| (rt, h))
+                }
                 Ok(rt) => rt.adopt(&rec.adopt_record()).await.map(|h| (rt, h)),
                 Err(_) => None,
             };
@@ -807,6 +973,11 @@ impl Supervisor {
                         self.core.ports.restore(&name, &p.name, p.port);
                     }
                     actor::adopt(&self.core, &self.cell(&name), rt, h, &rec, grace, actor);
+                    if let Some(ws) = &ws {
+                        probes::monitor_adopted(&self.core, &self.cell(&name), ws);
+                        self.cell(&name).remember_workspace(ws);
+                        outputs::after_adopt(&self.core, &self.cell(&name), ws);
+                    }
                     report.adopted.push(name);
                 }
                 None => {
@@ -918,6 +1089,8 @@ impl Supervisor {
                     stem.stop_grace.as_duration(),
                     actor,
                 );
+                probes::monitor_adopted(&self.core, &cell, &ws);
+                cell.remember_workspace(&ws);
                 Ok((ar.pid, ar.pgid))
             }
             .await;
@@ -1020,6 +1193,34 @@ impl SupervisorHooks for Supervisor {
             },
             m if m == Method::SCRIPT_CATALOG => match params(m, p) {
                 Ok(p) => self.script_catalog(p, actor).and_then(to_value),
+                Err(e) => Err(e),
+            },
+            m if m == Method::STEM_CONFIG => self.stem_config(p, actor),
+            m if m == Method::HEALTH => match params(m, p) {
+                Ok(p) => self.health(&p, actor).and_then(to_value),
+                Err(e) => Err(e),
+            },
+            m if m == Method::METRICS => match params(m, p) {
+                Ok(p) => self.metrics(p, actor).await.and_then(to_value),
+                Err(e) => Err(e),
+            },
+            m if m == Method::WATCH_PAUSE || m == Method::WATCH_RESUME => match params(m, p) {
+                Ok(p) => self
+                    .watch_pause(p, m == Method::WATCH_PAUSE, actor)
+                    .and_then(to_value),
+                Err(e) => Err(e),
+            },
+            m if m == Method::WATCH_STATUS => match params(m, p) {
+                Ok(p) => self.watch_status(p, actor).and_then(to_value),
+                Err(e) => Err(e),
+            },
+            m if m == Method::OUTPUTS => match params(m, p) {
+                Ok(p) => self.outputs(&p, actor).and_then(to_value),
+                Err(e) => Err(e),
+            },
+            m if m == Method::CONFIG_DIFF => self.config_diff(actor).and_then(to_value),
+            m if m == Method::CONFIG_APPLY => match params(m, p) {
+                Ok(p) => self.config_apply(p, actor).await.and_then(to_value),
                 Err(e) => Err(e),
             },
             _ => return None,

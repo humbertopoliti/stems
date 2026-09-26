@@ -1,0 +1,26 @@
+# watch-docker — fixture for tests/features/watch/docker-rebuild.feature
+# (deliverable 24; needs Docker: `make e2e-docker`). A docker stem built
+# from examples/repos/shop-api's Dockerfile whose codebase is the same
+# directory, so a change to a `*.py` file of the build context rebuilds the
+# image (`docker.build` events) and recreates the container.
+schema_version: 1
+name: watch-docker
+
+stems:
+  api:
+    type: docker
+    codebase: ../../../../examples/repos/shop-api
+    build: { context: ../../../../examples/repos/shop-api }
+    ports: [{ name: http, port: 18571, container_port: 8080 }]
+    env:
+      SHOP_CHAOS: "1"
+    health:
+      type: http
+      url: "http://127.0.0.1:18571/healthz"
+      interval: 400ms
+      timeout: 300ms
+      retries: 5
+      start_timeout: 180s
+    stop_grace: 2s
+    watch:
+      - { paths: ["*.py", "Dockerfile"], action: rebuild, debounce: 500ms }

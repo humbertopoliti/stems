@@ -1,0 +1,28 @@
+---
+source: crates/stems-tui/src/tests.rs
+expression: text
+---
+ stems · minimal                            Graph [Table] Detail  Logs  Events
+  STEM     TYPE    STATUS     REASON   PID    PORTS  UPTIME RESTARTS CPU   MEM
+› echo-svc process ✓ healthy  ready (… 12345  18090  42s    0
+
+
+
+
+
+
+
+
+
+
+
+┌ Logs: echo-svc · following ──────────────────────────────────────────────────┐
+│   12:00:00.000 INFO listening on 127.0.0.1:18090                             │
+│›  12:00:00.005 WARN chaos endpoints enabled under /__chaos/                  │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+ minimal · profile - · daemon pid 4242 · ✓1 !0 ✗0 ·0 ?0 ↻0      ? help · q quit

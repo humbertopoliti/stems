@@ -2,7 +2,12 @@
 source: crates/stems-cli/tests/help.rs
 expression: help
 ---
-Draw the dependency graph
+Draw the dependency graph.
+
+Boxes per stem with its status glyph, dependants on the left, arrows to their dependencies; soft
+edges dashed; a legend line below. Live glyphs come from the daemon when it runs (`--no-status` for
+config only, `·` everywhere). `--format mermaid|dot|json` exports; --json gives `{nodes: [{name,
+type, status, glyph, reason}], edges: [{from, to, condition, soft, protocol, via}]}`.
 
 Usage: stems graph [OPTIONS]
 
@@ -19,16 +24,19 @@ Options:
           [default: text]
 
       --status
-          Colour nodes by live status (default when the daemon runs)
+          Live status glyphs from the daemon (the default when it runs; an error when it does not)
 
-      --watch
-          Redraw on every state change
+      --no-status
+          Config only: every stem `·`, even when the daemon runs
+
+      --watch [<INTERVAL>]
+          Redraw until Ctrl-C, every INTERVAL (seconds or a duration such as `500ms`; default 1s)
 
       --focus <STEM>
           Only this stem and its neighbours
 
       --profile <PROFILE>
-          Only the stems of this profile
+          Only the stems of this profile (plus their hard dependencies)
 
       --edges
           Label edges with their protocol/via metadata

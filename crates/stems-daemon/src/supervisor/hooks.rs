@@ -72,6 +72,18 @@ pub(crate) fn stem_env(
     stem: &Stem,
     pass_env: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, String>, Error> {
+    stem_env_with(core, ws, stem, pass_env, false)
+}
+
+/// [`stem_env`]; `strict_outputs`: an output reference without a value is
+/// `UNRESOLVED_VARIABLE` (the start sequence, 26) instead of kept literally.
+pub(crate) fn stem_env_with(
+    core: &Core,
+    ws: &Workspace,
+    stem: &Stem,
+    pass_env: &BTreeMap<String, String>,
+    strict_outputs: bool,
+) -> Result<BTreeMap<String, String>, Error> {
     let mut allocated = Vec::new();
     let env = build_env(
         ws,
@@ -81,6 +93,8 @@ pub(crate) fn stem_env(
             pass_env,
             run_id: &core.run_id,
             ports: &core.ports,
+            outputs: Some(&core.outputs),
+            strict_outputs,
         },
         &mut allocated,
     )?;
@@ -127,6 +141,8 @@ async fn run_stem_script(
     let Some(script) = stem.scripts.get(name) else {
         return Ok(None);
     };
+    // `${stem.<n>.outputs.X}` / auto ports in an inline script (26).
+    let script = &super::outputs::render_script(core, ws, &stem.name, script);
     // A stem without a codebase has no natural cwd: never run inside the
     // integration repo unless `cwd: workspace` (or any cwd) says so.
     let cwd_override = (stem.codebase.is_none() && !script.cwd_set)
@@ -269,8 +285,8 @@ pub(crate) async fn before_start(
         return super::overlays::materialise(core, &ws.workspace, stem, &env, actor)
             .map_err(|e| fail(core, cell, e, actor));
     }
-    let env =
-        stem_env(core, &ws.workspace, stem, pass_env).map_err(|e| fail(core, cell, e, actor))?;
+    let env = stem_env_with(core, &ws.workspace, stem, pass_env, true)
+        .map_err(|e| fail(core, cell, e, actor))?;
     let token = CancellationToken::new();
     {
         let mut info = cell.info();
@@ -295,7 +311,9 @@ async fn setup_and_pre_start(
     env: &BTreeMap<String, String>,
     token: &CancellationToken,
 ) -> Result<(), Error> {
-    if let Some(script) = stem.scripts.get("setup") {
+    // A policy restart (22) never reruns `setup`: its stamp is intact.
+    let respawn = cell.info().restart.respawning;
+    if let Some(script) = stem.scripts.get("setup").filter(|_| !respawn) {
         let stamp =
             stamp_of(ws, stem, "setup", script, env).map_err(|e| fail(core, cell, e, actor))?;
         if needs_run(core, &stem.name, "setup", &stamp) {
@@ -413,6 +431,14 @@ async fn post_start_and_seed(
     let Some(script) = stem.scripts.get("seed") else {
         return Ok(());
     };
+    // A policy restart (22) never reruns `seed`: the data is still there.
+    {
+        let mut info = cell.info();
+        if info.restart.respawning {
+            info.seeded = info.restart.was_seeded;
+            return Ok(());
+        }
+    }
     if token.is_cancelled() {
         return Err(None);
     }

@@ -1,0 +1,7 @@
+---
+source: crates/stems-tui/src/graph.rs
+expression: "widget_text(l, w, h, None, None)"
+---
+         ╭──▶[left  ·]──╮
+[top ·]──┤              ├──▶[base ·]
+         ╰──▶[right ·]──╯

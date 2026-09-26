@@ -39,6 +39,7 @@ async fn list(ctx: &Ctx, since: u64) -> Result<CommandOutput, Errors> {
             EventsParams {
                 since_seq: Some(since),
                 limit: None,
+                ..EventsParams::default()
             },
         )
         .await?;

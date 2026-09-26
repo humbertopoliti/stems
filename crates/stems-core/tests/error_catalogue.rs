@@ -179,6 +179,11 @@ fn sample(code: ErrorCode) -> Error {
             "profile `web-only` omits `shop-api`, a hard dependency of `shop-web`, and `strict_profiles` is on",
             "add `shop-api` to the profile, or set `strict_profiles: false` to pull dependencies in automatically",
         ),
+        UnknownProfile => rt(
+            code,
+            "profile `web-onyl` is not defined",
+            "did you mean `web-only`? profiles: default, backend, web-only (see `stems profiles`)",
+        ),
         DestructiveNotConfirmed => rt(
             code,
             "`down --volumes` deletes data and needs confirmation",
@@ -288,6 +293,11 @@ fn sample(code: ErrorCode) -> Error {
             code,
             "another stems daemon (pid 777) holds the lock for this workspace",
             "use that daemon (`stems status`), or stop it with `stems daemon stop`",
+        ),
+        UpgradeFailed => rt(
+            code,
+            "`brew upgrade stems` exited with status 1",
+            "run `brew upgrade stems` yourself to see why; `stems upgrade --dry-run` prints the command",
         ),
         NotImplemented => rt(
             code,

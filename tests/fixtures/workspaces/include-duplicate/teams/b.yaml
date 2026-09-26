@@ -1,0 +1,8 @@
+# teams/b.yaml — defines `pay` again: a DUPLICATE_STEM error.
+stems:
+  pay:
+    type: process
+    ports: [{ name: http, port: 18473 }]
+    scripts:
+      start: python3 -m http.server ${stem.self.port} --bind 127.0.0.1
+    stop_grace: 1s

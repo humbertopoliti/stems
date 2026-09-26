@@ -1,5 +1,6 @@
 //! `stems --version`: `stems <semver>` as text; with `--json` the envelope
-//! with `data: { version, commit, build_date }`.
+//! with `data: { version, commit, build_date, install_method }`
+//! (`install_method`: brew, tarball or cargo; see `commands::upgrade`).
 
 use serde_json::json;
 
@@ -22,6 +23,7 @@ pub fn run(ctx: &Ctx) -> CommandOutput {
         "version": VERSION,
         "commit": COMMIT,
         "build_date": BUILD_DATE,
+        "install_method": crate::commands::upgrade::detect(ctx).as_str(),
     }))
     .with_raw(raw)
 }

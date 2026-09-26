@@ -3,8 +3,9 @@
 //!
 //! `data`: `{ "ok": bool, "start_order": [[stem…]…] | null, "warnings":
 //! [Error] }`; every error in `errors`, sorted by (file, line, col); exit 2
-//! for config errors. Warnings (`OVERLAY_TRACKED_FILE`) never change the
-//! exit code.
+//! for config errors. Warnings (`OVERLAY_TRACKED_FILE`; `TOOL_VERSION` for
+//! a missing `docker compose` v2 when the workspace has compose stems)
+//! never change the exit code.
 //!
 //! Overlay destinations stems wrote itself (the `overlays` ledger of the
 //! workspace's `state.json`, read without a daemon) are not
@@ -58,7 +59,14 @@ pub fn run(ctx: &Ctx, args: &ValidateArgs) -> CommandOutput {
             human.push_str(&format!("  {}. {}\n", i + 1, layer.join(", ")));
         }
     }
-    let warnings = stems_core::validate::warnings(&resolved);
+    let mut warnings = stems_core::validate::warnings(&resolved);
+    // `requires` auto-check (15): compose stems need docker compose v2. A
+    // warning, so process-only CI still validates such workspaces.
+    if !args.skip_requires
+        && let Some(w) = stems_daemon::supervisor::containers::compose_warning(ws)
+    {
+        warnings.push(w);
+    }
     for w in &warnings {
         human.push_str(&format!("warning: {}: {}\n", w.code, w.message));
         if let Some(h) = &w.hint {

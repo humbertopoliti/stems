@@ -85,7 +85,7 @@ expression: "serde_json::to_string_pretty(&v).unwrap()"
       "to": "shop-api",
       "condition": "healthy",
       "soft": false,
-      "protocol": null,
+      "protocol": "http",
       "via": null
     }
   ]

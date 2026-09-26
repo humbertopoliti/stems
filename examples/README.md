@@ -63,6 +63,27 @@ stems down
 | `shop-web` | process | `port: auto`, `${stem.shop-api.port}` substitution, depends on shop-api |
 | `httpbin` | external | monitor-only; shows `unknown` when offline, never started or stopped by stems |
 
+### Docker and compose stems (`[postgres]`, `[redis]`)
+
+`postgres` (docker, deliverable 14) and `redis` (compose, deliverable 15)
+are **implemented, verified on Linux CI only**: the development machine
+has no Docker, so the `@docker` scenarios (`make e2e-docker`) and the
+checklists in `docs/docker.md` / `docs/compose.md` are the verification
+path. What to expect:
+
+- `stems up postgres` runs the container `hello-shop-postgres` (labels
+  `stems.workspace=hello-shop`, `stems.stem=postgres`) on host port 15432,
+  with the named volume `hello-shop_pgdata` (the config's
+  `hello-shop-pgdata`, prefixed `<ws>_` without doubling the name).
+- `stems up redis` runs `docker compose -f compose/redis.yml -p hello-shop
+  up -d --no-deps redis`; the stem passes `REDIS_PORT` so a port override
+  in `stems.local.yaml` reaches the compose file.
+- `stems down` removes both containers and keeps the volume;
+  `stems down --volumes --yes` also deletes `hello-shop_pgdata`.
+- Without Docker, `stems up postgres` fails fast with `DOCKER_UNAVAILABLE`
+  (hint "start Docker Desktop") before anything starts; a selection
+  whose closure has no docker/compose stem never contacts Docker.
+
 ### Codebases from git (alternative)
 
 Every example stem uses a local path (`codebase: ../../repos/shop-api`), so

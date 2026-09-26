@@ -1,0 +1,24 @@
+ stems · minimal                            Graph [Table] Detail  Logs  Events
+  STEM     TYPE    STATUS     REASON   PID    PORTS  UPTIME RESTARTS CPU   MEM
+› echo-svc process ✓ healthy  -        *      18090  *      0        *     *
+
+
+
+
+
+
+
+
+
+
+
+┌ Logs: echo-svc · following ──────────────────────────────────────────────────┐
+│   **:**:**.*** INFO listening on 127.0.0.1:18090                             │
+│›  **:**:**.*** WARN chaos endpoints enabled under /__chaos/                  │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+ minimal · profile - · daemon pid * · ✓1 !0 ✗0 ·0 ?0 ↻0     ? help · q quit

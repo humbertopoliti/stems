@@ -2,13 +2,13 @@
 source: crates/stems-cli/tests/help.rs
 expression: help
 ---
-Pause watchdogs (all, or one stem's)
+Pause watchdogs (all, or some stems')
 
-Usage: stems watch pause [OPTIONS] [STEM]
+Usage: stems watch pause [OPTIONS] [STEMS]...
 
 Arguments:
-  [STEM]
-          Only this stem
+  [STEMS]...
+          Only these stems (default: every watchdog)
 
 Options:
   -h, --help

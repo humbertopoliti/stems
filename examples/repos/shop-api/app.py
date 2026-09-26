@@ -6,6 +6,7 @@ See README.md for routes, environment variables and the chaos endpoint table.
 """
 
 import json
+import mmap
 import os
 import shutil
 import signal
@@ -157,8 +158,18 @@ def chaos(handler, action, q):
         return 200, {"ok": True, "effect": "emitted %d %s lines" % (n, level.lower())}
     if action == "alloc":
         mb = int(arg("mb", "100"))
-        # Filled (not zeroed) so the pages are really resident.
-        _allocated = bytearray(b"\x01") * (mb * 1024 * 1024) if mb > 0 else None
+        # An anonymous mapping with every page touched, so the pages are
+        # really resident; closing it unmaps them, so `mb=0` gives the memory
+        # back to the OS (a malloc'd buffer may stay cached by the allocator
+        # and keep the RSS up, which the metrics scenarios would see).
+        if _allocated is not None:
+            _allocated.close()
+            _allocated = None
+        if mb > 0:
+            size = mb * 1024 * 1024
+            _allocated = mmap.mmap(-1, size)
+            for off in range(0, size, mmap.PAGESIZE):
+                _allocated[off] = 1
         log("INFO", "chaos alloc", mb=mb)
         return 200, {"ok": True, "effect": "holding %d MB" % mb}
     if action == "touch":

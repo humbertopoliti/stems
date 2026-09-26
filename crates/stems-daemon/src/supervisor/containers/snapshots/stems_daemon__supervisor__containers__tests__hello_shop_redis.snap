@@ -1,0 +1,24 @@
+---
+source: crates/stems-daemon/src/supervisor/containers/tests.rs
+expression: v
+---
+{
+  "workspace": "hello-shop",
+  "stem": "redis",
+  "run_id": "RUN",
+  "file": "compose/redis.yml",
+  "service": "redis",
+  "project_name": "hello-shop",
+  "env": {
+    "PORT": "16379",
+    "REDIS_PORT": "16379",
+    "STEMS_RUN_ID": "RUN",
+    "STEMS_STEM": "redis",
+    "STEMS_WORKSPACE": "<ws>"
+  },
+  "stop_grace": {
+    "secs": 2,
+    "nanos": 0
+  },
+  "adopt": false
+}

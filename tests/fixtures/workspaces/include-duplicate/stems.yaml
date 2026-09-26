@@ -1,0 +1,17 @@
+# include-duplicate — fixture for config/include-errors.feature (FR-WS-9).
+# Both included files define the stem `pay`: DUPLICATE_STEM, with both file
+# paths in `details.files`.
+schema_version: 1
+name: include-duplicate
+include:
+  - teams/a.yaml
+  - teams/b.yaml
+
+stems:
+  gateway:
+    type: process
+    ports: [{ name: http, port: 18471 }]
+    scripts:
+      start: python3 -m http.server ${stem.self.port} --bind 127.0.0.1
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5 }
+    stop_grace: 1s

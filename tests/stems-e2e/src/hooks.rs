@@ -105,6 +105,9 @@ pub fn labelled_containers(ws: &str) -> Vec<String> {
 pub async fn check_leaks(w: &mut E2eWorld, docker: bool) -> Vec<String> {
     let mut leaks = Vec::new();
 
+    // An MCP server (31) goes first: it may hold a daemon it auto-started.
+    crate::mcp::shutdown(w).await;
+
     let has_daemon_files = !find_files(&w.home, &is_socket_or_lock).is_empty();
     if w.daemon_started || has_daemon_files {
         let _ = w

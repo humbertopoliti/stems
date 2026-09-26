@@ -19,7 +19,9 @@ pub struct UpParams {
     /// Stems to start (their hard dependencies are added); empty = every enabled stem.
     #[serde(default)]
     pub stems: Vec<String>,
-    /// Profile (deliverable 26; refused with `NOT_IMPLEMENTED` today).
+    /// Profile, used when `stems` is empty (the client resolves `--profile`
+    /// / `STEMS_PROFILE`); `None` = the workspace default (`profile:`,
+    /// `default_profile`, a profile named `default`), else every stem (26).
     #[serde(default)]
     pub profile: Option<String>,
     /// Informational: the client will not stay attached.
@@ -54,6 +56,10 @@ pub struct UpParams {
     /// (`up --force-overlays`, deliverable 18).
     #[serde(default)]
     pub force_overlays: bool,
+    /// Start no watchdogs (`up --no-watch`, deliverable 24): watchers stay
+    /// off until the next `up` without it.
+    #[serde(default)]
+    pub no_watch: bool,
 }
 
 impl Default for UpParams {
@@ -70,6 +76,7 @@ impl Default for UpParams {
             fresh: false,
             sync: false,
             force_overlays: false,
+            no_watch: false,
         }
     }
 }
@@ -111,6 +118,10 @@ pub struct DownParams {
     /// Per-stem stop grace override in milliseconds.
     #[serde(default)]
     pub timeout_ms: Option<u64>,
+    /// Also remove the `<ws>_*` named volumes of the selected docker stems
+    /// (destructive; the CLI asks for `--yes`) (14).
+    #[serde(default)]
+    pub volumes: bool,
 }
 
 /// `down` / `stop` result.
@@ -127,6 +138,9 @@ pub struct DownResult {
     /// The daemon shuts down after this reply.
     #[serde(default)]
     pub daemon_stopping: bool,
+    /// Docker volumes removed by `down --volumes` (14).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volumes_removed: Vec<String>,
 }
 
 /// `start` params.
@@ -208,8 +222,14 @@ pub struct StemStatus {
     /// Glyph name (`healthy`, `failed`, `transitioning`, ...).
     #[schemars(with = "String")]
     pub glyph: Glyph,
-    /// Why it is in this state.
+    /// Why it is in this state; for a degraded stem, the degraded reasons
+    /// (`dependency postgres unhealthy; flapping`). Empty for a plain
+    /// healthy stem.
     pub reason: Option<String>,
+    /// `healthy`, but with a warning (FR-GR-6, FR-HS-2): glyph `degraded`,
+    /// derived for every snapshot, never stored (see `docs/health.md`).
+    #[serde(default)]
+    pub degraded: bool,
     /// Leader pid while running.
     pub pid: Option<i32>,
     /// Process group while running.
@@ -220,14 +240,23 @@ pub struct StemStatus {
     pub uptime_s: Option<u64>,
     /// When the current process started.
     pub started_at: Option<DateTime<Utc>>,
-    /// Restarts so far (22 fills this).
+    /// Policy restarts since the daemon started (lifetime; a user
+    /// `restart` does not reset it). Watchdog restarts (24) are not counted.
     pub restarts: u32,
+    /// Policy restarts within the stem's `restart.window` (22); at 3 or
+    /// more a healthy stem is degraded with reason `restarts` (FR-HS-4).
+    #[serde(default)]
+    pub restarts_in_window: u32,
     /// The stem has a `seed` script and it has run (or its stamp was
     /// current) since the stem last started: `condition: seeded` holds.
     #[serde(default)]
     pub seeded: bool,
-    /// Health probe detail (deliverable 21; `null` today).
-    pub health: Option<Value>,
+    /// Health probe summary (deliverable 21); `null` without a health check.
+    pub health: Option<crate::health::HealthStatus>,
+    /// Latest metrics sample (25): `{cpu_pct, rss_bytes, children}`; absent
+    /// when not running or not sampled yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<crate::metrics::MetricsSummary>,
     /// Last error, if the stem failed.
     #[schemars(with = "Option<Value>")]
     pub error: Option<Error>,
@@ -236,6 +265,56 @@ pub struct StemStatus {
     /// inherited daemon environment is not shown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env: Option<BTreeMap<String, String>>,
+    /// Evaluated outputs (FR-ST-6, 26) of the current start; secret ones
+    /// are `"<redacted>"`. Empty (omitted) until the stem is healthy.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub outputs: BTreeMap<String, String>,
+    /// Watchdogs (24): `{paused, rules}`; omitted for a stem without `watch:` rules.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch: Option<crate::watch::WatchSummary>,
+}
+
+/// What `status` and `outputs` show instead of a secret output's value.
+pub const REDACTED: &str = "<redacted>";
+
+/// `outputs` params (26).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct OutputsParams {
+    /// Only these stems (default: every stem that declares outputs).
+    #[serde(default)]
+    pub stems: Vec<String>,
+    /// Return secret values instead of `<redacted>` (the CLI only asks for
+    /// this with `--reveal` in human mode on a terminal).
+    #[serde(default)]
+    pub reveal: bool,
+}
+
+/// One output of a stem.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct OutputValue {
+    /// Output name.
+    pub name: String,
+    /// Value (`"<redacted>"` when secret); `null` while not evaluated
+    /// (the stem is not healthy yet).
+    pub value: Option<String>,
+    /// Declared `secret: true`.
+    pub secret: bool,
+}
+
+/// A stem's outputs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct StemOutputs {
+    /// Stem name.
+    pub name: String,
+    /// Its declared outputs, in declaration order.
+    pub outputs: Vec<OutputValue>,
+}
+
+/// `outputs` result.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct OutputsResult {
+    /// Stems in declaration order.
+    pub stems: Vec<StemOutputs>,
 }
 
 /// Counts per glyph in `status`.
@@ -302,6 +381,7 @@ mod tests {
             state: StemState::Healthy,
             glyph: Glyph::Healthy,
             reason: None,
+            degraded: false,
             pid: Some(10),
             pgid: Some(10),
             ports: vec![PortStatus {
@@ -312,10 +392,14 @@ mod tests {
             uptime_s: Some(3),
             started_at: None,
             restarts: 0,
+            restarts_in_window: 0,
             seeded: false,
             health: None,
+            metrics: None,
             error: None,
             env: None,
+            outputs: BTreeMap::new(),
+            watch: None,
         };
         let v = serde_json::to_value(&st).unwrap();
         assert_eq!(v["type"], "process");

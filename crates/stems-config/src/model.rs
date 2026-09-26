@@ -9,8 +9,8 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
 use crate::types::{
-    ArgType, ByteSize, Condition, Dur, FileMode, HealthType, Protocol, Requirement, RestartPolicy,
-    Scalar, StemType, WatchAction, WatchRoot,
+    ArgType, AutoApply, ByteSize, Condition, Dur, FileMode, HealthType, Protocol, Requirement,
+    RestartPolicy, Scalar, StemType, WatchAction, WatchRoot,
 };
 
 /// Fixed lifecycle script names for stems (FR-SC-1).
@@ -59,12 +59,19 @@ pub struct Workspace {
     pub default_profile: Option<String>,
     /// Strict profiles.
     pub strict_profiles: bool,
+    /// Local profile override (`profile:`, usually in `stems.local.yaml`):
+    /// the profile `up` uses when none is given; wins over `default_profile`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
     /// Agent guard rails.
     pub agent: Agent,
     /// Log retention.
     pub logs: Logs,
     /// Metrics sampling.
     pub metrics: Metrics,
+    /// Config reload settings (33). Omitted from the JSON while default.
+    #[serde(default, skip_serializing_if = "ConfigSettings::is_default")]
+    pub config: ConfigSettings,
     /// Managed clone directory for git codebases.
     pub repos_dir: PathBuf,
     /// Workspace-level scripts.
@@ -138,6 +145,29 @@ pub struct Metrics {
     pub persist: bool,
 }
 
+/// `config:` settings (33).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConfigSettings {
+    /// `config.reload`.
+    #[serde(default)]
+    pub reload: ReloadSettings,
+}
+
+impl ConfigSettings {
+    /// Every value is the default.
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// `config.reload:` settings (33).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReloadSettings {
+    /// What the daemon applies on its own when the config changes.
+    #[serde(default)]
+    pub auto_apply: AutoApply,
+}
+
 /// A resolved stem.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Stem {
@@ -177,8 +207,8 @@ pub struct Stem {
     pub restart: Restart,
     /// Resource warning thresholds.
     pub limits: Limits,
-    /// Output templates (evaluated at runtime).
-    pub outputs: IndexMap<String, String>,
+    /// Outputs (FR-ST-6), evaluated when the stem becomes healthy.
+    pub outputs: IndexMap<String, Output>,
     /// Overlays.
     pub overlays: Vec<Overlay>,
     /// Tags.
@@ -297,6 +327,41 @@ pub enum ScriptSource {
     File(PathBuf),
 }
 
+/// A declared output (FR-ST-6). Serialized as in `stems.yaml`: a string, or
+/// `{command, secret}`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum Output {
+    /// A template rendered with the stem's own context (references to
+    /// `auto` ports are filled in when it runs).
+    Value(String),
+    /// A shell command run once the stem is healthy; trimmed stdout.
+    Command {
+        /// The command.
+        command: String,
+        /// Redacted wherever stems shows it.
+        #[serde(default)]
+        secret: bool,
+    },
+}
+
+impl Output {
+    /// Whether the value must be redacted.
+    pub fn is_secret(&self) -> bool {
+        matches!(self, Self::Command { secret: true, .. })
+    }
+}
+
+/// Is `name` a valid output name (`[A-Za-z_][A-Za-z0-9_]*`)? Output names
+/// become env var suffixes (`STEMS_<STEM>_OUTPUT_<NAME>`).
+pub fn is_output_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 /// A resolved script.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Script {
@@ -376,8 +441,18 @@ pub struct Health {
     pub status: Option<u16>,
     /// Body match (http).
     pub body_contains: Option<String>,
+    /// Extra request headers (http).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
+    /// Accept invalid TLS certificates (http).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub insecure: bool,
     /// Command (command).
     pub command: Option<String>,
+    /// Working directory of the command, relative to the stem's codebase
+    /// (command; `None`: the codebase).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
     /// Interval.
     pub interval: Dur,
     /// Timeout.
@@ -442,6 +517,12 @@ pub struct Limits {
     pub memory: Option<ByteSize>,
     /// CPU cores.
     pub cpu: Option<f64>,
+    /// How long memory must stay above `memory` (`"2GB for 30s"`; 25).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_for: Option<Dur>,
+    /// How long CPU must stay above `cpu` (`"80% for 60s"`; 25).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_for: Option<Dur>,
 }
 
 /// Overlay source.

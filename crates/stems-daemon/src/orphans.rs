@@ -5,7 +5,8 @@
 //!   `process` stem (fixed ports, plus `auto` ports recorded in state) whose
 //!   process group is not a recorded stem's and which is not the daemon (or
 //!   the caller) itself.
-//! * Containers: [`Runtime::scan_orphans`](stems_runtime::Runtime) (14).
+//! * Containers: [`scan_containers`] (14/15): labelled containers and
+//!   containers of stems-owned compose projects, when Docker is reachable.
 //!
 //! **`matches_start_command` heuristic.** The stem's start command
 //! (`command`, else `scripts.start`) is reduced to its program and first
@@ -147,6 +148,74 @@ pub fn scan(ws: &Workspace, state: Option<&StateFile>, ignore: &[i32]) -> Vec<Or
         }
     }
     out
+}
+
+/// Container orphans (14/15): containers labelled `stems.workspace=<ws>`
+/// and containers of stems-owned compose projects that `state` does not
+/// record. Empty (silently) when the workspace has no docker/compose stem
+/// or Docker is not reachable. With `running_only` (the scan `stems up`
+/// does), stopped containers are left out: they hold no ports and `up`
+/// replaces its own stopped containers anyway; `doctor` reports them all.
+pub async fn scan_containers(
+    ws: &Workspace,
+    state: Option<&StateFile>,
+    docker_host: Option<String>,
+    compose_dir: &std::path::Path,
+    running_only: bool,
+) -> Vec<Orphan> {
+    let has = |k: StemType| ws.stems().any(|s| s.kind() == k);
+    if !has(StemType::Docker) && !has(StemType::Compose) {
+        return Vec::new();
+    }
+    let Ok(docker) = crate::doctor::connect_docker(docker_host, Some(ws)).await else {
+        return Vec::new();
+    };
+    let scope = OrphanScope {
+        workspace: ws.name.clone(),
+        known: state
+            .map(|f| f.stems.values().map(|r| r.adopt_record()).collect())
+            .unwrap_or_default(),
+    };
+    let mut out: Vec<Orphan> = match docker.scan_container_orphans(&scope).await {
+        Ok(v) => v
+            .into_iter()
+            .filter(|o| !running_only || o.state == "running")
+            .map(Orphan::from)
+            .collect(),
+        Err(e) => {
+            tracing::debug!(error = %e, "container orphan scan skipped");
+            Vec::new()
+        }
+    };
+    if has(StemType::Compose) {
+        let compose = stems_runtime::ComposeRuntime::new(
+            std::sync::Arc::new(docker),
+            stems_runtime::ComposeOptions::new(&ws.name, compose_dir),
+        );
+        out.extend(
+            compose
+                .scan_orphans(&scope)
+                .await
+                .into_iter()
+                // `compose <project>/<service>: <name> (<state>[, image])`
+                .filter(|o| !running_only || o.command.contains("(running")),
+        );
+    }
+    out
+}
+
+/// Remove a container orphan (force, volumes kept).
+pub async fn remove_container(o: &Orphan, docker_host: Option<String>) -> Result<(), String> {
+    let Some(id) = o.container_id.as_deref() else {
+        return Err("not a container".into());
+    };
+    let docker = crate::doctor::connect_docker(docker_host, None)
+        .await
+        .map_err(|e| e.message)?;
+    docker
+        .remove_container_id(id, false)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// The record to adopt a process orphan as its stem (`None` if it is gone).

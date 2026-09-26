@@ -637,6 +637,46 @@ trivially when Docker is absent (use only in `@docker` scenarios).
 Then no container with label stems.workspace=hello-shop exists
 ```
 
+**Docker checks (14/15, `@docker` only).** These run the `docker` CLI
+(`src/docker.rs`; bounded by 120 s and the scenario budget) and fail
+without Docker. The pure parts (label/state checks on `docker inspect`
+JSON, `docker compose ps` parsing in both the array and the NDJSON format,
+`docker run` arguments) are unit-tested in the harness.
+
+**`Then the container "<name>" is running with label "<key>=<value>"`** —
+`docker inspect <name>`: `State.Running` and `Config.Labels[key] == value`.
+```gherkin
+Then the container "docker-pg-db" is running with label "stems.workspace=docker-pg"
+```
+
+**`Given a container "<name>" is running with labels "<k>=<v>,..."`** —
+`docker run -d --name <name> --label k=v ... alpine:3 sleep 300` (orphan
+scenarios). With `stems.workspace=<ws>` among the labels the After hook
+reports it as a leak unless the scenario removes it (e.g. `stems doctor
+--orphans --yes`).
+```gherkin
+Given a container "docker-pg-stray" is running with labels "stems.workspace=docker-pg,stems.stem=db"
+```
+
+**`Then the docker volume "<name>" exists`** / **`does not exist`** —
+`docker volume inspect <name>` succeeds / fails.
+```gherkin
+Then the docker volume "docker-pg_pgdata" exists
+```
+
+**`Then the compose project "<project>" has service "<service>" running`**
+— `docker compose -p <project> ps --format json -a` lists the service in
+state `running`.
+```gherkin
+Then the compose project "stems-compose-redis" has service "redis" running
+```
+
+Other Docker facts go through `When I run the shell command "docker ..."`
+(`docker inspect -f '{{json .Id}}' <name>` prints JSON, so `I save the
+JSON at "$" as "cid"` works on it). Compose containers carry no `stems.*`
+labels, so the After hook does not see them: compose scenarios end with
+`docker compose -p <project> down`.
+
 **`Then the state file contains no stems`** — every `state.json` under
 `STEMS_HOME` has no/empty `stems` (a missing file passes).
 ```gherkin
@@ -695,6 +735,53 @@ For checks stems has no command for (`docker exec … psql`, `curl`).
 When I run the shell command "curl -fsS http://127.0.0.1:${port:18080}/products"
 ```
 
+### Config (26)
+
+**`Given the local override file contains:`** + a docstring — writes
+`stems.local.yaml` with the docstring verbatim (placeholders expanded,
+common indentation removed), replacing the harness-generated file. Use it
+with a workspace `with its original ports` (the generated port overrides are
+not merged back); a later `a local override setting ...` step rewrites the
+file from the harness overrides. For comment-preservation checks of
+`stems config set`.
+```gherkin
+Given the "minimal" workspace with its original ports
+And the local override file contains:
+  """
+  # my machine only
+  stems:
+    echo-svc:
+      env:
+        SHOP_CHAOS: "0"  # quieter locally
+  """
+```
+
+### Config reload (33)
+
+**`Given the local override file is extended with:`** + a docstring — the
+docstring (a YAML mapping, placeholders expanded, common indentation
+removed) is deep-merged into the harness-generated `stems.local.yaml` (the
+port remapping and earlier `a local override setting ...` values are kept:
+mappings merge key by key, anything else replaces), which is rewritten.
+Adds a whole stem while the daemon watches the file.
+```gherkin
+Given the local override file is extended with:
+  """
+  stems:
+    extra:
+      type: process
+      command: sleep 60
+      ports: [{ name: http, port: auto }]
+  """
+```
+
+**`Given the local override "<dotted.path>" is removed`** — removes the key
+(and mappings left empty above it) from the generated `stems.local.yaml`
+and rewrites it; fails if the key is not there.
+```gherkin
+Given the local override "stems.extra" is removed
+```
+
 ### Overlays (18)
 
 **`Given the repo copy is a git repository with "<repo>/<path>" committed`**
@@ -741,4 +828,273 @@ with placeholder text if it does not exist, then adds
 No daemon may be running. For stale-overlay checks.
 ```gherkin
 Given the state file records an overlay for stem "shop-api" at "${tmp}/examples/repos/shop-api/config/local.ini"
+```
+
+### Health (21)
+
+**`Then there are exactly <n> events matching <json-subset>`** — one `stems
+events --json --since 0`: exactly `n` events are supersets (e.g. one
+`stem.health` per transition, none per probe).
+```gherkin
+Then there are exactly 2 events matching {"kind": "stem.health", "stem": "echo-svc"}
+```
+
+**`Then within <n>s there are at least <k> events matching <json-subset>`** —
+polls the events stream until at least `k` events match.
+```gherkin
+Then within 3s there are at least 4 events matching {"kind": "stem.health", "stem": "api"}
+```
+
+**`Then within <n>s the JSON at "<jsonpath>" of "stems <args>" equals <json>`**
+— reruns the command every 100 ms until the path selects exactly one node
+equal to the value (state that is derived, like `degraded`, without sleeps).
+The command becomes the last command.
+```gherkin
+Then within 2s the JSON at "$.data.stems[?@.name=='web'].degraded" of "stems status --json" equals false
+```
+
+**`Then the daemon's CPU is below <n> %`** — daemon pid from `stems daemon
+status --json`, CPU time (`ps -o time=`) over a 3 s sampling window as a
+percentage of wall time. Tag such scenarios `@slow`.
+```gherkin
+Then the daemon's CPU is below 5 %
+```
+
+**`Given a workspace with <n> process stems using tcp health every <ms>ms`**
+— an empty workspace dir (as `Given an empty directory`) with a generated
+`stems.yaml`: `n` (≤ 20) stems `s00`… each running `python3 -m http.server`
+on a port of the scenario's port block, with a `tcp` probe at that interval.
+```gherkin
+Given a workspace with 20 process stems using tcp health every 200ms
+```
+
+### Restart policies (22)
+
+**`Then during <n>s the events stream never contains <json-subset>`** —
+polls `stems events --json --since 0` every 200 ms for `n` seconds and
+fails as soon as an event is a superset. A bounded "nothing happens" check
+(a stop is not undone by the restart policy), not a wait for a condition.
+```gherkin
+Then during 3s the events stream never contains {"kind": "stem.restarting", "stem": "api"}
+```
+
+**`Then the first event matching <json-subset> is followed by one matching <json-subset> after <a> to <b> ms`**
+— one `stems events --json --since 0`: takes the first event matching the
+first subset, then the first *later* (by `seq`) event matching the second,
+and asserts that their `ts` differ by `a..=b` milliseconds. For measured
+delays (backoff) with a tolerant window.
+```gherkin
+Then the first event matching {"kind": "stem.restarting", "data": {"attempt": 2}} is followed by one matching {"kind": "stem.state", "to": "healthy"} after 800 to 11000 ms
+```
+
+### Watchdogs (24)
+
+**`Then during <n>s there are at most <k> events matching <json-subset>`** —
+polls `stems events --json --since 0` every 200 ms for `n` seconds and
+fails as soon as more than `k` events are supersets. A bounded coalescing
+proof (a burst of changes fires once), not a wait for a condition.
+Files are changed with `Given the file "<path>" is written with "<text>"`
+(replaces the file) or a shell step (`echo '# x' >> app.py`, loops) in the
+private copy of the repos.
+```gherkin
+Then during 2s there are at most 1 events matching {"kind": "watch.triggered", "stem": "burst"}
+```
+
+### TUI frames (27)
+
+Headless `stems attach --headless --script ...` (and attached `stems up`
+with `STEMS_TUI_SCRIPT`) prints each `frame` token as text after a
+`--- frame N ---` line. These steps read the **last command's** stdout,
+split it into frames (the text after each delimiter up to the next) and map
+remapped ports back to the declared ones first. Script tokens:
+`docs/tui.md`.
+
+**`Then the frame matches golden "<name>"[ masking <COL,COL>]`** — the last
+frame against `tests/features/goldens/<name>.txt`, line by line (trailing
+spaces trimmed). Masking uses the table header (the first line with `STEM`
+and `STATUS`): each named column spans from its header's start to the next
+header's; in the rows below it (up to the first blank line) every masked
+cell becomes `*`, blank ones too (a sparkline may not have its first
+sample yet). `daemon pid N` is always masked, and the status bar is compared
+only up to its six glyph counts (the right-aligned hints move with the
+pid's width). `TIME` (29) masks the digits
+of every clock time in the frame (`12:00:01`, `12:00:01.234`: log
+timestamps, the events table). A missing golden is
+written as `<name>.txt.new` (the step fails); `STEMS_E2E_BLESS=1` writes it.
+```gherkin
+Then the frame matches golden "tui-table-minimal" masking PID,UPTIME,CPU,MEM
+Then the frame matches golden "tui-logs-warn-only" masking TIME
+```
+
+**`Then the last frame contains "<text>"`** / **`does not contain "<text>"`**
+```gherkin
+Then the last frame contains "Detail: b"
+```
+
+**`Then frame <n> contains "<text>"`** / **`Then frame <n> does not contain "<text>"`**
+— frame `n` (from 1).
+```gherkin
+Then frame 2 contains "[Detail]"
+```
+
+**`Then stdout contains the terminal restore sequence`** — the raw stdout
+contains `ESC[?1049l` (leave the alternate screen; the panic-restore test).
+```gherkin
+Then stdout contains the terminal restore sequence
+```
+
+**`Then stdout does not contain "<text>"`** — raw text absence.
+```gherkin
+Then stdout does not contain "--- frame 1 ---"
+```
+
+**`Then stdout contains the OSC 52 sequence for "<text>"`** (29) — the raw
+stdout contains `ESC ] 52 ; c ; <base64 of text> BEL`, what headless mode
+prints for a copy (`y`). `\n` in the text is a newline (a copied range).
+```gherkin
+Then stdout contains the OSC 52 sequence for "INFO chaos log line 2"
+```
+
+Headless script tokens added by 29 (see `docs/tui.md`): `wait:lines>=<n>`,
+`wait:log=<text>` (the log pane) and `chaos:<path>` (the selected stem's
+chaos endpoint, from inside the TUI run).
+
+Added by 30: `type:<text>` (the characters verbatim, e.g. `type:rest api`
+into the palette or a form field) and `wait:event=<kind>[:<stem>]` (an event
+after the last key, e.g. `wait:event=script.finished:shop-api`). Actions run
+synchronously in headless mode. Actor checks use the generic JSON steps on
+`stems events --json --since 0` (a string `contains` is a substring match):
+```gherkin
+Then the JSON at "$[?@.kind=='watch.paused'].actor" contains "tui:"
+```
+
+### Metrics (25)
+
+**`Then within <n>s the JSON at "<jsonpath>" of "stems <args>" is greater than <number>`**
+— reruns the command every 100 ms until the path selects exactly one number
+above the bound. The bound may be a sum after placeholder expansion
+(`${var:rss}+104857600`: "grew by more than 100 MB").
+```gherkin
+Then within 5s the JSON at "$.data.stems[0].latest.rss_bytes" of "stems metrics --json" is greater than ${var:rss}+104857600
+```
+
+**`Then some sample in the JSON at "<jsonpath>" has "<field>" greater than <number>`**
+— the path selects objects or arrays of objects (flattened one level); at
+least one has the numeric `field` above the bound.
+```gherkin
+Then some sample in the JSON at "$.data.stems[0].history" has "cpu_pct" greater than 50
+```
+
+**`Then within <n>s some sample in the JSON at "<jsonpath>" of "stems <args>" has "<field>" greater than <number>`**
+— the same, polling the command every 100 ms (it becomes the last command).
+```gherkin
+Then within 5s some sample in the JSON at "$.data.stems[0].history" of "stems metrics --history 10s --json" has "cpu_pct" greater than 50
+```
+
+**`Then the JSON at "<jsonpath>" is in descending order by "<field>"`** — the
+selected objects (an array is flattened) are ordered by the dotted `field`
+(`latest.rss_bytes`), highest first; objects without it count as lowest. At
+least two objects.
+```gherkin
+Then the JSON at "$.data.stems" is in descending order by "latest.rss_bytes"
+```
+
+**`Then the JSON at "<jsonpath>" has between <a> and <b> elements`** — the
+selected nodes (an array is flattened) number `a..=b`.
+```gherkin
+Then the JSON at "$.data.stems[0].history" has between 1 and 40 elements
+```
+
+**`Then within <n>s the metrics file of "<stem>" has at least <k> lines`** —
+polls `$STEMS_HOME/*/metrics/<stem>.ndjson` (`metrics.persist: true`) until
+it holds `k` sample lines (JSON objects with `rss_bytes`).
+```gherkin
+Then within 3s the metrics file of "echo-svc" has at least 2 lines
+```
+
+### MCP (31)
+
+An in-process rmcp client named `stems-e2e` (so its actor is
+`mcp:stems-e2e`) talks over stdio to a `stems mcp` child started with the
+scenario's cwd and environment (`src/mcp.rs`). Every tool call carries a
+progress token. A tool result (the JSON text of its first content block)
+also becomes the last command (`json` = the result, exit code 1 when
+`isError`), so `Then the JSON at "<path>" ...` steps apply to it as well.
+The server's stderr is kept in `<scenario>/mcp-server.stderr`. The After hook
+closes the client and kills the server's process group before the leak
+check, which then stops any daemon it auto-started.
+
+**`Given an MCP client is connected[ with auto-start]`** — starts `stems mcp`
+(`--auto-start`: also marks the daemon as possibly started) and initialises.
+```gherkin
+Given an MCP client is connected with auto-start
+```
+
+**`When the MCP client calls tool "<name>" with <json object>`** — placeholders
+are expanded (`${var:c1}`).
+```gherkin
+When the MCP client calls tool "get_logs" with {"cursor": "${var:c1}"}
+```
+
+**`Then the tool result is success|error`** — `isError` of the last call.
+```gherkin
+Then the tool result is error
+```
+
+**`Then the tool result JSON at "<jsonpath>" equals <json>`** /
+**`... contains <json>`** — like the generic JSON steps, on the last tool
+result.
+```gherkin
+Then the tool result JSON at "$.code" equals "DESTRUCTIVE_NOT_CONFIRMED"
+And the tool result JSON at "$.events" contains {"actor": "mcp:stems-e2e"}
+```
+
+**`When I save the tool result JSON at "<jsonpath>" as "<name>"`** — one node,
+saved for `${var:<name>}` (strings unquoted).
+```gherkin
+When I save the tool result JSON at "$.next_cursor" as "c1"
+```
+
+**`Then across the last <n> tool results the values at "<jsonpath>" are <d> distinct of <t>`**
+— collects the selected values of the last `n` tool results: `t` in total,
+`d` distinct (pagination: every record exactly once).
+```gherkin
+Then across the last 3 tool results the values at "$.records[*].text" are 1200 distinct of 1200
+```
+
+**`Then the tools list contains|does not contain "<name>"`** — a fresh
+`tools/list`.
+```gherkin
+Then the tools list contains "echo_svc__ping"
+```
+
+**`Then the tools list matches "<repo file>"`** — a fresh `tools/list` has the
+same tools (name, description, inputSchema, in order) as the golden file.
+```gherkin
+Then the tools list matches "schema/mcp-tools.json"
+```
+
+**`When the MCP client reads resource "<uri>"`** / **`Then the resource content contains "<text>"`**
+```gherkin
+When the MCP client reads resource "stems://echo-svc/logs?tail=5"
+Then the resource content contains "chaos log line 2"
+```
+
+**`When the MCP client gets prompt "<name>" with <json object>`** / **`Then the prompt text contains "<text>"`**
+```gherkin
+When the MCP client gets prompt "diagnose_stem" with {"stem": "echo-svc"}
+Then the prompt text contains "state: healthy"
+```
+
+**`Then the MCP client received at least <n> progress notification(s)`** —
+polls up to 2 s (notifications may trail the result).
+```gherkin
+Then the MCP client received at least 2 progress notifications
+```
+
+**`When the MCP client disconnects`** — closes the client (stdin EOF for the
+server) and waits up to 15 s for `stems mcp` to exit (after stopping a daemon
+it auto-started when nothing runs).
+```gherkin
+When the MCP client disconnects
 ```

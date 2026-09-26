@@ -50,6 +50,8 @@ fn io_error(stem: &str, dest: &Path, what: &str, e: &std::io::Error) -> Error {
 /// already allocated ones of every other stem.
 fn render_ctx(core: &Core, ws: &Workspace, stem: &Stem, env: HashMap<String, String>) -> RenderCtx {
     let mut ctx = RenderCtx::for_stem(ws, stem, env);
+    // `${stem.<n>.outputs.X}` of running stems (26).
+    ctx.outputs = core.outputs.values().into_iter().collect();
     let mut allocated = Vec::new();
     for (name, s) in &ws.stems {
         let own = *name == stem.name || stem.depends_on.iter().any(|d| d.stem == *name);

@@ -36,6 +36,9 @@ pub struct RenderOptions<'a> {
     pub width: usize,
     /// Live status; `None` = config only, every stem `·` (stopped).
     pub status: Option<StatusFn<'a>>,
+    /// Compact boxes: one row `[name ✓]` per stem, no borders and no
+    /// reason line (the TUI's zoomed-out graph).
+    pub compact: bool,
 }
 
 impl Default for RenderOptions<'_> {
@@ -46,6 +49,7 @@ impl Default for RenderOptions<'_> {
             edge_labels: false,
             width: 0,
             status: None,
+            compact: false,
         }
     }
 }
@@ -58,6 +62,7 @@ impl std::fmt::Debug for RenderOptions<'_> {
             .field("edge_labels", &self.edge_labels)
             .field("width", &self.width)
             .field("status", &self.status.is_some())
+            .field("compact", &self.compact)
             .finish()
     }
 }
@@ -293,12 +298,17 @@ struct Cell {
     ch: Option<char>,
     mask: u8,
     solid: bool,
-    color: Option<&'static str>,
+    /// Coloured like this glyph (the glyph itself and the reason line).
+    glyph: Option<Glyph>,
+    /// Part of this stem's box.
+    node: Option<NodeId>,
 }
 
 struct Canvas {
     rows: Vec<Vec<Cell>>,
     unicode: bool,
+    /// The box being painted: [`Canvas::put`] tags cells with it.
+    cur: Option<NodeId>,
 }
 
 impl Canvas {
@@ -306,6 +316,7 @@ impl Canvas {
         Self {
             rows: vec![vec![Cell::default(); width]; height],
             unicode,
+            cur: None,
         }
     }
 
@@ -314,14 +325,16 @@ impl Canvas {
         self.rows.get_mut(y)?.get_mut(x)
     }
 
-    fn put(&mut self, y: i64, x: usize, ch: char, color: Option<&'static str>) {
+    fn put(&mut self, y: i64, x: usize, ch: char, color: Option<Glyph>) {
+        let node = self.cur;
         if let Some(c) = self.cell(y, x) {
             c.ch = Some(ch);
-            c.color = color;
+            c.glyph = color;
+            c.node = node;
         }
     }
 
-    fn text(&mut self, y: i64, x: usize, s: &str, color: Option<&'static str>) {
+    fn text(&mut self, y: i64, x: usize, s: &str, color: Option<Glyph>) {
         for (i, ch) in s.chars().enumerate() {
             self.put(y, x + i, ch, color);
         }
@@ -360,6 +373,23 @@ impl Canvas {
             }
             self.line(y, x, m, soft);
         }
+    }
+
+    /// Collapse every run of blank rows (nothing drawn, no line passing
+    /// through) to one row: placement can leave tall gaps between unrelated
+    /// parts of the graph.
+    fn squeeze(&mut self) {
+        let blank = |r: &Vec<Cell>| {
+            r.iter()
+                .all(|c| c.ch.is_none_or(|ch| ch == ' ') && c.mask == 0)
+        };
+        let mut prev_blank = false;
+        self.rows.retain(|r| {
+            let b = blank(r);
+            let keep = !(b && prev_blank);
+            prev_blank = b;
+            keep
+        });
     }
 
     fn line_char(&self, mask: u8, solid: bool) -> char {
@@ -423,7 +453,11 @@ impl Canvas {
                 let mut open: Option<&str> = None;
                 for c in row {
                     let ch = c.ch.unwrap_or_else(|| self.line_char(c.mask, c.solid));
-                    let want = if color { c.color } else { None };
+                    let want = if color {
+                        c.glyph.map(Glyph::ansi)
+                    } else {
+                        None
+                    };
                     if want != open {
                         if open.is_some() {
                             s.push_str("\x1b[0m");
@@ -659,11 +693,13 @@ struct Geometry {
     height: BTreeMap<Slot, i64>,
     channels: Vec<Channel>,
     views: Vec<NodeView>,
+    /// One-row boxes ([`RenderOptions::compact`]).
+    compact: bool,
 }
 
 impl Geometry {
     fn port(&self, s: Slot) -> i64 {
-        self.top[&s] + if matches!(s, Slot::Node(_)) { 1 } else { 0 }
+        self.top[&s] + port_offset(s, self.compact)
     }
     fn bottom(&self) -> i64 {
         self.top
@@ -674,6 +710,11 @@ impl Geometry {
     }
 }
 
+/// Row of a slot's port (where edges attach) below its top.
+fn port_offset(s: Slot, compact: bool) -> i64 {
+    i64::from(matches!(s, Slot::Node(_)) && !compact)
+}
+
 fn geometry(layout: &Layout, opts: &RenderOptions<'_>) -> Geometry {
     let ncol = layout.layers.len();
     let cols: Vec<Vec<Slot>> = layout.slots.iter().rev().cloned().collect();
@@ -682,6 +723,7 @@ fn geometry(layout: &Layout, opts: &RenderOptions<'_>) -> Geometry {
         .iter()
         .map(|n| {
             let (glyph, reason) = status_of(opts.status, &n.name);
+            let reason = reason.filter(|_| !opts.compact);
             NodeView { glyph, reason }
         })
         .collect();
@@ -713,9 +755,14 @@ fn geometry(layout: &Layout, opts: &RenderOptions<'_>) -> Geometry {
             .max()
             .unwrap_or(0)
             .min(REASON_MAX);
-        col_w[c] = (name_w + 1 + glyph_w).max(reason_w) + 4;
+        col_w[c] = if opts.compact {
+            name_w + 1 + glyph_w + 2
+        } else {
+            (name_w + 1 + glyph_w).max(reason_w) + 4
+        };
         for s in slots {
             let h = match s {
+                Slot::Node(_) if opts.compact => 1,
                 Slot::Node(n) => 3 + i64::from(views[*n].reason.is_some()),
                 Slot::Dummy { .. } => 1,
             };
@@ -730,7 +777,7 @@ fn geometry(layout: &Layout, opts: &RenderOptions<'_>) -> Geometry {
         nbrs.entry(s.upper).or_default().push(s.lower);
         nbrs.entry(s.lower).or_default().push(s.upper);
     }
-    let port_off = |s: &Slot| if matches!(s, Slot::Node(_)) { 1 } else { 0 };
+    let port_off = |s: &Slot| port_offset(*s, opts.compact);
 
     // Vertical placement: start stacked, then repeatedly move every slot
     // towards the mean port row of its neighbours (order-preserving
@@ -785,6 +832,7 @@ fn geometry(layout: &Layout, opts: &RenderOptions<'_>) -> Geometry {
         height,
         channels: Vec::new(),
         views,
+        compact: opts.compact,
     };
 
     // Routing channels.
@@ -951,6 +999,18 @@ fn paint_band(
     b: usize,
     out: &mut Vec<String>,
 ) {
+    paint_canvas(layout, geo, opts, a, b).finish(opts.color, out);
+}
+
+/// Paint display columns `a..b` (plus the stub column naming the targets
+/// of edges leaving the band when `b` is not the last column).
+fn paint_canvas(
+    layout: &Layout,
+    geo: &Geometry,
+    opts: &RenderOptions<'_>,
+    a: usize,
+    b: usize,
+) -> Canvas {
     let ncol = geo.cols.len();
     let stub = b < ncol;
     // x of each column in this band (and of the stub column).
@@ -1003,10 +1063,24 @@ fn paint_band(
                         cv.put(y, x0, if opts.unicode { '…' } else { '~' }, None);
                     }
                 }
+                Slot::Node(n) if geo.compact => {
+                    let view = &geo.views[n];
+                    cv.cur = Some(n);
+                    cv.put(y, x0, '[', None);
+                    for i in 1..w - 1 {
+                        cv.put(y, x0 + i, ' ', None);
+                    }
+                    cv.put(y, x0 + w - 1, ']', None);
+                    cv.text(y, x0 + 1, &layout.nodes[n].name, None);
+                    let sym = view.glyph.symbol(opts.unicode);
+                    cv.text(y, x0 + w - 1 - len(sym), sym, Some(view.glyph));
+                    cv.cur = None;
+                }
                 Slot::Node(n) => {
                     let view = &geo.views[n];
                     let hgt = geo.height[s];
                     let inner = w - 2;
+                    cv.cur = Some(n);
                     cv.put(y, x0, tl, None);
                     cv.put(y, x0 + w - 1, tr, None);
                     cv.put(y + hgt - 1, x0, bl, None);
@@ -1022,7 +1096,7 @@ fn paint_band(
                             cv.put(y + r, x0 + i, ' ', None);
                         }
                     }
-                    let color = Some(view.glyph.ansi());
+                    let color = Some(view.glyph);
                     cv.text(y + 1, x0 + 2, &layout.nodes[n].name, None);
                     let sym = view.glyph.symbol(opts.unicode);
                     cv.text(y + 1, x0 + w - 2 - len(sym), sym, color);
@@ -1032,6 +1106,7 @@ fn paint_band(
                     if sources.contains(s) {
                         cv.put(y + 1, x0 + w - 1, port, None);
                     }
+                    cv.cur = None;
                 }
             }
         }
@@ -1073,5 +1148,158 @@ fn paint_band(
             cv.put(row, lx + 1 + len(label), ' ', None);
         }
     }
-    cv.finish(opts.color, out);
+    cv.squeeze();
+    cv
+}
+
+// ---------------------------------------------------------------------------
+// Cells (the TUI graph widget)
+
+/// One character cell of [`render_grid`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GridCell {
+    /// The character (`' '` for an empty cell).
+    pub ch: char,
+    /// Part of this stem's box (border, name, glyph, reason or padding).
+    pub node: Option<NodeId>,
+    /// Coloured like this glyph: the status glyph and the reason line.
+    pub glyph: Option<Glyph>,
+    /// Part of an edge (line drawing or arrowhead).
+    pub edge: bool,
+    /// The edge piece is dashed (a soft edge only).
+    pub soft: bool,
+}
+
+/// Where a stem's box is in a [`Grid`] (cells, from the top left).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BoxRect {
+    /// The stem.
+    pub node: NodeId,
+    /// Leftmost column.
+    pub x: usize,
+    /// Top row.
+    pub y: usize,
+    /// Width in cells.
+    pub width: usize,
+    /// Height in cells.
+    pub height: usize,
+}
+
+/// The text rendering as styled cells, unwrapped (one band, any width):
+/// what [`render_text`] draws with `width: 0`, plus which box and which
+/// glyph every cell belongs to, so a widget can style and scroll it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Grid {
+    /// Width in cells.
+    pub width: usize,
+    /// Height in cells.
+    pub height: usize,
+    /// `height` rows of `width` cells.
+    pub rows: Vec<Vec<GridCell>>,
+    /// Every stem's box, in display order (column by column, top to bottom).
+    pub boxes: Vec<BoxRect>,
+}
+
+impl Grid {
+    /// The box of `node`.
+    pub fn box_of(&self, node: NodeId) -> Option<&BoxRect> {
+        self.boxes.iter().find(|b| b.node == node)
+    }
+
+    /// The rows as plain text, trailing spaces trimmed (tests).
+    pub fn text(&self) -> String {
+        let mut out = String::new();
+        for row in &self.rows {
+            let line: String = row.iter().map(|c| c.ch).collect();
+            out.push_str(line.trim_end());
+            out.push('\n');
+        }
+        out
+    }
+}
+
+/// Render `layout` as a [`Grid`]. `opts.width` and `opts.color` are ignored
+/// (the caller scrolls and styles); soft edges that would point backwards
+/// are not drawn (see [`render_text`]).
+pub fn render_grid(layout: &Layout, opts: &RenderOptions<'_>) -> Grid {
+    let ncol = layout.layers.len();
+    if ncol == 0 {
+        return Grid::default();
+    }
+    let geo = geometry(layout, opts);
+    let cv = paint_canvas(layout, &geo, opts, 0, ncol);
+    let arrow = if opts.unicode { '▶' } else { '>' };
+    let height = cv.rows.len();
+    let width = cv.rows.first().map_or(0, Vec::len);
+    let rows: Vec<Vec<GridCell>> = cv
+        .rows
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|c| {
+                    let ch = c.ch.unwrap_or_else(|| cv.line_char(c.mask, c.solid));
+                    let edge = c.node.is_none() && (c.ch.is_none() && c.mask != 0 || ch == arrow);
+                    GridCell {
+                        ch,
+                        node: c.node,
+                        glyph: c.glyph,
+                        edge,
+                        soft: edge && c.mask != 0 && !c.solid,
+                    }
+                })
+                .collect()
+        })
+        .collect();
+    let mut boxes = Vec::new();
+    for n in display_nodes(layout) {
+        let mut hit = rows.iter().enumerate().flat_map(|(y, r)| {
+            r.iter()
+                .enumerate()
+                .filter(move |(_, c)| c.node == Some(n))
+                .map(move |(x, _)| (x, y))
+        });
+        if let Some((x0, y0)) = hit.next() {
+            let (mut x1, mut y1) = (x0, y0);
+            let mut xmin = x0;
+            for (x, y) in hit {
+                xmin = xmin.min(x);
+                x1 = x1.max(x);
+                y1 = y1.max(y);
+            }
+            boxes.push(BoxRect {
+                node: n,
+                x: xmin,
+                y: y0,
+                width: x1 - xmin + 1,
+                height: y1 - y0 + 1,
+            });
+        }
+    }
+    Grid {
+        width,
+        height,
+        rows,
+        boxes,
+    }
+}
+
+/// The reason shown under a stem in the graph: only for `failed` and
+/// `degraded` stems, with `dependency <name> <state>` shortened to
+/// `dep <name>` (several reasons stay `; `-separated).
+pub fn graph_reason(glyph: Glyph, reason: Option<&str>) -> Option<String> {
+    if !matches!(glyph, Glyph::Failed | Glyph::Degraded) {
+        return None;
+    }
+    let r = reason?.split_whitespace().collect::<Vec<_>>().join(" ");
+    if r.is_empty() {
+        return None;
+    }
+    let parts: Vec<String> = r
+        .split("; ")
+        .map(|p| match p.strip_prefix("dependency ") {
+            Some(rest) => format!("dep {}", rest.split(' ').next().unwrap_or(rest)),
+            None => p.to_string(),
+        })
+        .collect();
+    Some(parts.join("; "))
 }

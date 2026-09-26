@@ -1,0 +1,32 @@
+[package]
+name = "stems-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "The stems MCP server (`stems mcp`, deliverable 31)"
+
+[dependencies]
+stems-api = { workspace = true }
+stems-config = { workspace = true }
+stems-core = { workspace = true }
+stems-daemon = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+globset = { workspace = true }
+regex = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+rmcp = { workspace = true, features = ["server", "macros", "transport-io", "transport-streamable-http-server"] }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1.21", features = ["server", "http1", "service", "tokio"] }
+
+[dev-dependencies]
+rmcp = { workspace = true, features = ["client"] }
+tempfile = { workspace = true }

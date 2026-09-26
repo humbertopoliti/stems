@@ -11,6 +11,10 @@
 //! ```
 //!
 //! `Stopped → Healthy` is adoption after a daemon restart (deliverable 11).
+//! `Healthy/Unhealthy → Starting` is a restart by policy or watchdog (22):
+//! the stem waits out its backoff in `starting` and is spawned again.
+//! `Healthy/Unhealthy → Unknown` is an external stem whose probe can no
+//! longer run (21).
 //!
 //! Deliverable 10 uses `Stopped → Starting → Healthy`, `→ Stopping →
 //! Stopped` and `→ Failed`; `Setup`/`Seeding` (16) and `Unhealthy` (21/22)
@@ -27,9 +31,15 @@ pub fn allowed(from: StemState, to: StemState) -> bool {
         (Stopped, Setup | Starting | Healthy | Failed | Unknown)
             | (Setup, Starting | Failed | Stopping)
             | (Starting, Healthy | Unhealthy | Failed | Stopping)
-            | (Healthy, Seeding | Unhealthy | Failed | Stopping | Stopped)
+            | (
+                Healthy,
+                Seeding | Unhealthy | Failed | Stopping | Stopped | Unknown | Starting
+            )
             | (Seeding, Healthy | Failed | Stopping)
-            | (Unhealthy, Healthy | Starting | Failed | Stopping | Stopped)
+            | (
+                Unhealthy,
+                Healthy | Starting | Failed | Stopping | Stopped | Unknown
+            )
             | (Stopping, Stopped | Failed)
             | (Failed, Setup | Starting | Stopping | Stopped)
             | (Unknown, Healthy | Unhealthy | Stopped)
@@ -61,6 +71,8 @@ mod tests {
         (Healthy, Failed),
         (Healthy, Stopping),
         (Healthy, Stopped),
+        (Healthy, Unknown),
+        (Healthy, Starting),
         (Seeding, Healthy),
         (Seeding, Failed),
         (Seeding, Stopping),
@@ -69,6 +81,7 @@ mod tests {
         (Unhealthy, Failed),
         (Unhealthy, Stopping),
         (Unhealthy, Stopped),
+        (Unhealthy, Unknown),
         (Stopping, Stopped),
         (Stopping, Failed),
         (Failed, Setup),

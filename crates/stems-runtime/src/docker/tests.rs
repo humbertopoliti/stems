@@ -129,6 +129,13 @@ fn naming_and_prefixing() {
         "hello-shop_pgdata",
         "not doubled"
     );
+    assert_eq!(
+        s.volume_name("hello-shop-pgdata"),
+        "hello-shop_pgdata",
+        "a `<ws>-` prefix is normalised too"
+    );
+    assert_eq!(s.volume_name("hello-shopper"), "hello-shop_hello-shopper");
+    assert_eq!(s.volume_name("hello-shop-"), "hello-shop_hello-shop-");
     assert_eq!(s.build_tag(), None);
     assert_eq!(s.image_ref().as_deref(), Some("postgres:16"));
 
@@ -675,4 +682,52 @@ async fn docker_live_roundtrip() {
             .unwrap()
             .is_none()
     );
+}
+
+#[test]
+fn container_stats_follow_docker_formula() {
+    // 2 online CPUs; the container used 25 % of the system delta → 50 %;
+    // memory usage minus inactive_file (cgroup v2).
+    let r: bollard::models::ContainerStatsResponse = serde_json::from_value(json!({
+        "cpu_stats": {"cpu_usage": {"total_usage": 1_250}, "system_cpu_usage": 10_000, "online_cpus": 2},
+        "precpu_stats": {"cpu_usage": {"total_usage": 1_000}, "system_cpu_usage": 9_000},
+        "memory_stats": {"usage": 100_000_000u64, "stats": {"inactive_file": 20_000_000u64}},
+        "pids_stats": {"current": 7}
+    }))
+    .unwrap();
+    let s = container_stats(&r);
+    assert_eq!(s.cpu_pct, 50.0);
+    assert_eq!(s.mem_bytes, 80_000_000);
+    assert_eq!(s.pids, 7);
+    // cgroup v1 `cache`, percpu length as online CPUs, no precpu yet.
+    let r: bollard::models::ContainerStatsResponse = serde_json::from_value(json!({
+        "cpu_stats": {"cpu_usage": {"total_usage": 500, "percpu_usage": [1, 2, 3, 4]}, "system_cpu_usage": 1_000},
+        "memory_stats": {"usage": 10_000u64, "stats": {"cache": 4_000u64}}
+    }))
+    .unwrap();
+    let s = container_stats(&r);
+    assert_eq!(s.cpu_pct, 200.0);
+    assert_eq!(s.mem_bytes, 6_000);
+    assert_eq!(s.pids, 1);
+    assert_eq!(
+        container_stats(&Default::default()),
+        ContainerStats {
+            cpu_pct: 0.0,
+            mem_bytes: 0,
+            pids: 1
+        }
+    );
+}
+
+#[test]
+fn volume_sizes_from_df_items() {
+    let items = vec![
+        json!({"Name": "ws-pgdata", "UsageData": {"Size": 4096, "RefCount": 1}}),
+        json!({"Name": "other", "UsageData": {"Size": 1}}),
+        json!({"Name": "ws-unknown", "UsageData": {"Size": -1}}),
+    ];
+    let names = vec!["ws-pgdata".to_string(), "ws-unknown".to_string()];
+    let m = volume_sizes_of(items, &names);
+    assert_eq!(m.len(), 1);
+    assert_eq!(m["ws-pgdata"], 4096);
 }

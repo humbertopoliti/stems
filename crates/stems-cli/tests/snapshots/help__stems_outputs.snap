@@ -11,6 +11,9 @@ Arguments:
           Only this stem
 
 Options:
+      --reveal
+          Show secret values (human output on a terminal only; JSON never reveals)
+
   -h, --help
           Print help
 

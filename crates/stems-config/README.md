@@ -25,7 +25,12 @@ for stem in resolved.workspace.stems() { /* enabled stems, declaration order */ 
 3. **Expansion**, per file, recursively: `extends` base first, then each
    `include` in list order, then the file's own content. `extends`/`include`
    paths are relative to the file that names them. Missing targets are
-   `INCLUDE_NOT_FOUND`, loops `INCLUDE_CYCLE`.
+   `INCLUDE_NOT_FOUND`, loops `INCLUDE_CYCLE`, an `extends` chain deeper
+   than 5 files `INCLUDE_CYCLE` too. A stem defined by two files of one
+   include level (two included files, or an included file and the file
+   including it) is `DUPLICATE_STEM` with both paths in
+   `Diagnostic::details.files`; `extends` bases and `stems.local.yaml` may
+   redefine stems (they are merged). See `docs/config.md`.
 4. **Local overlay**: `stems.local.yaml` next to `stems.yaml` (unless
    `skip_local`) is expanded the same way and merged last.
 5. **Substitution** over every string of the merged tree (see below).
@@ -93,7 +98,9 @@ A reference to a `port: auto` port cannot be known at load time: it is kept
 literally (with `self` rewritten to the stem's name, e.g.
 `${stem.shop-web.port}`) and recorded in `Resolved::deferred` with its config
 path, for the daemon to fill once it has allocated the port. The same applies
-to outputs.
+to outputs (the daemon fills them in at the dependant's start, see
+`docs/config.md` → Outputs; `TemplateContext` callers pass evaluated values
+in `StemFacts::outputs`).
 
 Every reference that cannot be resolved (undeclared variable, unset env var,
 unknown stem, stem without ports, unknown port name, `${codebase}` outside a
@@ -132,6 +139,14 @@ source location. Loading never panics on bad references.
 All defaults live in `src/defaults.rs`; `defaults::defaults_table()` is
 golden-tested (`tests/snapshots/golden__defaults_table.snap`), so that
 snapshot is the reference table.
+
+## Editing `stems.local.yaml`
+
+`edit::{get, set, unset}` edit YAML text by `ConfigPath` keeping comments
+and layout (line-level, DECISIONS.md); `edit::write_checked` writes, runs a
+validation closure and restores the original on failure. Used by
+`stems config set|unset` (docs/config.md). `committed_tree` returns the
+merged committed tree (no local file, no substitution) for copying lists.
 
 ## JSON Schema
 

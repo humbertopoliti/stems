@@ -1,0 +1,44 @@
+---
+source: crates/stems-tui/src/tests.rs
+expression: text
+---
+ stems · minimal                                                                    Graph [Table] Detail  Logs  Events
+  STEM     TYPE     STATUS       REASON                    PID     PORTS          UPTIME  RESTARTS CPU        MEM
+› echo-svc process  ✓ healthy    ready (tcp)               12345   http:18090     42s     0
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ minimal · profile - · daemon pid 4242 · ✓1 !0 ✗0 ·0 ?0 ↻0                                              ? help · q quit
