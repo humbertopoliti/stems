@@ -1,0 +1,20 @@
+---
+source: crates/stems-api/src/lib.rs
+expression: err
+---
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "error": {
+    "code": -32601,
+    "message": "method `up` is not implemented",
+    "data": {
+      "code": "NOT_IMPLEMENTED",
+      "message": "method `up` is not implemented",
+      "path": null,
+      "location": null,
+      "hint": "see docs/protocol.md",
+      "details": {}
+    }
+  }
+}

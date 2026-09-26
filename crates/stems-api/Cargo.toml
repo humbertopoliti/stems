@@ -7,4 +7,21 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[features]
+default = ["client"]
+client = ["dep:tokio", "dep:tokio-util", "dep:futures"]
+
 [dependencies]
+stems-core = { workspace = true }
+chrono = { workspace = true }
+schemars = { workspace = true, features = ["chrono04"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, optional = true }
+tokio-util = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+
+[dev-dependencies]
+insta = { workspace = true, features = ["json"] }
+tokio = { workspace = true }
+tempfile = { workspace = true }

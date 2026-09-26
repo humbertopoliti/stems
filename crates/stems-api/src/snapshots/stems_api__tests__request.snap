@@ -1,0 +1,15 @@
+---
+source: crates/stems-api/src/lib.rs
+expression: req
+---
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "ping",
+  "params": {},
+  "meta": {
+    "actor": "cli:alice",
+    "client_version": "0.1.0",
+    "api_version": 1
+  }
+}

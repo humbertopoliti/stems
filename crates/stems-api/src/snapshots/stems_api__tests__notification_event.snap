@@ -1,0 +1,21 @@
+---
+source: crates/stems-api/src/lib.rs
+expression: "Notification::event(&sample_event())"
+---
+{
+  "jsonrpc": "2.0",
+  "method": "event",
+  "params": {
+    "ts": "2026-09-26T12:00:00Z",
+    "seq": 7,
+    "kind": "stem.state",
+    "stem": "api",
+    "from": "starting",
+    "to": "healthy",
+    "reason": "health check passed",
+    "actor": "cli:alice",
+    "data": {
+      "pid": 4242
+    }
+  }
+}

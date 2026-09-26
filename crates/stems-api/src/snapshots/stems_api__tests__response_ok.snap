@@ -1,0 +1,11 @@
+---
+source: crates/stems-api/src/lib.rs
+expression: ok
+---
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "pong": true
+  }
+}

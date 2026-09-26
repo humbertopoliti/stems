@@ -23,7 +23,6 @@ stems-config = { path = "crates/stems-config", version = "0.1.0" }
 stems-core = { path = "crates/stems-core", version = "0.1.0" }
 stems-runtime = { path = "crates/stems-runtime", version = "0.1.0" }
 stems-api = { path = "crates/stems-api", version = "0.1.0" }
-stems-daemon = { path = "crates/stems-daemon", version = "0.1.0" }
 
 # External crates
 clap = { version = "4.6.7", features = ["derive"] }
@@ -45,6 +44,13 @@ nix = { version = "0.31.3", features = ["signal", "process", "fs"] }
 libproc = "0.14.11"
 libc = "0.2.189"
 async-trait = "0.1.92"
+tokio-util = { version = "0.7.19", features = ["codec"] }
+tokio-stream = "0.1.19"
+futures = "0.3.34"
+chrono = { version = "0.4.45", default-features = false, features = ["std", "clock", "serde"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+sha2 = "0.11.0"
+dirs = "7.0.0"
 
 [profile.release]
 lto = "thin"
