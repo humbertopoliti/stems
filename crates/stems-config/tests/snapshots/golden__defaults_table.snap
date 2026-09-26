@@ -1,0 +1,60 @@
+---
+source: crates/stems-config/tests/golden.rs
+expression: rows
+---
+schema_version                                1
+name                                          <name of the workspace root directory>
+strict_profiles                               false
+agent.allow_destructive                       false
+agent.allowed_tools                           [] (all tools)
+agent.denied_tools                            []
+logs.max_size                                 10MB
+logs.keep                                     5
+metrics.interval                              2s
+metrics.persist                               false
+repos_dir                                     .stems/repos
+stems.<n>.enabled                             true
+stems.<n>.stop_grace                          10s
+stems.<n>.ports[i].name                       port<i>
+stems.<n>.ports[i].container_port             docker/compose: the host port; process: none
+stems.<n>.cwd (process)                       <codebase, else workspace root>
+stems.<n>.shell (process)                     /bin/sh
+stems.<n>.stdin (process)                     false
+stems.<n>.build.context (docker)              <codebase, else workspace root>
+stems.<n>.build.dockerfile (docker)           Dockerfile
+stems.<n>.service (compose)                   <stem name>
+stems.<n>.project_name (compose)              <workspace name>
+stems.<n>.adopt (compose)                     false
+stems.<n>.depends_on[].condition              healthy
+stems.<n>.depends_on[].soft                   false
+stems.<n>.health (absent)                     process: process, docker: docker, compose: docker, external: none
+stems.<n>.health.type                         http if url, command if command, tcp if port, else as for an absent health
+stems.<n>.health.host                         localhost
+stems.<n>.health.port (tcp, grpc)             <the stem's first port>
+stems.<n>.health.status (http)                any 2xx
+stems.<n>.health.interval                     2s
+stems.<n>.health.timeout                      1s
+stems.<n>.health.retries                      3
+stems.<n>.health.start_period                 0s
+stems.<n>.health.start_timeout                1m
+stems.<n>.restart.policy                      never
+stems.<n>.restart.max                         5
+stems.<n>.restart.window                      10m
+stems.<n>.restart.backoff.initial             1s
+stems.<n>.restart.backoff.max                 30s
+stems.<n>.restart.backoff.factor              2
+stems.<n>.restart.on_unhealthy                false
+stems.<n>.restart.unhealthy_grace             10s
+stems.<n>.watch[].ignore                      ["**/.git/**", "**/node_modules/**", "**/target/**", "**/dist/**", "**/build/**", "**/__pycache__/**"] + user entries
+stems.<n>.watch[].debounce                    500ms
+stems.<n>.watch[].action                      restart
+stems.<n>.watch[].settle                      0s
+stems.<n>.watch[].root                        codebase
+stems.<n>.overlays[].keep                     false
+stems.<n>.overlays[].mode                     0644
+scripts.<s>.cwd                               <stem codebase, else workspace root>
+scripts.<s>.timeout                           none
+scripts.<s>.retries                           0
+scripts.<s>.concurrent                        false
+scripts.<s>.args[].type                       string
+scripts.<s>.args[].required                   false

@@ -1,0 +1,23 @@
+# include-demo — fixture for config/include.feature (FR-WS-9).
+# Merge order: base.yaml (extends) -> teams/payments.yaml (include) -> this file.
+schema_version: 1
+name: include-demo
+extends: base.yaml
+include:
+  - teams/payments.yaml
+
+vars:
+  owner: child
+
+stems:
+  gateway:
+    type: process
+    description: Tiny HTTP server declared in the main file
+    ports: [{ name: http, port: 18190 }]
+    env:
+      OWNER: "${var.owner}"
+      REGION: "${var.region}"
+    scripts:
+      start: python3 -m http.server ${stem.self.port} --bind 127.0.0.1
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5 }
+    stop_grace: 1s

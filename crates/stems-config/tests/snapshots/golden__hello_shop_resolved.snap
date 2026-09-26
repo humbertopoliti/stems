@@ -1,0 +1,562 @@
+---
+source: crates/stems-config/tests/golden.rs
+expression: "golden(\"hello-shop\")"
+---
+sources:
+- <ws>/stems.yaml
+diagnostics: []
+deferred:
+- path: stems.shop-web.health.url
+  reference: stem.shop-web.port
+  kind: auto_port
+workspace:
+  schema_version: 1
+  name: hello-shop
+  root: <ws>
+  config_file: <ws>/stems.yaml
+  vars:
+    pg_user: shop
+  env: {}
+  requires:
+    python3: '>=3.9'
+  profiles:
+    default:
+    - postgres
+    - redis
+    - shop-api
+    - shop-worker
+    - shop-web
+    - httpbin
+    backend:
+    - postgres
+    - redis
+    - shop-api
+    - shop-worker
+    process-only:
+    - shop-api
+    - shop-worker
+    - shop-web
+  default_profile: null
+  strict_profiles: false
+  agent:
+    allow_destructive: false
+    allowed_tools: []
+    denied_tools: []
+  logs:
+    max_size: 10MB
+    keep: 5
+  metrics:
+    interval: 2s
+    persist: false
+  repos_dir: <ws>/.stems/repos
+  scripts:
+    bootstrap:
+      command: scripts/bootstrap.sh
+      description: null
+      args: []
+      inputs: []
+      requires: []
+      timeout: null
+      retries: 0
+      concurrent: false
+      stamp_env: []
+      cwd: <ws>
+    teardown:
+      command: scripts/teardown.sh
+      description: null
+      args: []
+      inputs: []
+      requires: []
+      timeout: null
+      retries: 0
+      concurrent: false
+      stamp_env: []
+      cwd: <ws>
+    nuke-databases:
+      file: <ws>/scripts/nuke.sh
+      description: Drop and recreate all local databases
+      args: []
+      inputs: []
+      requires:
+      - postgres
+      timeout: null
+      retries: 0
+      concurrent: false
+      stamp_env: []
+      cwd: <ws>
+  stems:
+    postgres:
+      name: postgres
+      type: docker
+      image: postgres:16
+      build: null
+      volumes:
+      - hello-shop-pgdata:/var/lib/postgresql/data
+      command: null
+      entrypoint: null
+      network: null
+      labels: {}
+      healthcheck: null
+      description: Postgres 16 database backing shop-api
+      codebase: null
+      enabled: true
+      env:
+        POSTGRES_USER: shop
+        POSTGRES_PASSWORD: local
+        POSTGRES_DB: shop
+      env_files: []
+      ports:
+      - name: pg
+        port: 15432
+        container_port: 5432
+      depends_on: []
+      scripts:
+        reset:
+          command: docker volume rm hello-shop-pgdata
+          description: null
+          args: []
+          inputs: []
+          requires: []
+          timeout: null
+          retries: 0
+          concurrent: false
+          stamp_env: []
+          cwd: <ws>
+        seed:
+          file: <ws>/scripts/postgres/seed.sh
+          description: Apply migrations and insert a handful of sample rows
+          args: []
+          inputs: []
+          requires: []
+          timeout: null
+          retries: 0
+          concurrent: false
+          stamp_env: []
+          cwd: <ws>
+        seed-large:
+          file: <ws>/scripts/postgres/seed-large.sh
+          description: Load a large synthetic dataset for perf testing
+          args:
+          - name: rows
+            type: int
+            default: 1000000
+            required: false
+            description: null
+            values: []
+          inputs: []
+          requires: []
+          timeout: null
+          retries: 0
+          concurrent: false
+          stamp_env: []
+          cwd: <ws>
+      health:
+        type: command
+        host: localhost
+        port: null
+        url: null
+        status: null
+        body_contains: null
+        command: pg_isready -U shop
+        interval: 400ms
+        timeout: 300ms
+        retries: 5
+        start_period: 1s
+        start_timeout: 1m
+      watch: []
+      restart:
+        policy: never
+        max: 5
+        window: 10m
+        backoff:
+          initial: 1s
+          max: 30s
+          factor: 2.0
+        on_unhealthy: false
+        unhealthy_grace: 10s
+      limits:
+        memory: null
+        cpu: null
+      outputs: {}
+      overlays: []
+      tags: []
+      stop_grace: 2s
+    redis:
+      name: redis
+      type: compose
+      file: <ws>/compose/redis.yml
+      service: redis
+      project_name: hello-shop
+      adopt: false
+      description: Redis 7, used as shop-worker's queue and shop-api's cache
+      codebase: null
+      enabled: true
+      env: {}
+      env_files: []
+      ports:
+      - name: redis
+        port: 16379
+        container_port: 6379
+      depends_on: []
+      scripts: {}
+      health:
+        type: command
+        host: localhost
+        port: null
+        url: null
+        status: null
+        body_contains: null
+        command: redis-cli -p 16379 ping
+        interval: 400ms
+        timeout: 300ms
+        retries: 5
+        start_period: 1s
+        start_timeout: 1m
+      watch: []
+      restart:
+        policy: never
+        max: 5
+        window: 10m
+        backoff:
+          initial: 1s
+          max: 30s
+          factor: 2.0
+        on_unhealthy: false
+        unhealthy_grace: 10s
+      limits:
+        memory: null
+        cpu: null
+      outputs: {}
+      overlays: []
+      tags: []
+      stop_grace: 2s
+    shop-api:
+      name: shop-api
+      type: process
+      cwd: <repo>/examples/repos/shop-api
+      command: null
+      shell: /bin/sh
+      stdin: false
+      description: Python stdlib HTTP service (products, users, chaos endpoints)
+      codebase:
+        kind: local
+        path: <repo>/examples/repos/shop-api
+      enabled: true
+      env:
+        PORT: '18080'
+        HOST: 0.0.0.0
+        DATABASE_URL: postgres://shop:local@localhost:15432/shop
+        REDIS_URL: redis://localhost:16379
+        SHOP_CONFIG: <repo>/examples/repos/shop-api/config/local.ini
+        SHOP_CHAOS: '1'
+      env_files:
+      - <ws>/env/shop-api.env
+      ports:
+      - name: http
+        port: 18080
+        container_port: null
+      depends_on:
+      - stem: postgres
+        condition: healthy
+        soft: false
+        protocol: null
+        via: null
+      - stem: redis
+        condition: healthy
+        soft: false
+        protocol: null
+        via: null
+      scripts:
+        setup:
+          file: <ws>/scripts/shop-api/setup.sh
+          description: null
+          args: []
+          inputs:
+          - migrations/**
+          requires: []
+          timeout: null
+          retries: 0
+          concurrent: false
+          stamp_env: []
+          cwd: <repo>/examples/repos/shop-api
+        seed:
+          command: 'echo ''shop-api seed: products are already seeded via postgres seed script, nothing to do'''
+          description: null
+          args: []
+          inputs: []
+          requires: []
+          timeout: null
+          retries: 0
+          concurrent: false
+          stamp_env: []
+          cwd: <repo>/examples/repos/shop-api
+        start:
+          command: python3 app.py
+          description: null
+          args: []
+          inputs: []
+          requires: []
+          timeout: null
+          retries: 0
+          concurrent: false
+          stamp_env: []
+          cwd: <repo>/examples/repos/shop-api
+        create-test-user:
+          file: <ws>/scripts/shop-api/create-test-user.sh
+          description: Create a user with a known password for manual testing
+          args:
+          - name: email
+            type: string
+            default: null
+            required: true
+            description: Email address of the test user
+            values: []
+          - name: role
+            type: enum
+            default: admin
+            required: false
+            description: Role to grant
+            values:
+            - admin
+            - user
+          inputs: []
+          requires: []
+          timeout: null
+          retries: 0
+          concurrent: false
+          stamp_env: []
+          cwd: <repo>/examples/repos/shop-api
+      health:
+        type: http
+        host: localhost
+        port: null
+        url: http://localhost:18080/healthz
+        status: null
+        body_contains: null
+        command: null
+        interval: 400ms
+        timeout: 300ms
+        retries: 5
+        start_period: 1s
+        start_timeout: 1m
+      watch:
+      - paths:
+        - '*.py'
+        ignore:
+        - '**/.git/**'
+        - '**/node_modules/**'
+        - '**/target/**'
+        - '**/dist/**'
+        - '**/build/**'
+        - '**/__pycache__/**'
+        debounce: 800ms
+        action: restart
+        settle: 0s
+        root: codebase
+      restart:
+        policy: never
+        max: 5
+        window: 10m
+        backoff:
+          initial: 1s
+          max: 30s
+          factor: 2.0
+        on_unhealthy: false
+        unhealthy_grace: 10s
+      limits:
+        memory: null
+        cpu: null
+      outputs: {}
+      overlays:
+      - template: <ws>/overlays/shop-api/local.ini.tmpl
+        dest: config/local.ini
+        keep: false
+        mode: '0644'
+      tags: []
+      stop_grace: 2s
+    shop-worker:
+      name: shop-worker
+      type: process
+      cwd: <repo>/examples/repos/shop-worker
+      command: null
+      shell: /bin/sh
+      stdin: false
+      description: Redis queue consumer with a chaos control HTTP port
+      codebase:
+        kind: local
+        path: <repo>/examples/repos/shop-worker
+      enabled: true
+      env:
+        REDIS_URL: redis://localhost:16379
+        SHOP_QUEUE: shop-jobs
+        SHOP_CONTROL_PORT: '18081'
+        SHOP_CHAOS: '1'
+      env_files: []
+      ports:
+      - name: control
+        port: 18081
+        container_port: null
+      depends_on:
+      - stem: redis
+        condition: healthy
+        soft: false
+        protocol: null
+        via: null
+      - stem: postgres
+        condition: seeded
+        soft: false
+        protocol: null
+        via: null
+      scripts:
+        start:
+          command: python3 worker.py
+          description: null
+          args: []
+          inputs: []
+          requires: []
+          timeout: null
+          retries: 0
+          concurrent: false
+          stamp_env: []
+          cwd: <repo>/examples/repos/shop-worker
+      health:
+        type: tcp
+        host: localhost
+        port: 18081
+        url: null
+        status: null
+        body_contains: null
+        command: null
+        interval: 400ms
+        timeout: 300ms
+        retries: 5
+        start_period: 1s
+        start_timeout: 1m
+      watch: []
+      restart:
+        policy: on-failure
+        max: 5
+        window: 10m
+        backoff:
+          initial: 1s
+          max: 30s
+          factor: 2.0
+        on_unhealthy: false
+        unhealthy_grace: 10s
+      limits:
+        memory: null
+        cpu: null
+      outputs: {}
+      overlays: []
+      tags: []
+      stop_grace: 2s
+    shop-web:
+      name: shop-web
+      type: process
+      cwd: <repo>/examples/repos/shop-web
+      command: null
+      shell: /bin/sh
+      stdin: false
+      description: Static site + tiny dev server that renders the product list
+      codebase:
+        kind: local
+        path: <repo>/examples/repos/shop-web
+      enabled: true
+      env:
+        API_URL: http://localhost:18080
+      env_files: []
+      ports:
+      - name: http
+        port: auto
+        container_port: null
+      depends_on:
+      - stem: shop-api
+        condition: healthy
+        soft: false
+        protocol: null
+        via: null
+      scripts:
+        start:
+          command: python3 serve.py
+          description: null
+          args: []
+          inputs: []
+          requires: []
+          timeout: null
+          retries: 0
+          concurrent: false
+          stamp_env: []
+          cwd: <repo>/examples/repos/shop-web
+      health:
+        type: http
+        host: localhost
+        port: null
+        url: http://localhost:${stem.shop-web.port}/
+        status: null
+        body_contains: null
+        command: null
+        interval: 400ms
+        timeout: 300ms
+        retries: 5
+        start_period: 1s
+        start_timeout: 1m
+      watch: []
+      restart:
+        policy: never
+        max: 5
+        window: 10m
+        backoff:
+          initial: 1s
+          max: 30s
+          factor: 2.0
+        on_unhealthy: false
+        unhealthy_grace: 10s
+      limits:
+        memory: null
+        cpu: null
+      outputs: {}
+      overlays: []
+      tags: []
+      stop_grace: 2s
+    httpbin:
+      name: httpbin
+      type: external
+      description: Public httpbin instance, treated as a hosted dependency
+      codebase: null
+      enabled: true
+      env: {}
+      env_files: []
+      ports: []
+      depends_on: []
+      scripts: {}
+      health:
+        type: http
+        host: localhost
+        port: null
+        url: https://httpbin.org/get
+        status: null
+        body_contains: null
+        command: null
+        interval: 500ms
+        timeout: 400ms
+        retries: 3
+        start_period: 0s
+        start_timeout: 1m
+      watch: []
+      restart:
+        policy: never
+        max: 5
+        window: 10m
+        backoff:
+          initial: 1s
+          max: 30s
+          factor: 2.0
+        on_unhealthy: false
+        unhealthy_grace: 10s
+      limits:
+        memory: null
+        cpu: null
+      outputs: {}
+      overlays: []
+      tags: []
+      stop_grace: 10s

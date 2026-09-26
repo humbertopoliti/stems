@@ -1,0 +1,1624 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "stems workspace configuration",
+  "description": "Root of a `stems.yaml` file (or an included / local file).",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "description": "Config format version. Only `1` exists.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0
+    },
+    "name": {
+      "description": "Workspace name (defaults to the integration repo's directory name).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "vars": {
+      "description": "Named variables, usable anywhere as `${var.<name>}`.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/Scalar"
+      },
+      "default": {}
+    },
+    "env": {
+      "description": "Environment applied to every stem (stem `env` wins).",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/Scalar"
+      },
+      "default": {}
+    },
+    "requires": {
+      "description": "Tool version requirements, e.g. `node: \">=20\"`.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": {}
+    },
+    "profiles": {
+      "description": "Named subsets of stems.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/Profile"
+      },
+      "default": {}
+    },
+    "default_profile": {
+      "description": "Profile used by `up` when none is given.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "strict_profiles": {
+      "description": "Refuse to start stems outside the selected profile, even as dependencies.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "agent": {
+      "description": "Guard rails for the agent / MCP interface.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Agent"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "logs": {
+      "description": "Log retention.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Logs"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "metrics": {
+      "description": "Metrics sampling.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Metrics"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "repos_dir": {
+      "description": "Where git codebases are cloned (default `.stems/repos`).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "scripts": {
+      "description": "Workspace-level scripts (`bootstrap`, `teardown`, custom).",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/Script"
+      },
+      "default": {}
+    },
+    "include": {
+      "description": "Extra YAML files merged into this one (paths relative to this file).",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "extends": {
+      "description": "A base workspace file merged underneath this one.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "stems": {
+      "description": "The stems, keyed by name.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/Stem"
+      },
+      "default": {}
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "Scalar": {
+      "description": "A YAML scalar that is used as a string (env values, vars, arg defaults).",
+      "anyOf": [
+        {
+          "description": "`true` / `false`.",
+          "type": "boolean"
+        },
+        {
+          "description": "An integer.",
+          "type": "integer",
+          "format": "int64"
+        },
+        {
+          "description": "A float.",
+          "type": "number",
+          "format": "double"
+        },
+        {
+          "description": "A string.",
+          "type": "string"
+        }
+      ]
+    },
+    "Profile": {
+      "description": "A profile: a list of stems, or the name of another profile.",
+      "anyOf": [
+        {
+          "description": "`backend: [postgres, api]`",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        {
+          "description": "`default: backend` (alias of another profile).",
+          "type": "string"
+        }
+      ]
+    },
+    "Agent": {
+      "description": "`agent:` block.",
+      "type": "object",
+      "properties": {
+        "allow_destructive": {
+          "description": "Allow destructive MCP operations.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "allowed_tools": {
+          "description": "If non-empty, only these MCP tools are exposed.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "denied_tools": {
+          "description": "MCP tools never exposed.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "Logs": {
+      "description": "`logs:` block.",
+      "type": "object",
+      "properties": {
+        "max_size": {
+          "description": "Rotate a stem's log file at this size.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ByteSize"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "keep": {
+          "description": "Rotated files to keep.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "ByteSize": {
+      "description": "A size in bytes, or with a unit: `512KB`, `10MB`, `2GB` (1KB = 1024 bytes).",
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0
+        },
+        {
+          "type": "string",
+          "pattern": "^\\s*[0-9]+\\s*([kKmMgGtT]([iI]?[bB])?|[bB])?\\s*$"
+        }
+      ]
+    },
+    "Metrics": {
+      "description": "`metrics:` block.",
+      "type": "object",
+      "properties": {
+        "interval": {
+          "description": "Sampling interval.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "persist": {
+          "description": "Persist samples to disk.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Duration": {
+      "description": "A duration such as `200ms`, `2s`, `1m` or `1m 30s`.",
+      "type": "string",
+      "pattern": "^\\s*([0-9]+\\s*[a-zA-Z]+\\s*)+$|^0$"
+    },
+    "Script": {
+      "description": "A script: an inline shell string or a full spec.",
+      "anyOf": [
+        {
+          "description": "Inline shell command.",
+          "type": "string"
+        },
+        {
+          "description": "Full form.",
+          "$ref": "#/$defs/ScriptSpec"
+        }
+      ]
+    },
+    "ScriptSpec": {
+      "description": "Full script form. Exactly one of `command` / `file` is expected.",
+      "type": "object",
+      "properties": {
+        "command": {
+          "description": "Inline shell command.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "file": {
+          "description": "Script file in the integration repo (relative to the workspace root).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "description": "Shown in the TUI and as the MCP tool description.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "args": {
+          "description": "Declared arguments.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/Arg"
+          }
+        },
+        "inputs": {
+          "description": "Stamp inputs: globs relative to the codebase.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "requires": {
+          "description": "Stems that must be healthy before this script runs.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "timeout": {
+          "description": "Kill the script after this long.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "retries": {
+          "description": "Retries on failure.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "concurrent": {
+          "description": "May run concurrently with other scripts of the same stem.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "stamp_env": {
+          "description": "Env var names whose values are part of the stamp hash.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "cwd": {
+          "description": "Working directory (relative to the codebase).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Arg": {
+      "description": "A declared script argument.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Argument name.",
+          "type": "string"
+        },
+        "type": {
+          "description": "Type (default `string`).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArgType"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "default": {
+          "description": "Default value.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Scalar"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "required": {
+          "description": "Must be given.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "description": {
+          "description": "Help text.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "values": {
+          "description": "Allowed values for `type: enum`.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ]
+    },
+    "ArgType": {
+      "description": "Declared type of a script argument.",
+      "oneOf": [
+        {
+          "description": "Free text.",
+          "type": "string",
+          "const": "string"
+        },
+        {
+          "description": "Integer.",
+          "type": "string",
+          "const": "int"
+        },
+        {
+          "description": "Floating point number.",
+          "type": "string",
+          "const": "float"
+        },
+        {
+          "description": "Boolean.",
+          "type": "string",
+          "const": "bool"
+        },
+        {
+          "description": "One of `values`.",
+          "type": "string",
+          "const": "enum"
+        },
+        {
+          "description": "A filesystem path.",
+          "type": "string",
+          "const": "path"
+        }
+      ]
+    },
+    "Stem": {
+      "description": "One stem. Type-specific fields are listed flat; using a field that does\nnot apply to the stem's `type` is reported as a diagnostic.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Must equal the map key if given.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "description": "`process`, `docker`, `compose` or `external`. Required once all files are merged.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StemType"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "description": {
+          "description": "Human description.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "codebase": {
+          "description": "Local path or git repository with the stem's code.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Codebase"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "enabled": {
+          "description": "`false` keeps the stem listed but excludes it from runs.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "env": {
+          "description": "Environment variables.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Scalar"
+          },
+          "default": {}
+        },
+        "env_files": {
+          "description": "Env files (relative to the workspace root), applied after `env`.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "ports": {
+          "description": "Ports: `5432`, `\"15432:5432\"` or `{name, port, container_port}`.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/Port"
+          }
+        },
+        "depends_on": {
+          "description": "Dependencies: a stem name or `{stem, condition, soft, protocol, via}`.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/Dependency"
+          }
+        },
+        "scripts": {
+          "description": "Lifecycle (`setup`, `seed`, `build`, `start`, `stop`, `reset`, `health`,\n`pre_start`, `post_start`, `pre_stop`, `post_stop`) and custom scripts.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Script"
+          },
+          "default": {}
+        },
+        "health": {
+          "description": "Health check.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Health"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "watch": {
+          "description": "Watchdog rules.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/Watch"
+          }
+        },
+        "restart": {
+          "description": "Crash restart policy.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Restart"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limits": {
+          "description": "Resource warning thresholds.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Limits"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "outputs": {
+          "description": "Values published for dependants (evaluated at runtime).",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "overlays": {
+          "description": "Files materialised into the codebase at run time.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/Overlay"
+          }
+        },
+        "tags": {
+          "description": "Free-form tags.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "stop_grace": {
+          "description": "Time between SIGTERM and SIGKILL.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cwd": {
+          "description": "(process) Working directory, relative to the codebase.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "command": {
+          "description": "(process, docker) Command to run. Process: a shell string; docker: overrides CMD.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StringOrList"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "shell": {
+          "description": "(process) Shell used to run `command`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stdin": {
+          "description": "(process) Attach stdin.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "image": {
+          "description": "(docker) Image reference.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "build": {
+          "description": "(docker) Build instead of pulling.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DockerBuild"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "volumes": {
+          "description": "(docker) Volume specs, `name:/path` or `./host:/path`.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "entrypoint": {
+          "description": "(docker) Entrypoint override.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StringOrList"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "network": {
+          "description": "(docker) Network to attach to.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "labels": {
+          "description": "(docker) Extra container labels.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "healthcheck": {
+          "description": "(docker) Container healthcheck override.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DockerHealthcheck"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "file": {
+          "description": "(compose) Compose file (relative to the workspace root).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "service": {
+          "description": "(compose) Service name (defaults to the stem name).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project_name": {
+          "description": "(compose) Compose project name (defaults to the workspace name).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "adopt": {
+          "description": "(compose) Adopt an already-running service instead of starting it.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "StemType": {
+      "description": "The four stem types.",
+      "oneOf": [
+        {
+          "description": "A local process (process group) started by stems.",
+          "type": "string",
+          "const": "process"
+        },
+        {
+          "description": "A single Docker container.",
+          "type": "string",
+          "const": "docker"
+        },
+        {
+          "description": "A service of a docker compose project.",
+          "type": "string",
+          "const": "compose"
+        },
+        {
+          "description": "Monitored only; never started or stopped.",
+          "type": "string",
+          "const": "external"
+        }
+      ]
+    },
+    "Codebase": {
+      "description": "`codebase:` — a path string (local path or git URL) or `{git, ref, path}`.",
+      "anyOf": [
+        {
+          "description": "Local path (absolute, `~/…`, or relative to the integration repo), or a git URL.",
+          "type": "string"
+        },
+        {
+          "description": "A git repository.",
+          "$ref": "#/$defs/GitCodebase"
+        }
+      ]
+    },
+    "GitCodebase": {
+      "description": "`{git, ref, path}` codebase.",
+      "type": "object",
+      "properties": {
+        "git": {
+          "description": "Repository URL (ssh, https or file).",
+          "type": "string"
+        },
+        "ref": {
+          "description": "Branch, tag or commit.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "Checkout directory (default `<repos_dir>/<stem>`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "git"
+      ]
+    },
+    "Port": {
+      "description": "A port declaration.",
+      "anyOf": [
+        {
+          "description": "`5432`",
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        {
+          "description": "`\"15432:5432\"` (host:container) or `\"5432\"`.",
+          "type": "string"
+        },
+        {
+          "description": "`{name, port, container_port}`",
+          "$ref": "#/$defs/PortSpec"
+        }
+      ]
+    },
+    "PortSpec": {
+      "description": "`{name, port, container_port}` port form.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Port name, referenced as `${stem.<n>.ports.<name>}`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "port": {
+          "description": "Host port number, or `auto` to allocate a free one at start.",
+          "$ref": "#/$defs/PortValue"
+        },
+        "container_port": {
+          "description": "Container-side port (docker/compose); defaults to `port`.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "port"
+      ]
+    },
+    "PortValue": {
+      "description": "A port number or `auto`.",
+      "anyOf": [
+        {
+          "description": "A fixed port.",
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        {
+          "description": "Allocate at runtime.",
+          "$ref": "#/$defs/AutoKeyword"
+        }
+      ]
+    },
+    "AutoKeyword": {
+      "description": "The literal `auto`.",
+      "oneOf": [
+        {
+          "description": "`auto`",
+          "type": "string",
+          "const": "auto"
+        }
+      ]
+    },
+    "Dependency": {
+      "description": "A dependency edge.",
+      "anyOf": [
+        {
+          "description": "Just the stem name (condition `healthy`).",
+          "type": "string"
+        },
+        {
+          "description": "Full form.",
+          "$ref": "#/$defs/DependencySpec"
+        }
+      ]
+    },
+    "DependencySpec": {
+      "description": "`{stem, condition, soft, protocol, via}`.",
+      "type": "object",
+      "properties": {
+        "stem": {
+          "description": "The stem depended upon.",
+          "type": "string"
+        },
+        "condition": {
+          "description": "When the edge is satisfied (default `healthy`).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Condition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "soft": {
+          "description": "Informational only: no ordering, allowed in cycles.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "protocol": {
+          "description": "Protocol metadata.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Protocol"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "via": {
+          "description": "Address metadata, e.g. `${stem.api.port}`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "stem"
+      ]
+    },
+    "Condition": {
+      "description": "When a `depends_on` edge is satisfied.",
+      "oneOf": [
+        {
+          "description": "The dependency's process/container is running.",
+          "type": "string",
+          "const": "started"
+        },
+        {
+          "description": "The dependency passed its health check.",
+          "type": "string",
+          "const": "healthy"
+        },
+        {
+          "description": "The dependency is healthy and its `seed` script completed.",
+          "type": "string",
+          "const": "seeded"
+        }
+      ]
+    },
+    "Protocol": {
+      "description": "Informational protocol carried by a `depends_on` edge.",
+      "oneOf": [
+        {
+          "description": "HTTP.",
+          "type": "string",
+          "const": "http"
+        },
+        {
+          "description": "gRPC.",
+          "type": "string",
+          "const": "grpc"
+        },
+        {
+          "description": "AMQP.",
+          "type": "string",
+          "const": "amqp"
+        },
+        {
+          "description": "Raw TCP.",
+          "type": "string",
+          "const": "tcp"
+        }
+      ]
+    },
+    "Health": {
+      "description": "Health check.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "description": "Check kind.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HealthType"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "host": {
+          "description": "(tcp, grpc) Host (default `localhost`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "port": {
+          "description": "(tcp, grpc) Port (default: the stem's first port).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HealthPort"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "url": {
+          "description": "(http) URL.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "description": "(http) Expected status (default: any 2xx).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "body_contains": {
+          "description": "(http) Response body must contain this.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "command": {
+          "description": "(command) Shell command; exit 0 = healthy.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interval": {
+          "description": "Probe interval.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "timeout": {
+          "description": "Probe timeout.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "retries": {
+          "description": "Consecutive failures before unhealthy.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "start_period": {
+          "description": "Failures during this period after start are not counted.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "start_timeout": {
+          "description": "Give up on becoming healthy after this long.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "HealthType": {
+      "description": "Health check kinds.",
+      "oneOf": [
+        {
+          "description": "TCP connect succeeds.",
+          "type": "string",
+          "const": "tcp"
+        },
+        {
+          "description": "HTTP request returns the expected status (and body).",
+          "type": "string",
+          "const": "http"
+        },
+        {
+          "description": "A shell command exits 0.",
+          "type": "string",
+          "const": "command"
+        },
+        {
+          "description": "The container's own Docker healthcheck.",
+          "type": "string",
+          "const": "docker"
+        },
+        {
+          "description": "The process (group) is alive.",
+          "type": "string",
+          "const": "process"
+        },
+        {
+          "description": "gRPC health protocol.",
+          "type": "string",
+          "const": "grpc"
+        }
+      ]
+    },
+    "HealthPort": {
+      "description": "A health port: a number or a substitution string like `${stem.web.port}`.",
+      "anyOf": [
+        {
+          "description": "Fixed port.",
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        {
+          "description": "Expression, resolved by substitution.",
+          "type": "string"
+        }
+      ]
+    },
+    "Watch": {
+      "description": "A watchdog rule.",
+      "type": "object",
+      "properties": {
+        "paths": {
+          "description": "Globs to watch.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "ignore": {
+          "description": "Extra globs to ignore (added to the built-in ignores).",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "debounce": {
+          "description": "Debounce window.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "action": {
+          "description": "Action when fired (default `restart`).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WatchAction"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "settle": {
+          "description": "Quiet period after an action before the rule can fire again.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "root": {
+          "description": "What `paths` are relative to (default `codebase`).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WatchRoot"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "WatchAction": {
+      "description": "`restart`, `rebuild`, `script:<name>` or `signal:<SIG>`.",
+      "type": "string",
+      "pattern": "^(restart|rebuild|script:.+|signal:.+)$"
+    },
+    "WatchRoot": {
+      "description": "What a watch rule's `paths` are relative to.",
+      "oneOf": [
+        {
+          "description": "The stem's codebase (default).",
+          "type": "string",
+          "const": "codebase"
+        },
+        {
+          "description": "The integration repo (workspace root).",
+          "type": "string",
+          "const": "workspace"
+        }
+      ]
+    },
+    "Restart": {
+      "description": "Restart policy.",
+      "type": "object",
+      "properties": {
+        "policy": {
+          "description": "`never`, `on-failure` or `always`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RestartPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max": {
+          "description": "Max restarts within `window` before the stem is marked failed.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "window": {
+          "description": "Sliding window for `max`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "backoff": {
+          "description": "Exponential backoff.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Backoff"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "on_unhealthy": {
+          "description": "Restart when the health check reports unhealthy.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "unhealthy_grace": {
+          "description": "How long a stem may stay unhealthy before `on_unhealthy` restarts it.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "RestartPolicy": {
+      "description": "Crash restart policy.",
+      "oneOf": [
+        {
+          "description": "Never restart.",
+          "type": "string",
+          "const": "never"
+        },
+        {
+          "description": "Restart when the stem exits non-zero / crashes.",
+          "type": "string",
+          "const": "on-failure"
+        },
+        {
+          "description": "Always restart when it exits.",
+          "type": "string",
+          "const": "always"
+        }
+      ]
+    },
+    "Backoff": {
+      "description": "Backoff parameters.",
+      "type": "object",
+      "properties": {
+        "initial": {
+          "description": "First delay.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max": {
+          "description": "Delay cap.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "factor": {
+          "description": "Multiplier.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Limits": {
+      "description": "Resource warning thresholds.",
+      "type": "object",
+      "properties": {
+        "memory": {
+          "description": "Memory threshold, e.g. `2GB`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ByteSize"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cpu": {
+          "description": "CPU threshold in cores (1.0 = one full core).",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Overlay": {
+      "description": "An overlay file.",
+      "type": "object",
+      "properties": {
+        "template": {
+          "description": "Template (with `${…}` substitution) in the integration repo.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "file": {
+          "description": "Plain file copied verbatim from the integration repo.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dest": {
+          "description": "Destination, relative to the codebase.",
+          "type": "string"
+        },
+        "keep": {
+          "description": "Keep the file on `down`.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "mode": {
+          "description": "File mode.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FileMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "dest"
+      ]
+    },
+    "FileMode": {
+      "description": "Octal Unix file mode, e.g. \"0644\".",
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^(0o)?[0-7]{1,4}$"
+        },
+        {
+          "type": "integer",
+          "minimum": 0
+        }
+      ]
+    },
+    "StringOrList": {
+      "description": "A command given either as one shell string or as an argv list.",
+      "anyOf": [
+        {
+          "description": "`\"npm run dev\"`",
+          "type": "string"
+        },
+        {
+          "description": "`[\"npm\", \"run\", \"dev\"]`",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "DockerBuild": {
+      "description": "Docker build settings.",
+      "type": "object",
+      "properties": {
+        "context": {
+          "description": "Build context (relative to the codebase, else the workspace root).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dockerfile": {
+          "description": "Dockerfile, relative to the context.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "DockerHealthcheck": {
+      "description": "Docker healthcheck override.",
+      "type": "object",
+      "properties": {
+        "test": {
+          "description": "Test command.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StringOrList"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "interval": {
+          "description": "Interval.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "timeout": {
+          "description": "Timeout.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "retries": {
+          "description": "Retries.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "start_period": {
+          "description": "Start period.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "disable": {
+          "description": "Disable the image's healthcheck.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

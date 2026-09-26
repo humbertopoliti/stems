@@ -1,0 +1,107 @@
+---
+source: crates/stems-config/tests/golden.rs
+expression: "golden(\"minimal\")"
+---
+sources:
+- <ws>/stems.yaml
+diagnostics: []
+deferred: []
+workspace:
+  schema_version: 1
+  name: minimal
+  root: <ws>
+  config_file: <ws>/stems.yaml
+  vars: {}
+  env: {}
+  requires: {}
+  profiles: {}
+  default_profile: null
+  strict_profiles: false
+  agent:
+    allow_destructive: false
+    allowed_tools: []
+    denied_tools: []
+  logs:
+    max_size: 10MB
+    keep: 5
+  metrics:
+    interval: 2s
+    persist: false
+  repos_dir: <ws>/.stems/repos
+  scripts: {}
+  stems:
+    echo-svc:
+      name: echo-svc
+      type: process
+      cwd: <repo>/examples/repos/shop-api
+      command: null
+      shell: /bin/sh
+      stdin: false
+      description: shop-api run standalone with no DB, for fast tests
+      codebase:
+        kind: local
+        path: <repo>/examples/repos/shop-api
+      enabled: true
+      env:
+        PORT: '18090'
+        SHOP_CHAOS: '1'
+      env_files: []
+      ports:
+      - name: http
+        port: 18090
+        container_port: null
+      depends_on: []
+      scripts:
+        start:
+          command: python3 app.py
+          description: null
+          args: []
+          inputs: []
+          requires: []
+          timeout: null
+          retries: 0
+          concurrent: false
+          stamp_env: []
+          cwd: <repo>/examples/repos/shop-api
+        ping:
+          command: echo pong
+          description: Prints pong
+          args: []
+          inputs: []
+          requires: []
+          timeout: null
+          retries: 0
+          concurrent: false
+          stamp_env: []
+          cwd: <repo>/examples/repos/shop-api
+      health:
+        type: tcp
+        host: localhost
+        port: 18090
+        url: null
+        status: null
+        body_contains: null
+        command: null
+        interval: 200ms
+        timeout: 150ms
+        retries: 5
+        start_period: 500ms
+        start_timeout: 1m
+      watch: []
+      restart:
+        policy: never
+        max: 5
+        window: 10m
+        backoff:
+          initial: 1s
+          max: 30s
+          factor: 2.0
+        on_unhealthy: false
+        unhealthy_grace: 10s
+      limits:
+        memory: null
+        cpu: null
+      outputs: {}
+      overlays: []
+      tags: []
+      stop_grace: 2s

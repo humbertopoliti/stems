@@ -1,0 +1,8 @@
+# base.yaml — org-wide defaults, pulled in by stems.yaml via `extends:`.
+# Merged FIRST: everything here can be overridden by the child workspace.
+schema_version: 1
+vars:
+  region: eu
+  owner: platform-team   # overridden by stems.yaml
+logs:
+  keep: 3

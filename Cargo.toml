@@ -27,6 +27,16 @@ stems-daemon = { path = "crates/stems-daemon", version = "0.1.0" }
 
 # External crates
 clap = { version = "4.6.7", features = ["derive"] }
+humantime = "2.4.0"
+indexmap = { version = "2.14.2", features = ["serde"] }
+insta = { version = "1.48.0", features = ["yaml"] }
+marked-yaml = "0.8.0"
+schemars = { version = "1.2.2", features = ["preserve_order", "indexmap2"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+serde_yaml_ng = "0.10.0"
+tempfile = "3.27.0"
+thiserror = "2.0.21"
 
 [profile.release]
 lto = "thin"

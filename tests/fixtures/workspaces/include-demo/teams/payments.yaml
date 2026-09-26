@@ -1,0 +1,15 @@
+# teams/payments.yaml — included by stems.yaml; adds a stem. Paths in an
+# included file (like further includes) are relative to this file.
+stems:
+  payments:
+    type: process
+    description: Stem contributed by an included file
+    ports: [{ name: http, port: 18191 }]
+    depends_on: [gateway]
+    env:
+      GATEWAY_URL: "http://localhost:${stem.gateway.port}"
+      REGION: "${var.region}"
+    scripts:
+      start: python3 -m http.server ${stem.self.port} --bind 127.0.0.1
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5 }
+    stop_grace: 1s
