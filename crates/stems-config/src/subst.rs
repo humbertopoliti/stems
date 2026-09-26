@@ -380,6 +380,59 @@ impl<'a> Substituter<'a> {
     }
 }
 
+/// Inputs for [`substitute_template`]: everything a `${…}` reference can see
+/// outside of config loading (overlay templates rendered by the daemon, 18).
+#[derive(Clone, Debug, Default)]
+pub struct TemplateContext {
+    /// Environment for `${env.X}`.
+    pub env: HashMap<String, String>,
+    /// Integration repo root for `${workspace.root}`.
+    pub root: PathBuf,
+    /// Workspace name for `${workspace.name}`.
+    pub workspace_name: String,
+    /// Workspace variables (resolved values; references inside them are
+    /// expanded again, so a var holding `${stem.web.port}` picks up `stems`).
+    pub vars: IndexMap<String, String>,
+    /// Ports and codebases per stem. Runtime callers put allocated ports here
+    /// as [`PortRef::Fixed`]; a remaining [`PortRef::Auto`] stays deferred.
+    pub stems: IndexMap<String, StemFacts>,
+    /// The enclosing stem (`${stem.self.…}`, `${codebase}`), if any.
+    pub stem: Option<String>,
+}
+
+/// Result of [`substitute_template`].
+#[derive(Clone, Debug, Default)]
+pub struct Substituted {
+    /// The text with every resolvable reference replaced.
+    pub text: String,
+    /// `UNRESOLVED_VARIABLE` diagnostics (unresolvable references are kept literally).
+    pub diagnostics: Vec<Diagnostic>,
+    /// References left in place (auto ports without a value, outputs).
+    pub deferred: Vec<DeferredRef>,
+}
+
+/// Substitute `${…}` references in free text (e.g. an overlay template) with
+/// the same rules as config loading. Diagnostics carry `path` = the root path.
+pub fn substitute_template(text: &str, ctx: &TemplateContext) -> Substituted {
+    let mut sub = Substituter::new(
+        &ctx.env,
+        &ctx.root,
+        &ctx.workspace_name,
+        &ctx.stems,
+        ctx.vars.clone(),
+    );
+    let scope = Scope {
+        stem: ctx.stem.clone(),
+        allow_codebase: ctx.stem.is_some(),
+    };
+    let text = sub.expand(text, &scope, &ConfigPath::root());
+    Substituted {
+        text,
+        diagnostics: sub.diagnostics,
+        deferred: sub.deferred,
+    }
+}
+
 fn is_ours(expr: &str) -> bool {
     expr == "codebase"
         || ["var.", "env.", "workspace.", "stem."]

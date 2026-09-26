@@ -11,14 +11,18 @@
 //! - [`stamps`]: script stamp hashing and the stamp store.
 //! - [`restart`]: restart policy decisions and backoff.
 //! - [`metrics`]: CPU formulas, sample history, sparklines, thresholds.
+//! - [`scriptargs`]: script catalogue, argument parsing/validation, MCP schemas.
+//! - [`overlays`]: overlay rendering, ownership decisions, atomic writes.
 
 mod error;
 pub mod graph;
 pub mod layout;
 pub mod logs;
 pub mod metrics;
+pub mod overlays;
 pub mod render;
 pub mod restart;
+pub mod scriptargs;
 pub mod stamps;
 pub mod status;
 pub mod tools;

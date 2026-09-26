@@ -1,0 +1,9 @@
+---
+source: crates/stems-core/tests/scripts_overlays.rs
+expression: "format!(\"{missing}\\n---\\n{bad_enum}\")"
+---
+SCRIPT_ARGS_INVALID: invalid script argument `--email`: the following required arguments were not provided: --email <email>
+  hint: declared args: --email <string> (required), --role <admin|user> (default admin)
+---
+SCRIPT_ARGS_INVALID: invalid script argument `--role`: invalid value 'superuser' for '--role <role>' [possible values: admin, user]
+  hint: declared args: --email <string> (required), --role <admin|user> (default admin)

@@ -1,16 +1,20 @@
+---
+source: crates/stems-core/tests/scripts_overlays.rs
+expression: text
+---
 ; overlays/shop-api/local.ini.tmpl
 ;
 ; Materialised by stems into shop-api's codebase at config/local.ini
 ; (never committed there) before shop-api starts, and removed again on
 ; `stems down` unless `keep: true` is set on the overlay (FR-WS-7).
 ;
-; Variable substitution supports $${stem.<name>.port}, and ${stem.self.port}
+; Variable substitution supports ${stem.<name>.port}, and 28080
 ; as a shorthand for "this stem's own port" so a codebase-relative template
 ; doesn't need to know its own stem name.
 [database]
 host = localhost
-port = ${stem.postgres.port}
-user = ${var.pg_user}
+port = 25432
+user = shop
 
 [server]
-port = ${stem.self.port}
+port = 28080

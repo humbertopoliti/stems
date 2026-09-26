@@ -1,0 +1,26 @@
+---
+source: crates/stems-core/tests/scripts_overlays.rs
+expression: pretty(&schema)
+---
+{
+  "type": "object",
+  "properties": {
+    "email": {
+      "type": "string",
+      "description": "Email address of the test user"
+    },
+    "role": {
+      "type": "string",
+      "description": "Role to grant",
+      "enum": [
+        "admin",
+        "user"
+      ],
+      "default": "admin"
+    }
+  },
+  "required": [
+    "email"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,169 @@
+---
+source: crates/stems-core/tests/scripts_overlays.rs
+expression: pretty(&build_catalog(&ws))
+---
+[
+  {
+    "stem": null,
+    "name": "bootstrap",
+    "description": null,
+    "args": [],
+    "requires": [],
+    "kind": "lifecycle",
+    "timeout": null,
+    "retries": 0,
+    "concurrent": false
+  },
+  {
+    "stem": null,
+    "name": "nuke-databases",
+    "description": "Drop and recreate all local databases",
+    "args": [],
+    "requires": [
+      "postgres"
+    ],
+    "kind": "custom",
+    "timeout": null,
+    "retries": 0,
+    "concurrent": false
+  },
+  {
+    "stem": null,
+    "name": "teardown",
+    "description": null,
+    "args": [],
+    "requires": [],
+    "kind": "lifecycle",
+    "timeout": null,
+    "retries": 0,
+    "concurrent": false
+  },
+  {
+    "stem": "postgres",
+    "name": "reset",
+    "description": null,
+    "args": [],
+    "requires": [],
+    "kind": "lifecycle",
+    "timeout": null,
+    "retries": 0,
+    "concurrent": false
+  },
+  {
+    "stem": "postgres",
+    "name": "seed",
+    "description": "Apply migrations and insert a handful of sample rows",
+    "args": [],
+    "requires": [],
+    "kind": "lifecycle",
+    "timeout": null,
+    "retries": 0,
+    "concurrent": false
+  },
+  {
+    "stem": "postgres",
+    "name": "seed-large",
+    "description": "Load a large synthetic dataset for perf testing",
+    "args": [
+      {
+        "name": "rows",
+        "type": "int",
+        "default": 1000000,
+        "required": false,
+        "description": null,
+        "values": []
+      }
+    ],
+    "requires": [],
+    "kind": "custom",
+    "timeout": null,
+    "retries": 0,
+    "concurrent": false
+  },
+  {
+    "stem": "shop-api",
+    "name": "create-test-user",
+    "description": "Create a user with a known password for manual testing",
+    "args": [
+      {
+        "name": "email",
+        "type": "string",
+        "default": null,
+        "required": true,
+        "description": "Email address of the test user",
+        "values": []
+      },
+      {
+        "name": "role",
+        "type": "enum",
+        "default": "admin",
+        "required": false,
+        "description": "Role to grant",
+        "values": [
+          "admin",
+          "user"
+        ]
+      }
+    ],
+    "requires": [],
+    "kind": "custom",
+    "timeout": null,
+    "retries": 0,
+    "concurrent": false
+  },
+  {
+    "stem": "shop-api",
+    "name": "seed",
+    "description": null,
+    "args": [],
+    "requires": [],
+    "kind": "lifecycle",
+    "timeout": null,
+    "retries": 0,
+    "concurrent": false
+  },
+  {
+    "stem": "shop-api",
+    "name": "setup",
+    "description": null,
+    "args": [],
+    "requires": [],
+    "kind": "lifecycle",
+    "timeout": null,
+    "retries": 0,
+    "concurrent": false
+  },
+  {
+    "stem": "shop-api",
+    "name": "start",
+    "description": null,
+    "args": [],
+    "requires": [],
+    "kind": "lifecycle",
+    "timeout": null,
+    "retries": 0,
+    "concurrent": false
+  },
+  {
+    "stem": "shop-worker",
+    "name": "start",
+    "description": null,
+    "args": [],
+    "requires": [],
+    "kind": "lifecycle",
+    "timeout": null,
+    "retries": 0,
+    "concurrent": false
+  },
+  {
+    "stem": "shop-web",
+    "name": "start",
+    "description": null,
+    "args": [],
+    "requires": [],
+    "kind": "lifecycle",
+    "timeout": null,
+    "retries": 0,
+    "concurrent": false
+  }
+]

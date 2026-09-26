@@ -1,0 +1,15 @@
+---
+source: crates/stems-core/tests/scripts_overlays.rs
+expression: pretty(&schema)
+---
+{
+  "type": "object",
+  "properties": {
+    "rows": {
+      "type": "integer",
+      "default": 1000000
+    }
+  },
+  "required": [],
+  "additionalProperties": false
+}

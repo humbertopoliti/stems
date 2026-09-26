@@ -144,6 +144,10 @@ HEALTH_TIMEOUT: `shop-api` did not become healthy within 60s (http://localhost:1
 START_TIMEOUT: `postgres` did not start within 60s
   hint: check `stems logs postgres` and `docker ps -a` for the container state
 
+# exit 1 — a stem's process could not be spawned, or exited before it became ready (exit code in details)
+START_FAILED: `shop-worker` exited with code 3 before it became ready
+  hint: check `stems logs shop-worker`; run its start command by hand in the codebase to see why it exits
+
 # exit 1 — a stem ignored SIGTERM for `stop_grace` and was killed
 STOP_TIMEOUT_KILLED: `shop-worker` ignored SIGTERM for 2s and was killed
   hint: handle SIGTERM in the service, or raise `stop_grace`

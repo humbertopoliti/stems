@@ -222,6 +222,11 @@ fn sample(code: ErrorCode) -> Error {
             "`postgres` did not start within 60s",
             "check `stems logs postgres` and `docker ps -a` for the container state",
         ),
+        StartFailed => rt(
+            code,
+            "`shop-worker` exited with code 3 before it became ready",
+            "check `stems logs shop-worker`; run its start command by hand in the codebase to see why it exits",
+        ),
         StopTimeoutKilled => rt(
             code,
             "`shop-worker` ignored SIGTERM for 2s and was killed",

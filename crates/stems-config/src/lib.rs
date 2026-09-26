@@ -32,13 +32,15 @@ pub use merge::merge as merge_values;
 pub use model::*;
 pub use path::{ConfigPath, ParsePathError, Segment};
 pub use spans::SpanIndex;
-pub use subst::{DeferredKind, DeferredRef};
+pub use subst::{
+    DeferredKind, DeferredRef, StemFacts, Substituted, TemplateContext, substitute_template,
+};
 pub use types::*;
 
 use crate::loader::{Loader, yaml_error};
 use crate::raw::{RawCodebase, RawWorkspace};
 use crate::resolve::{Ctx, resolve_ports, resolve_workspace};
-use crate::subst::{Scope, StemFacts, Substituter};
+use crate::subst::{Scope, Substituter};
 
 /// Name of this crate, used to prove the workspace wiring in tests.
 pub const CRATE_NAME: &str = env!("CARGO_PKG_NAME");

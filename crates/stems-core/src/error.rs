@@ -169,6 +169,9 @@ error_codes! {
     /// Start did not complete.
     StartTimeout = "START_TIMEOUT", RUNTIME,
         "a stem did not start within its timeout";
+    /// The process could not be spawned or exited before it was ready.
+    StartFailed = "START_FAILED", RUNTIME,
+        "a stem's process could not be spawned, or exited before it became ready (exit code in details)";
     /// Stop needed SIGKILL.
     StopTimeoutKilled = "STOP_TIMEOUT_KILLED", RUNTIME,
         "a stem ignored SIGTERM for `stop_grace` and was killed";
