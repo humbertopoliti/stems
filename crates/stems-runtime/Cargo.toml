@@ -16,10 +16,19 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+bollard = { workspace = true }
+futures.workspace = true
+sha2.workspace = true
+serde_json.workspace = true
+tar.workspace = true
+bytes = { workspace = true }
+chrono = { workspace = true }
+globset = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libproc = { workspace = true }
 
 [dev-dependencies]
+insta.workspace = true
 serde_json = { workspace = true }
 tempfile = { workspace = true }

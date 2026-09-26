@@ -231,6 +231,10 @@ impl Runtime for ProcessRuntime {
             StartSpec::External { stem } => Err(RuntimeError::Unsupported(format!(
                 "`{stem}` is an external stem; the process runtime does not start it"
             ))),
+            StartSpec::Docker(c) => Err(RuntimeError::Unsupported(format!(
+                "`{}` is a docker stem; the process runtime does not start it",
+                c.stem
+            ))),
         }
     }
 
@@ -303,6 +307,7 @@ impl Runtime for ProcessRuntime {
             container_id: None,
             ports,
             dropped_lines: self.dropped_lines(h),
+            container_health: None,
         })
     }
 
@@ -333,9 +338,10 @@ impl Runtime for ProcessRuntime {
                 }
                 Ok(ExitStatus::UNKNOWN)
             }
-            (None, Handle::Process { id, .. } | Handle::External { id }) => {
-                Err(RuntimeError::NotFound(*id))
-            }
+            (
+                None,
+                Handle::Process { id, .. } | Handle::External { id } | Handle::Container { id, .. },
+            ) => Err(RuntimeError::NotFound(*id)),
         }
     }
 

@@ -1,0 +1,56 @@
+---
+source: crates/stems-runtime/src/docker/tests.rs
+expression: golden(&built())
+---
+{
+  "config": {
+    "Cmd": [
+      "serve",
+      "--port",
+      "8080"
+    ],
+    "Entrypoint": [
+      "/app/shop-api"
+    ],
+    "Env": [
+      "DATABASE_URL=postgres://shop@postgres:5432/shop"
+    ],
+    "ExposedPorts": {
+      "5353/udp": {},
+      "8080/tcp": {}
+    },
+    "Image": "stems/hello-shop/shop-api:01J8ZQ7Y6M5X4W3V2T1S0R9Q8P",
+    "Labels": {
+      "stems.run_id": "01J8ZQ7Y6M5X4W3V2T1S0R9Q8P",
+      "stems.spec_hash": "a97ed592aaa58365a00fdc4dd1c0ce9c",
+      "stems.stem": "shop-api",
+      "stems.workspace": "hello-shop"
+    },
+    "StopTimeout": 2
+  },
+  "host_config": {
+    "AutoRemove": false,
+    "NetworkMode": "shared_net",
+    "PortBindings": {
+      "5353/udp": [
+        {
+          "HostPort": "15353"
+        }
+      ],
+      "8080/tcp": [
+        {
+          "HostPort": "18080"
+        }
+      ]
+    }
+  },
+  "networking_config": {
+    "EndpointsConfig": {
+      "shared_net": {
+        "Aliases": [
+          "shop-api"
+        ]
+      }
+    }
+  }
+}

@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::docker::ContainerSpec;
 use crate::os::{ProcInfo, StartTime};
 use crate::output::OutputStream;
 
@@ -19,6 +20,8 @@ pub enum StartSpec {
         /// Stem name.
         stem: String,
     },
+    /// A container ([`crate::DockerRuntime`], deliverable 14).
+    Docker(Box<ContainerSpec>),
 }
 
 /// A native process to run in its own session / process group.
@@ -88,32 +91,43 @@ pub enum Handle {
     /// process, so `pid`/`pgid` are `0` (never signalled: the OS helpers
     /// refuse pids/groups `<= 1`) and it is never persisted or adopted.
     External { id: HandleId },
+    /// A container ([`crate::DockerRuntime`]): `pid`/`pgid` are `0` (the
+    /// container's own pid is only reported by `describe`); signals go
+    /// through the Docker API, never to a local process group.
+    Container {
+        id: HandleId,
+        /// Full Docker container id.
+        container_id: String,
+        /// Container name (`<ws>-<stem>`).
+        name: String,
+    },
 }
 
 impl Handle {
     pub fn id(&self) -> HandleId {
         match self {
-            Handle::Process { id, .. } | Handle::Adopted { id, .. } | Handle::External { id } => {
-                *id
-            }
+            Handle::Process { id, .. }
+            | Handle::Adopted { id, .. }
+            | Handle::External { id }
+            | Handle::Container { id, .. } => *id,
         }
     }
     pub fn pid(&self) -> i32 {
         match self {
             Handle::Process { pid, .. } | Handle::Adopted { pid, .. } => *pid,
-            Handle::External { .. } => 0,
+            Handle::External { .. } | Handle::Container { .. } => 0,
         }
     }
     pub fn pgid(&self) -> i32 {
         match self {
             Handle::Process { pgid, .. } | Handle::Adopted { pgid, .. } => *pgid,
-            Handle::External { .. } => 0,
+            Handle::External { .. } | Handle::Container { .. } => 0,
         }
     }
     pub fn start_time(&self) -> StartTime {
         match self {
             Handle::Process { start_time, .. } | Handle::Adopted { start_time, .. } => *start_time,
-            Handle::External { .. } => StartTime(0),
+            Handle::External { .. } | Handle::Container { .. } => StartTime(0),
         }
     }
     pub fn is_adopted(&self) -> bool {
@@ -122,6 +136,13 @@ impl Handle {
     /// A monitor-only stem's handle (no process).
     pub fn is_external(&self) -> bool {
         matches!(self, Handle::External { .. })
+    }
+    /// The Docker container id of a container handle.
+    pub fn container_id(&self) -> Option<&str> {
+        match self {
+            Handle::Container { container_id, .. } => Some(container_id),
+            _ => None,
+        }
     }
 }
 
@@ -168,6 +189,10 @@ pub struct RuntimeFacts {
     pub ports: Vec<u16>,
     /// Output lines lost to slow subscribers so far.
     pub dropped_lines: u64,
+    /// Docker health-check status (`State.Health.Status`: `starting`,
+    /// `healthy`, `unhealthy`), when the container has a health check.
+    #[serde(default)]
+    pub container_health: Option<String>,
 }
 
 /// What the state file remembers about a unit, used to re-attach after a restart.
@@ -234,6 +259,18 @@ pub enum RuntimeError {
     Unsupported(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    /// The Docker daemon cannot be reached (`DOCKER_UNAVAILABLE`).
+    #[error("docker is unavailable: {hint}")]
+    DockerUnavailable { hint: String },
+    /// Pulling an image failed (`IMAGE_PULL_FAILED`); `message` is the registry's.
+    #[error("failed to pull image `{image}`: {message}")]
+    ImagePullFailed { image: String, message: String },
+    /// `docker build` failed; `tail` is the last lines of build output.
+    #[error("image build failed:\n{}", tail.join("\n"))]
+    BuildFailed { tail: Vec<String> },
+    /// Any other Docker API error.
+    #[error("docker: {0}")]
+    Container(String),
 }
 
 /// A way of running units (native processes today; containers later).

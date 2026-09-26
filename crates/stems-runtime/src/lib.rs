@@ -5,14 +5,18 @@
 //!   (see `docs/process-model.md`).
 //! * [`ExternalRuntime`] — monitor-only (`type: external`) stems: nothing
 //!   is started or stopped.
+//! * [`DockerRuntime`] — containers through the Docker Engine API
+//!   (see `docs/docker.md`).
 //! * [`os`] — per-OS process facts (start time, process tree, listeners).
 
+pub mod docker;
 mod external;
 pub mod os;
 pub mod output;
 mod process;
 mod runtime;
 
+pub use docker::{ContainerSpec, DockerOptions, DockerRuntime};
 pub use external::ExternalRuntime;
 pub use os::{Listener, ProcInfo, StartTime};
 pub use output::{

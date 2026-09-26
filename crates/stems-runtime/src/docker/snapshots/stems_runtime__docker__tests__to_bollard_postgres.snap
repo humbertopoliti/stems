@@ -1,0 +1,58 @@
+---
+source: crates/stems-runtime/src/docker/tests.rs
+expression: golden(&postgres())
+---
+{
+  "config": {
+    "Env": [
+      "POSTGRES_DB=shop",
+      "POSTGRES_PASSWORD=dev",
+      "POSTGRES_USER=shop"
+    ],
+    "ExposedPorts": {
+      "5432/tcp": {}
+    },
+    "Healthcheck": {
+      "Interval": 500000000,
+      "Retries": 20,
+      "Test": [
+        "CMD-SHELL",
+        "pg_isready -U shop"
+      ],
+      "Timeout": 2000000000
+    },
+    "Image": "postgres:16",
+    "Labels": {
+      "stems.run_id": "01J8ZQ7Y6M5X4W3V2T1S0R9Q8P",
+      "stems.spec_hash": "477bfdf0d9311a6b90cdd0532191e017",
+      "stems.stem": "postgres",
+      "stems.workspace": "hello-shop",
+      "team": "payments"
+    },
+    "StopTimeout": 2
+  },
+  "host_config": {
+    "AutoRemove": false,
+    "Binds": [
+      "hello-shop_pgdata:/var/lib/postgresql/data",
+      "/ws/hello-shop/init:/docker-entrypoint-initdb.d:ro"
+    ],
+    "NetworkMode": "hello-shop_net",
+    "PortBindings": {
+      "5432/tcp": [
+        {
+          "HostPort": "15432"
+        }
+      ]
+    }
+  },
+  "networking_config": {
+    "EndpointsConfig": {
+      "hello-shop_net": {
+        "Aliases": [
+          "postgres"
+        ]
+      }
+    }
+  }
+}

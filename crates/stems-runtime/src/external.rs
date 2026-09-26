@@ -43,6 +43,10 @@ impl Runtime for ExternalRuntime {
                 "the external runtime does not run processes (`{}`)",
                 p.command
             ))),
+            StartSpec::Docker(c) => Err(RuntimeError::Unsupported(format!(
+                "the external runtime does not run containers (`{}`)",
+                c.stem
+            ))),
         }
     }
 

@@ -56,6 +56,8 @@ dirs = "7.0.0"
 ulid = "3.0.0"
 tar = "0.4.46"
 flate2 = "1.1.10"
+bollard = "0.21"
+bytes = "1.12.1"
 
 [profile.release]
 lto = "thin"
