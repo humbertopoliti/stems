@@ -1,0 +1,15 @@
+---
+source: crates/stems-core/src/metrics.rs
+expression: out
+---
+              ramp |▁▂▃▄▅▆▇█|
+       ramp padded |    ▁▂▃▄▅▆▇█|
+    ramp truncated |▅▆▇█|
+              wave |▅▆▇▇███▇▆▅▄▃▂▁▁▁▂▂▄▅▆▇████▇▆▅▄|
+        wave ascii |~=++###+=~-,.___..-~=+####+=~-|
+             zeros |▁▁▁▁▁|
+          constant |█████|
+             empty |     |
+  cpu fixed 0..100 |▁▂▅██|
+               nan |▃▁█|
+          negative |▁▅█|

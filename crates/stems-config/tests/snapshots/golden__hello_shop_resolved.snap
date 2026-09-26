@@ -43,8 +43,8 @@ workspace:
     allowed_tools: []
     denied_tools: []
   logs:
-    max_size: 10MB
-    keep: 5
+    max_size: 50MB
+    keep: 3
   metrics:
     interval: 2s
     persist: false
@@ -170,7 +170,7 @@ workspace:
         max: 5
         window: 10m
         backoff:
-          initial: 1s
+          initial: 500ms
           max: 30s
           factor: 2.0
         on_unhealthy: false
@@ -220,7 +220,7 @@ workspace:
         max: 5
         window: 10m
         backoff:
-          initial: 1s
+          initial: 500ms
           max: 30s
           factor: 2.0
         on_unhealthy: false
@@ -361,7 +361,7 @@ workspace:
         max: 5
         window: 10m
         backoff:
-          initial: 1s
+          initial: 500ms
           max: 30s
           factor: 2.0
         on_unhealthy: false
@@ -442,7 +442,7 @@ workspace:
         max: 5
         window: 10m
         backoff:
-          initial: 1s
+          initial: 500ms
           max: 30s
           factor: 2.0
         on_unhealthy: false
@@ -511,7 +511,7 @@ workspace:
         max: 5
         window: 10m
         backoff:
-          initial: 1s
+          initial: 500ms
           max: 30s
           factor: 2.0
         on_unhealthy: false
@@ -554,7 +554,7 @@ workspace:
         max: 5
         window: 10m
         backoff:
-          initial: 1s
+          initial: 500ms
           max: 30s
           factor: 2.0
         on_unhealthy: false

@@ -8,8 +8,8 @@ strict_profiles                               false
 agent.allow_destructive                       false
 agent.allowed_tools                           [] (all tools)
 agent.denied_tools                            []
-logs.max_size                                 10MB
-logs.keep                                     5
+logs.max_size                                 50MB
+logs.keep                                     3
 metrics.interval                              2s
 metrics.persist                               false
 repos_dir                                     .stems/repos
@@ -40,7 +40,7 @@ stems.<n>.health.start_timeout                1m
 stems.<n>.restart.policy                      on-failure
 stems.<n>.restart.max                         5
 stems.<n>.restart.window                      10m
-stems.<n>.restart.backoff.initial             1s
+stems.<n>.restart.backoff.initial             500ms
 stems.<n>.restart.backoff.max                 30s
 stems.<n>.restart.backoff.factor              2
 stems.<n>.restart.on_unhealthy                false

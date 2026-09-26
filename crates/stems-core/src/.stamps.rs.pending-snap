@@ -1,0 +1,7 @@
+{"run_id":"1790409111-843889000","line":309,"new":{"module_name":"stems_core__stamps__tests","snapshot_name":"empty_stamp_is_stable","metadata":{"source":"crates/stems-core/src/stamps.rs","assertion_line":309,"expression":"s.hash"},"snapshot":"7890cc4773c35ee3913b9c1118d640e48f2203ed6a24430c2049e32ce3f72913"},"old":{"module_name":"stems_core__stamps__tests","metadata":{},"snapshot":"5e2ce5b5ae62fc70ffe8d2b7c8a0f59f2b0dd06fa5e7b7a7b0fb88fd6b7b4f8d"}}
+{"run_id":"1790409152-180939000","line":309,"new":null,"old":null}
+{"run_id":"1790409152-180939000","line":508,"new":null,"old":null}
+{"run_id":"1790409179-218275000","line":309,"new":null,"old":null}
+{"run_id":"1790409179-218275000","line":508,"new":null,"old":null}
+{"run_id":"1790409237-675924000","line":309,"new":null,"old":null}
+{"run_id":"1790409237-675924000","line":508,"new":null,"old":null}

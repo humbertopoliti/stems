@@ -11,9 +11,9 @@ pub const STRICT_PROFILES: bool = false;
 /// `agent.allow_destructive`.
 pub const AGENT_ALLOW_DESTRUCTIVE: bool = false;
 /// `logs.max_size`.
-pub const LOGS_MAX_SIZE: ByteSize = ByteSize(10 * 1024 * 1024);
+pub const LOGS_MAX_SIZE: ByteSize = ByteSize(50 * 1024 * 1024);
 /// `logs.keep`.
-pub const LOGS_KEEP: u32 = 5;
+pub const LOGS_KEEP: u32 = 3;
 /// `metrics.interval`.
 pub const METRICS_INTERVAL: Dur = Dur::from_secs(2);
 /// `metrics.persist`.
@@ -72,7 +72,7 @@ pub const RESTART_MAX: u32 = 5;
 /// `restart.window`.
 pub const RESTART_WINDOW: Dur = Dur::from_secs(600);
 /// `restart.backoff.initial`.
-pub const BACKOFF_INITIAL: Dur = Dur::from_secs(1);
+pub const BACKOFF_INITIAL: Dur = Dur::from_millis(500);
 /// `restart.backoff.max`.
 pub const BACKOFF_MAX: Dur = Dur::from_secs(30);
 /// `restart.backoff.factor`.

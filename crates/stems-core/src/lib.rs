@@ -7,11 +7,19 @@
 //! - [`graph::start_order`] / [`graph::stop_order`] (or [`WorkspaceGraph`]).
 //! - [`layout::layout`] and [`render`]: `stems graph` text/Mermaid/DOT/JSON.
 //! - [`status::StemState`] / [`status::Glyph`]: lifecycle states and glyphs.
+//! - [`logs`]: log records, line parsing, query filters, ring buffer, rotation plan.
+//! - [`stamps`]: script stamp hashing and the stamp store.
+//! - [`restart`]: restart policy decisions and backoff.
+//! - [`metrics`]: CPU formulas, sample history, sparklines, thresholds.
 
 mod error;
 pub mod graph;
 pub mod layout;
+pub mod logs;
+pub mod metrics;
 pub mod render;
+pub mod restart;
+pub mod stamps;
 pub mod status;
 pub mod tools;
 pub mod validate;
