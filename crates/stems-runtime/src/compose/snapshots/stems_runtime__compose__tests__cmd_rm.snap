@@ -1,0 +1,5 @@
+---
+source: crates/stems-runtime/src/compose/tests.rs
+expression: "show(ComposeCommand::rm(&target()))"
+---
+docker compose --ansi never -f /work/hello-shop/compose/redis.yml -p stems-hello-shop --env-file /home/dev/.stems/hello-shop/compose/redis.env rm -f -s redis

@@ -1,0 +1,5 @@
+---
+source: crates/stems-runtime/src/compose/tests.rs
+expression: "show(ComposeCommand::version())"
+---
+docker compose version --format json

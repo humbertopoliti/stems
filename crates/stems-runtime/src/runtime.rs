@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::compose::ComposeSpec;
 use crate::docker::ContainerSpec;
 use crate::os::{ProcInfo, StartTime};
 use crate::output::OutputStream;
@@ -22,6 +23,8 @@ pub enum StartSpec {
     },
     /// A container ([`crate::DockerRuntime`], deliverable 14).
     Docker(Box<ContainerSpec>),
+    /// One service of a compose file ([`crate::ComposeRuntime`], deliverable 15).
+    Compose(Box<ComposeSpec>),
 }
 
 /// A native process to run in its own session / process group.
@@ -271,6 +274,25 @@ pub enum RuntimeError {
     /// Any other Docker API error.
     #[error("docker: {0}")]
     Container(String),
+    /// `docker compose` (v2) cannot be used: the CLI or the compose plugin
+    /// is missing, or it is Compose v1 (`DOCKER_UNAVAILABLE`).
+    #[error("docker compose is unavailable: {hint}")]
+    ComposeUnavailable { hint: String },
+    /// A `docker compose` invocation exited non-zero (`COMPOSE_FAILED`);
+    /// `tail` is the last 20 lines of its output. `exit` is `None` when it
+    /// was killed or timed out.
+    #[error("`{command}` failed (exit {}):\n{}", exit.map_or_else(|| "none".to_string(), |c| c.to_string()), tail.join("\n"))]
+    ComposeFailed {
+        command: String,
+        exit: Option<i32>,
+        tail: Vec<String>,
+    },
+    /// The compose project already runs outside stems
+    /// (`COMPOSE_PROJECT_IN_USE`); set `adopt: true` to co-manage it.
+    #[error(
+        "compose project `{project}` is already running outside stems; set `adopt: true` on the stem to take it over"
+    )]
+    ComposeProjectInUse { project: String },
 }
 
 /// A way of running units (native processes today; containers later).

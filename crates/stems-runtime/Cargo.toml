@@ -24,6 +24,7 @@ tar.workspace = true
 bytes = { workspace = true }
 chrono = { workspace = true }
 globset = { workspace = true }
+semver = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libproc = { workspace = true }

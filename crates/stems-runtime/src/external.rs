@@ -47,6 +47,10 @@ impl Runtime for ExternalRuntime {
                 "the external runtime does not run containers (`{}`)",
                 c.stem
             ))),
+            StartSpec::Compose(c) => Err(RuntimeError::Unsupported(format!(
+                "the external runtime does not run compose services (`{}`)",
+                c.stem
+            ))),
         }
     }
 

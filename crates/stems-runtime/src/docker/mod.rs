@@ -811,6 +811,17 @@ impl DockerRuntime {
     /// Attach to an existing container by id (compose runtime, adoption):
     /// logs are followed from now on.
     pub async fn attach(&self, container_id: &str) -> Result<Handle, RuntimeError> {
+        self.attach_since(container_id, Self::now_secs()).await
+    }
+
+    /// [`DockerRuntime::attach`], following logs from `since` (unix
+    /// seconds; 0 = from the beginning). The compose runtime passes the
+    /// time just before `docker compose up` so start-up output is kept.
+    pub async fn attach_since(
+        &self,
+        container_id: &str,
+        since: i32,
+    ) -> Result<Handle, RuntimeError> {
         let inspect = self.inspect(container_id).await?.ok_or_else(|| {
             RuntimeError::Container(format!("no such container `{container_id}`"))
         })?;
@@ -824,7 +835,7 @@ impl DockerRuntime {
             .unwrap_or_default()
             .trim_start_matches('/')
             .to_string();
-        Ok(self.register(id, name, Self::now_secs()))
+        Ok(self.register(id, name, since))
     }
 
     /// Adopt the container recorded for `workspace`/`stem` if it is still
@@ -970,6 +981,10 @@ impl Runtime for DockerRuntime {
             ))),
             StartSpec::External { stem } => Err(RuntimeError::Unsupported(format!(
                 "`{stem}` is an external stem; the docker runtime does not start it"
+            ))),
+            StartSpec::Compose(c) => Err(RuntimeError::Unsupported(format!(
+                "`{}` is a compose stem; start it with the compose runtime",
+                c.stem
             ))),
         }
     }

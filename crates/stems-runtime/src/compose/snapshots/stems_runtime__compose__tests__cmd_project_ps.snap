@@ -1,0 +1,5 @@
+---
+source: crates/stems-runtime/src/compose/tests.rs
+expression: "show(ComposeCommand::ps(&ComposeTarget::project(\"stems-hello-shop\")))"
+---
+docker compose --ansi never -p stems-hello-shop ps --format json -a

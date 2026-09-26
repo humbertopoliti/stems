@@ -2160,6 +2160,7 @@ dependencies = [
  "libc",
  "libproc",
  "nix",
+ "semver",
  "serde",
  "serde_json",
  "sha2",

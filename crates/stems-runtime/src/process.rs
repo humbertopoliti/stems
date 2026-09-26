@@ -235,6 +235,10 @@ impl Runtime for ProcessRuntime {
                 "`{}` is a docker stem; the process runtime does not start it",
                 c.stem
             ))),
+            StartSpec::Compose(c) => Err(RuntimeError::Unsupported(format!(
+                "`{}` is a compose stem; the process runtime does not start it",
+                c.stem
+            ))),
         }
     }
 

@@ -7,8 +7,11 @@
 //!   is started or stopped.
 //! * [`DockerRuntime`] — containers through the Docker Engine API
 //!   (see `docs/docker.md`).
+//! * [`ComposeRuntime`] — one service of a compose file per stem, through
+//!   `docker compose` (see `docs/compose.md`).
 //! * [`os`] — per-OS process facts (start time, process tree, listeners).
 
+pub mod compose;
 pub mod docker;
 mod external;
 pub mod os;
@@ -16,6 +19,7 @@ pub mod output;
 mod process;
 mod runtime;
 
+pub use compose::{ComposeOptions, ComposeRuntime, ComposeSpec};
 pub use docker::{ContainerSpec, DockerOptions, DockerRuntime};
 pub use external::ExternalRuntime;
 pub use os::{Listener, ProcInfo, StartTime};

@@ -1,0 +1,10 @@
+---
+source: crates/stems-runtime/src/compose/tests.rs
+expression: render_env_file(&env).unwrap()
+---
+# Written by stems for `docker compose --env-file`; do not edit.
+DOLLAR='p@$$w0rd #1'
+EMPTY=''
+MULTI="a\nb \"c\" \\ \$HOME"
+PLAIN='abc'
+REDIS_ARGS="--save '' --appendonly no"

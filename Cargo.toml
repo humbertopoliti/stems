@@ -58,6 +58,7 @@ tar = "0.4.46"
 flate2 = "1.1.10"
 bollard = "0.21"
 bytes = "1.12.1"
+semver = "1.0.28"
 
 [profile.release]
 lto = "thin"
