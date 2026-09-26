@@ -24,7 +24,7 @@ pub fn daemon_args(home: &Path, workspace: Option<&Path>, foreground: bool) -> V
     v
 }
 
-/// Start `<binary> <args>` detached: its own session (`setsid`), stdin from
+/// Start `<binary> <args>` detached: its own session (`setsid`), cwd `/`, stdin from
 /// `/dev/null`, stdout/stderr appended to the daemon log
 /// ([`DaemonPaths::log_path`]). Returns the child's pid. The child is reaped
 /// by a background thread so it never lingers as a zombie of the CLI.
@@ -52,7 +52,10 @@ pub fn spawn_detached(binary: &Path, args: &[OsString], paths: &DaemonPaths) -> 
         .try_clone()
         .map_err(|e| spawn_err(binary, e.to_string()))?;
     let mut cmd = Command::new(binary);
+    // cwd `/`: a daemon must not pin (or be found by scanning) whatever
+    // directory the CLI happened to run in; callers pass absolute paths.
     cmd.args(args)
+        .current_dir("/")
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log2));

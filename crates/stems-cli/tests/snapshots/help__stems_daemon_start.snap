@@ -2,13 +2,21 @@
 source: crates/stems-cli/tests/help.rs
 expression: help
 ---
-Start the workspace daemon in the background
+Start the workspace daemon in the background.
+
+Spawns the daemon detached (its own session, output appended to `$STEMS_HOME/<ws-hash>/stemsd.log`)
+and waits up to 5 s for its socket. If a daemon already serves this workspace, reports it with
+`already_running: true` (exit 0).
 
 Usage: stems daemon start [OPTIONS]
 
 Options:
+      --foreground
+          Run the daemon in this terminal (logging to stderr too) instead of detaching; Ctrl-C stops
+          it
+
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>

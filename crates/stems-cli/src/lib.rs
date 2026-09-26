@@ -1,9 +1,10 @@
 //! The `stems` CLI as a library: the clap tree ([`cli`]), the output layer
-//! ([`output`]), per-user paths ([`paths`], used by the daemon in 08), the
-//! commands ([`commands`]) and [`run`], the whole binary minus
-//! `std::process::exit`.
+//! ([`output`]), per-user paths ([`paths`], shared with the daemon), the
+//! daemon client helpers ([`client`]), the commands ([`commands`]) and
+//! [`run`], the whole binary minus `std::process::exit`.
 
 pub mod cli;
+pub mod client;
 pub mod commands;
 pub mod docs;
 pub mod output;
@@ -109,7 +110,7 @@ pub fn run(inv: &Invocation, stdout: &mut dyn Write, stderr: &mut dyn Write) -> 
         commands::version::run(&ctx)
     } else {
         match cli.command {
-            Some(c) => commands::dispatch(c, &ctx),
+            Some(c) => commands::dispatch(c, &ctx, opts.mode, stdout),
             None => {
                 let mut help = Cli::command();
                 let text = help.render_help().to_string();

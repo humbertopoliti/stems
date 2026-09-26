@@ -208,6 +208,13 @@ pub enum Command {
     /// Show or follow stem and script logs.
     Logs(LogsArgs),
     /// Show or follow the event stream (NDJSON with --json).
+    ///
+    /// Prints the daemon's buffered events (the last 10 000), oldest first;
+    /// with -f keeps streaming new ones until the daemon stops or Ctrl-C.
+    /// With --json the output is NDJSON, one event object per line
+    /// (`{ts, seq, kind, stem, from, to, reason, actor, data}`) and no
+    /// envelope: the hook for external automation. Errors still use the
+    /// envelope (e.g. exit 4 DAEMON_NOT_RUNNING).
     Events(EventsArgs),
     /// Show CPU, memory and disk usage per stem.
     Metrics(MetricsArgs),
@@ -469,7 +476,8 @@ pub struct EventsArgs {
     /// Keep streaming new events.
     #[arg(short, long)]
     pub follow: bool,
-    /// Only events after this sequence number.
+    /// Only events after this sequence number (default 0: every buffered
+    /// event).
     #[arg(long, value_name = "SEQ")]
     pub since: Option<u64>,
 }
@@ -773,11 +781,34 @@ pub struct DaemonArgs {
 #[derive(Debug, Subcommand)]
 pub enum DaemonCommand {
     /// Start the workspace daemon in the background.
-    Start,
+    ///
+    /// Spawns the daemon detached (its own session, output appended to
+    /// `$STEMS_HOME/<ws-hash>/stemsd.log`) and waits up to 5 s for its socket.
+    /// If a daemon already serves this workspace, reports it with
+    /// `already_running: true` (exit 0).
+    Start(DaemonStartArgs),
     /// Stop the workspace daemon.
+    ///
+    /// Asks it to shut down (the same orderly path as SIGTERM) and waits up to
+    /// 5 s for its socket and lock to disappear. Exits 4 (DAEMON_NOT_RUNNING)
+    /// when none is running; a stale lock left by a crashed daemon is removed.
     Stop,
     /// Show the daemon's pid, version, socket and uptime.
+    ///
+    /// `data`: `{ running, pid, version, api_version, workspace, uptime_s,
+    /// socket, lock, log, ... }`. Exits 4 (DAEMON_NOT_RUNNING, `running:
+    /// false`) when no daemon answers; the hint says `stale lock` when a
+    /// crashed daemon left its lock behind.
     Status,
+}
+
+/// `stems daemon start`.
+#[derive(Debug, Args)]
+pub struct DaemonStartArgs {
+    /// Run the daemon in this terminal (logging to stderr too) instead of
+    /// detaching; Ctrl-C stops it.
+    #[arg(long)]
+    pub foreground: bool,
 }
 
 /// The clap `Command` for the whole tree (built: usage strings are final).

@@ -203,6 +203,65 @@ pub struct CmdOutput {
     pub stdout: String,
     pub stderr: String,
     pub json: Option<Value>,
+    /// Wall-clock time from spawn to exit.
+    pub elapsed: Duration,
+}
+
+/// A `stems` command started with `When I run "..." in the background`.
+#[derive(Debug)]
+pub struct Background {
+    pub argv: Vec<String>,
+    pub child: Child,
+    pub pgid: i32,
+    stdout: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    stderr: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    /// Exit code once it has exited (128 + signal when killed).
+    pub code: Option<i32>,
+}
+
+impl Background {
+    fn text(buf: &std::sync::Arc<std::sync::Mutex<Vec<u8>>>) -> String {
+        let bytes = buf
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    /// Everything it printed on stdout so far.
+    pub fn stdout(&self) -> String {
+        Self::text(&self.stdout)
+    }
+
+    /// Everything it printed on stderr so far.
+    pub fn stderr(&self) -> String {
+        Self::text(&self.stderr)
+    }
+
+    /// Records the exit code if it has exited (non-blocking).
+    pub fn poll_exit(&mut self) -> Option<i32> {
+        if self.code.is_none()
+            && let Ok(Some(status)) = self.child.try_wait()
+        {
+            self.code = Some(
+                status
+                    .code()
+                    .unwrap_or_else(|| 128 + status.signal().unwrap_or(0)),
+            );
+        }
+        self.code
+    }
+
+    /// Human summary for failure messages.
+    pub fn describe(&self) -> String {
+        format!(
+            "background `{}` (exit {:?})\n--- stdout\n{}\n--- stderr\n{}",
+            self.argv.join(" "),
+            self.code,
+            util::clip(self.stdout().trim_end(), 3000),
+            util::clip(self.stderr().trim_end(), 2000)
+        )
+    }
 }
 
 impl CmdOutput {
@@ -283,6 +342,10 @@ pub struct E2eWorld {
     pub strays: Vec<Child>,
     /// Scenario deadline.
     pub deadline: Instant,
+    /// The command started with `When I run "..." in the background`.
+    pub background: Option<Background>,
+    /// Values saved with `When I save the JSON at ... as "<name>"` (`${var:name}`).
+    pub vars: BTreeMap<String, String>,
 }
 
 impl cucumber::World for E2eWorld {
@@ -320,6 +383,8 @@ impl E2eWorld {
             pgids: BTreeSet::new(),
             strays: Vec::new(),
             deadline: Instant::now() + scenario_timeout(),
+            background: None,
+            vars: BTreeMap::new(),
         })
     }
 
@@ -432,12 +497,14 @@ impl E2eWorld {
         }
     }
 
-    /// Expands `${ws}`, `${tmp}`, `${home}`, `${repo}`, `${outside}` and
-    /// `${port:N}` (the remapped value of declared port N).
+    /// Expands `${ws}`, `${tmp}`, `${home}`, `${repo}`, `${outside}`,
+    /// `${port:N}` (the remapped value of declared port N) and `${var:name}`
+    /// (a value saved by `When I save the JSON at ... as "<name>"`).
     pub fn expand(&self, s: &str) -> String {
         static RE: OnceLock<regex::Regex> = OnceLock::new();
         let re = RE.get_or_init(|| {
-            regex::Regex::new(r"\$\{(ws|tmp|home|repo|outside|port:(\d+))\}").expect("valid regex")
+            regex::Regex::new(r"\$\{(ws|tmp|home|repo|outside|port:(\d+)|var:([\w-]+))\}")
+                .expect("valid regex")
         });
         re.replace_all(s, |c: &regex::Captures<'_>| match &c[1] {
             "ws" => self
@@ -448,6 +515,11 @@ impl E2eWorld {
             "home" => self.home.display().to_string(),
             "repo" => repo_root().display().to_string(),
             "outside" => self.root.join("outside").display().to_string(),
+            v if v.starts_with("var:") => self
+                .vars
+                .get(&c[3])
+                .cloned()
+                .unwrap_or_else(|| panic!("no saved value named {:?}", &c[3])),
             _ => {
                 let n: u16 = c[2].parse().unwrap_or_default();
                 self.port_map.get(&n).copied().unwrap_or(n).to_string()
@@ -498,6 +570,7 @@ impl E2eWorld {
             )
         })?;
         let mut child = child;
+        let started = Instant::now();
         let pgid = child.id().and_then(|p| i32::try_from(p).ok()).unwrap_or(0);
         self.pgids.insert(pgid);
         // Read the pipes in the background: a process that leaves a
@@ -518,6 +591,7 @@ impl E2eWorld {
                 ));
             }
         };
+        let elapsed = started.elapsed();
         let stdout = collect_reader(stdout).await;
         let stderr = collect_reader(stderr).await;
         let code = status
@@ -530,7 +604,47 @@ impl E2eWorld {
             code,
             stdout,
             stderr,
+            elapsed,
         })
+    }
+
+    /// Starts `stems ...` in the background (own process group, recorded for
+    /// the leak check); its output is collected while it runs.
+    pub fn run_background(&mut self, line: &str, env: &[(String, String)]) {
+        assert!(
+            self.background.is_none(),
+            "a background command is already running in this scenario"
+        );
+        let expanded = self.expand(line);
+        let argv = util::split_args(&expanded).unwrap_or_else(|e| panic!("{e}"));
+        assert!(
+            argv.first().is_some_and(|a| a == "stems"),
+            "commands must start with `stems`, got {expanded:?}"
+        );
+        let cwd = self.default_cwd();
+        let mut cmd = self.command(&argv, &cwd, env);
+        let mut child = cmd
+            .spawn()
+            .unwrap_or_else(|e| panic!("cannot run {}: {e}", stems_bin().display()));
+        let pgid = child.id().and_then(|p| i32::try_from(p).ok()).unwrap_or(0);
+        self.pgids.insert(pgid);
+        let (stdout, _) = spawn_reader(child.stdout.take());
+        let (stderr, _) = spawn_reader(child.stderr.take());
+        self.background = Some(Background {
+            argv,
+            child,
+            pgid,
+            stdout,
+            stderr,
+            code: None,
+        });
+    }
+
+    /// The background command, or a panic if none was started.
+    pub fn background(&mut self) -> &mut Background {
+        self.background
+            .as_mut()
+            .expect("no background command: use `When I run \"...\" in the background`")
     }
 
     /// Runs `stems ...` (the line must start with `stems`) within the

@@ -38,6 +38,18 @@ pub fn pid_alive(pid: i32) -> bool {
     matches!(kill(Pid::from_raw(pid), None), Ok(()) | Err(Errno::EPERM))
 }
 
+/// True if `pid` is a zombie (exited, not yet reaped) according to `ps`.
+pub fn is_zombie(pid: i32) -> bool {
+    std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .is_ok_and(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim_start()
+                .starts_with('Z')
+        })
+}
+
 /// SIGKILLs a whole process group, ignoring errors.
 pub fn kill_group(pgid: i32) {
     if pgid > 1 {

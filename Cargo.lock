@@ -1682,16 +1682,21 @@ name = "stems-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "clap_complete",
+ "futures",
  "insta",
+ "nix",
  "serde",
  "serde_json",
  "serde_yaml_ng",
- "sha2",
+ "stems-api",
  "stems-config",
  "stems-core",
+ "stems-daemon",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -1714,11 +1719,14 @@ dependencies = [
 name = "stems-core"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "globset",
  "insta",
  "petgraph",
  "regex",
  "serde",
  "serde_json",
+ "sha2",
  "stems-config",
  "tempfile",
  "thiserror",
@@ -1762,6 +1770,8 @@ dependencies = [
  "serde_json",
  "serde_json_path",
  "serde_yaml_ng",
+ "stems-api",
+ "stems-core",
  "tempfile",
  "tokio",
 ]

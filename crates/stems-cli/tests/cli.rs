@@ -83,11 +83,11 @@ fn help_prints_normally() {
 
 #[test]
 fn stubs_are_not_implemented_with_their_deliverable() {
-    let (code, out, _) = invoke(&["daemon", "status"], false, repo());
+    let (code, out, _) = invoke(&["status"], false, repo());
     assert_eq!(code, 1);
     let v = json(&out);
     assert_eq!(v["errors"][0]["code"], "NOT_IMPLEMENTED");
-    assert_eq!(v["errors"][0]["details"]["deliverable"], "08");
+    assert_eq!(v["errors"][0]["details"]["deliverable"], "13");
 }
 
 #[test]

@@ -2,7 +2,12 @@
 source: crates/stems-cli/tests/help.rs
 expression: help
 ---
-Show or follow the event stream (NDJSON with --json)
+Show or follow the event stream (NDJSON with --json).
+
+Prints the daemon's buffered events (the last 10 000), oldest first; with -f keeps streaming new
+ones until the daemon stops or Ctrl-C. With --json the output is NDJSON, one event object per line
+(`{ts, seq, kind, stem, from, to, reason, actor, data}`) and no envelope: the hook for external
+automation. Errors still use the envelope (e.g. exit 4 DAEMON_NOT_RUNNING).
 
 Usage: stems events [OPTIONS]
 
@@ -11,10 +16,10 @@ Options:
           Keep streaming new events
 
       --since <SEQ>
-          Only events after this sequence number
+          Only events after this sequence number (default 0: every buffered event)
 
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>

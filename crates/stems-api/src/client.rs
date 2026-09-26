@@ -58,6 +58,11 @@ pub struct ClientOptions {
     pub connect_timeout: Duration,
     /// Default per-call timeout (default 30 s).
     pub call_timeout: Duration,
+    /// Refuse a daemon whose stems version differs from `client_version`
+    /// (default true). With `false` only the API version must match (the
+    /// daemon rejects every request otherwise); `stems daemon status|stop`
+    /// use this so an upgraded CLI can still inspect and stop an old daemon.
+    pub check_version: bool,
 }
 
 impl ClientOptions {
@@ -68,6 +73,7 @@ impl ClientOptions {
             client_version: client_version(),
             connect_timeout: CONNECT_TIMEOUT,
             call_timeout: CALL_TIMEOUT,
+            check_version: true,
         }
     }
 
@@ -165,7 +171,8 @@ impl Client {
     /// Connect, call `info` and check versions.
     ///
     /// * `DAEMON_NOT_RUNNING` if the socket is missing, refuses or times out (2 s).
-    /// * `DAEMON_VERSION_MISMATCH` if the daemon's stems or API version differs.
+    /// * `DAEMON_VERSION_MISMATCH` if the daemon's API version differs, or its
+    ///   stems version does (unless [`ClientOptions::check_version`] is off).
     pub async fn connect(
         socket_path: impl AsRef<Path>,
         opts: ClientOptions,
@@ -181,7 +188,9 @@ impl Client {
         };
         let info: DaemonInfo = serde_json::from_value(v)
             .map_err(|e| Error::internal(format!("invalid `info` result: {e}")))?;
-        if info.api_version != API_VERSION || info.version != opts.client_version {
+        if info.api_version != API_VERSION
+            || (opts.check_version && info.version != opts.client_version)
+        {
             return Err(version_mismatch(
                 &opts.client_version,
                 API_VERSION,

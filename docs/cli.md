@@ -13,6 +13,13 @@ Exit codes: 0 ok, 1 runtime failure, 2 config/validation/usage error,
 3 partial success or orphans, 4 daemon unavailable. Commands whose
 deliverable has not landed yet return `NOT_IMPLEMENTED` (exit 1).
 
+**Exception:** `stems events --json` prints NDJSON, one event object per
+line (`{ts, seq, kind, stem, from, to, reason, actor, data}`) and no
+envelope, so external automation can consume `stems events -f --json`
+line by line (FR-CL-4); errors (e.g. exit 4 `DAEMON_NOT_RUNNING`) still
+print the envelope. The daemon's wire protocol is documented in
+`docs/protocol.md`.
+
 ## `stems`
 
 ```text
@@ -756,7 +763,12 @@ Global options:
 ### `stems events`
 
 ```text
-Show or follow the event stream (NDJSON with --json)
+Show or follow the event stream (NDJSON with --json).
+
+Prints the daemon's buffered events (the last 10 000), oldest first; with -f keeps streaming new
+ones until the daemon stops or Ctrl-C. With --json the output is NDJSON, one event object per line
+(`{ts, seq, kind, stem, from, to, reason, actor, data}`) and no envelope: the hook for external
+automation. Errors still use the envelope (e.g. exit 4 DAEMON_NOT_RUNNING).
 
 Usage: stems events [OPTIONS]
 
@@ -765,10 +777,10 @@ Options:
           Keep streaming new events
 
       --since <SEQ>
-          Only events after this sequence number
+          Only events after this sequence number (default 0: every buffered event)
 
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -2306,13 +2318,21 @@ Global options:
 ### `stems daemon start`
 
 ```text
-Start the workspace daemon in the background
+Start the workspace daemon in the background.
+
+Spawns the daemon detached (its own session, output appended to `$STEMS_HOME/<ws-hash>/stemsd.log`)
+and waits up to 5 s for its socket. If a daemon already serves this workspace, reports it with
+`already_running: true` (exit 0).
 
 Usage: stems daemon start [OPTIONS]
 
 Options:
+      --foreground
+          Run the daemon in this terminal (logging to stderr too) instead of detaching; Ctrl-C stops
+          it
+
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -2346,13 +2366,17 @@ Global options:
 ### `stems daemon stop`
 
 ```text
-Stop the workspace daemon
+Stop the workspace daemon.
+
+Asks it to shut down (the same orderly path as SIGTERM) and waits up to 5 s for its socket and lock
+to disappear. Exits 4 (DAEMON_NOT_RUNNING) when none is running; a stale lock left by a crashed
+daemon is removed.
 
 Usage: stems daemon stop [OPTIONS]
 
 Options:
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -2386,13 +2410,17 @@ Global options:
 ### `stems daemon status`
 
 ```text
-Show the daemon's pid, version, socket and uptime
+Show the daemon's pid, version, socket and uptime.
+
+`data`: `{ running, pid, version, api_version, workspace, uptime_s, socket, lock, log, ... }`. Exits
+4 (DAEMON_NOT_RUNNING, `running: false`) when no daemon answers; the hint says `stale lock` when a
+crashed daemon left its lock behind.
 
 Usage: stems daemon status [OPTIONS]
 
 Options:
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>

@@ -320,6 +320,10 @@ step!(then_within_stem_status(w, m) {
 });
 
 fn events_of(v: &Value) -> Vec<Value> {
+    // A single NDJSON line parses as one object, not an array.
+    if v.get("seq").is_some() && v.get("kind").is_some() {
+        return vec![v.clone()];
+    }
     match v.get("data").unwrap_or(v) {
         Value::Array(a) => a
             .iter()
@@ -395,6 +399,339 @@ step!(when_daemon_killed(w, m) {
         .unwrap_or_else(|| panic!("no $.data.pid in `stems daemon status --json`\n{}", out.describe()));
     nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), sig)
         .unwrap_or_else(|e| panic!("kill {pid} with {sig}: {e}"));
+    // SIGKILL cannot be caught: wait (bounded) until the pid is really gone
+    // so the next step observes the crashed state, not a dying process.
+    if sig == nix::sys::signal::Signal::SIGKILL {
+        let until = Instant::now() + Duration::from_secs(2).min(w.remaining());
+        while procs::pid_alive(pid) && !procs::is_zombie(pid) {
+            assert!(Instant::now() < until, "daemon pid {pid} survived SIGKILL for 2s");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+});
+
+// ----------------------------------------------------------------------------
+// Daemon lifecycle, RPCs and background commands (deliverables 08/09)
+// ----------------------------------------------------------------------------
+
+step!(given_daemon_started(w, m) {
+    w.daemon_started = true;
+    let env = if m[1].is_empty() {
+        Vec::new()
+    } else {
+        vec![("STEMS_DEBUG_RPC".to_owned(), "1".to_owned())]
+    };
+    let out = w.run("stems daemon start --json", None, &env).await;
+    out.guard_implemented("08");
+    assert!(out.code == 0, "`stems daemon start --json` failed\n{}", out.describe());
+});
+
+/// The daemon's socket under `STEMS_HOME` (exactly one expected).
+fn daemon_socket(w: &E2eWorld) -> PathBuf {
+    let socks = find_files(&w.home, &|n| n == "stemsd.sock");
+    assert!(
+        socks.len() == 1,
+        "expected one stemsd.sock under {}, found {socks:?}",
+        w.home.display()
+    );
+    socks[0].clone()
+}
+
+step!(when_rpc(w, m) {
+    let method = m[1].clone();
+    let raw = w.expand(&m[2]);
+    let params: Value = serde_json::from_str(raw.trim())
+        .unwrap_or_else(|e| panic!("RPC params are not JSON ({e}): {raw}"));
+    let socket = daemon_socket(w);
+    let mut opts = stems_api::client::ClientOptions::new("cli:e2e");
+    opts.call_timeout = w.remaining();
+    let started = Instant::now();
+    let r: Result<Value, stems_core::Error> = async {
+        let c = stems_api::client::Client::connect(&socket, opts).await?;
+        c.call(stems_api::Method::new(method.clone()), params.clone()).await
+    }
+    .await;
+    let (code, doc) = match r {
+        Ok(v) => (0, serde_json::json!({"ok": true, "result": v, "errors": []})),
+        Err(e) => (e.exit_code(), serde_json::json!({"ok": false, "result": null, "errors": [e]})),
+    };
+    world::collect_pgids(&doc, &mut w.pgids);
+    w.last = Some(world::CmdOutput {
+        argv: vec!["rpc".to_owned(), method, params.to_string()],
+        cwd: w.default_cwd(),
+        code,
+        stdout: serde_json::to_string_pretty(&doc).unwrap_or_default(),
+        stderr: String::new(),
+        json: Some(doc),
+        elapsed: started.elapsed(),
+    });
+});
+
+step!(when_save_json(w, m) {
+    let got = nodes(w, &m[1]);
+    assert!(!got.is_empty(), "nothing at JSON path {}\n{}", m[1], w.last().describe());
+    let v = if got.len() == 1 { got[0].clone() } else { Value::Array(got.into_iter().cloned().collect()) };
+    let text = match v {
+        Value::String(s) => s,
+        other => other.to_string(),
+    };
+    w.vars.insert(m[2].clone(), text);
+});
+
+step!(when_run_background(w, m) {
+    w.run_background(&m[1], &[]);
+});
+
+step!(when_background_stopped(w, m) {
+    let remaining = w.remaining();
+    let bg = w.background();
+    if bg.poll_exit().is_none() {
+        let _ = nix::sys::signal::kill(nix::unistd::Pid::from_raw(-bg.pgid), nix::sys::signal::Signal::SIGINT);
+        let bound = Duration::from_secs(5).min(remaining);
+        if tokio::time::timeout(bound, bg.child.wait()).await.is_err() {
+            procs::kill_group(bg.pgid);
+            let _ = bg.child.wait().await;
+            panic!("the background command ignored SIGINT for {}s\n{}", bound.as_secs(), bg.describe());
+        }
+        bg.poll_exit();
+    }
+    // Let the reader tasks drain the pipes.
+    let _ = w.remaining();
+});
+
+fn background_events(out: &str) -> Vec<Value> {
+    out.lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect()
+}
+
+step!(then_background_in_order(w, m) {
+    let until = bound(w, &m[1]);
+    let want = expected(w, &m[2]);
+    let want = want.as_array().cloned().unwrap_or_else(|| panic!("expected a JSON array of subsets, got {want}"));
+    loop {
+        let bg = w.background();
+        bg.poll_exit();
+        let lines = background_events(&bg.stdout());
+        let mut it = lines.iter();
+        let matched = want.iter().all(|wv| it.any(|l| util::is_subset(wv, l)));
+        if matched {
+            return;
+        }
+        assert!(
+            Instant::now() < until,
+            "the background output does not contain {} in order within {}s\n{}",
+            serde_json::to_string(&want).unwrap_or_default(),
+            m[1],
+            bg.describe()
+        );
+        tokio::time::sleep(POLL).await;
+    }
+});
+
+step!(then_background_exits(w, m) {
+    let until = bound(w, &m[1]);
+    let want: i32 = m[2].parse().expect("exit code");
+    loop {
+        let bg = w.background();
+        if let Some(code) = bg.poll_exit() {
+            assert!(code == want, "the background command exited {code}, expected {want}\n{}", bg.describe());
+            return;
+        }
+        assert!(Instant::now() < until, "the background command is still running after {}s\n{}", m[1], bg.describe());
+        tokio::time::sleep(POLL).await;
+    }
+});
+
+fn parse_port(w: &E2eWorld, raw: &str) -> u16 {
+    let s = w.expand(raw);
+    s.trim()
+        .parse()
+        .unwrap_or_else(|_| panic!("not a port: {s:?}"))
+}
+
+step!(when_chaos_port(w, m) {
+    let port = parse_port(w, &m[2]);
+    let path = format!("/__chaos/{}", m[1].trim_start_matches('/'));
+    let timeout = w.remaining().min(Duration::from_secs(10));
+    let resp = tokio::task::spawn_blocking(move || http::get(port, &path, timeout))
+        .await
+        .expect("http task");
+    w.last_http = Some(match resp {
+        Ok(r) => r,
+        Err(e) if e.starts_with("connect") => panic!("chaos endpoint on port {port}: {e}"),
+        Err(e) => http::Response { status: 0, body: e },
+    });
+});
+
+step!(then_port_listening(w, m) {
+    let until = bound(w, &m[1]);
+    let port = parse_port(w, &m[2]);
+    loop {
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+        if std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok() {
+            return;
+        }
+        assert!(Instant::now() < until, "nothing listens on 127.0.0.1:{port} after {}s", m[1]);
+        tokio::time::sleep(POLL).await;
+    }
+});
+
+async fn daemon_pid(w: &mut E2eWorld) -> i32 {
+    let out = w
+        .run_quiet("stems daemon status --json", w.remaining())
+        .await
+        .expect("`stems daemon status --json` ran");
+    out.json
+        .as_ref()
+        .and_then(|j| j.pointer("/data/pid"))
+        .and_then(Value::as_i64)
+        .and_then(|p| i32::try_from(p).ok())
+        .unwrap_or_else(|| {
+            panic!(
+                "no $.data.pid in `stems daemon status --json`\n{}",
+                out.describe()
+            )
+        })
+}
+
+step!(then_daemon_rss_below(w, m) {
+    let max_mb: f64 = m[1].parse().expect("MB");
+    let pid = daemon_pid(w).await;
+    let out = tokio::process::Command::new("ps")
+        .args(["-o", "rss=", "-p", &pid.to_string()])
+        .output()
+        .await
+        .expect("ps");
+    let text = String::from_utf8_lossy(&out.stdout);
+    let kb: f64 = text.trim().parse().unwrap_or_else(|_| panic!("ps -o rss= -p {pid} printed {text:?}"));
+    let mb = kb / 1024.0;
+    assert!(mb < max_mb, "daemon pid {pid} RSS is {mb:.1} MB (limit {max_mb} MB)");
+});
+
+step!(then_last_took_less(w, m) {
+    let max: u128 = m[1].parse().expect("ms");
+    let last = w.last();
+    assert!(
+        last.elapsed.as_millis() < max,
+        "the last command took {} ms (limit {max} ms)\n{}",
+        last.elapsed.as_millis(),
+        last.describe()
+    );
+});
+
+step!(then_last_took_at_least(w, m) {
+    let min: u128 = m[1].parse().expect("ms");
+    let last = w.last();
+    assert!(
+        last.elapsed.as_millis() >= min,
+        "the last command took only {} ms (expected at least {min} ms)\n{}",
+        last.elapsed.as_millis(),
+        last.describe()
+    );
+});
+
+step!(then_within_no_lock_socket(w, m) {
+    let until = bound(w, &m[1]);
+    loop {
+        let files = find_files(&w.home, &is_socket_or_lock);
+        if files.is_empty() {
+            return;
+        }
+        assert!(Instant::now() < until, "lock/socket files still exist after {}s: {files:?}", m[1]);
+        tokio::time::sleep(POLL).await;
+    }
+});
+
+step!(then_socket_mode(w, m) {
+    use std::os::unix::fs::PermissionsExt;
+    let want = u32::from_str_radix(&m[1], 8).expect("octal mode");
+    let socket = daemon_socket(w);
+    let mode = std::fs::metadata(&socket)
+        .unwrap_or_else(|e| panic!("{}: {e}", socket.display()))
+        .permissions()
+        .mode()
+        & 0o777;
+    assert!(mode == want, "{} has mode {mode:o}, expected {want:o}", socket.display());
+});
+
+step!(given_stale_lock(w, m) {
+    let out = w
+        .run_quiet("stems daemon status --json", w.remaining())
+        .await
+        .expect("`stems daemon status --json` ran");
+    let data = out.json.as_ref().and_then(|j| j.get("data")).cloned().unwrap_or_default();
+    assert!(
+        data.get("running") == Some(&Value::Bool(false)),
+        "expected no daemon running before writing a stale lock\n{}",
+        out.describe()
+    );
+    let lock = PathBuf::from(data["lock"].as_str().expect("$.data.lock"));
+    let socket = PathBuf::from(data["socket"].as_str().expect("$.data.socket"));
+    // A pid that certainly belonged to a process that is gone: spawn and reap.
+    let mut child = tokio::process::Command::new("true").spawn().expect("spawn true");
+    let pid = child.id().expect("pid");
+    child.wait().await.expect("reap true");
+    let dir = lock.parent().expect("lock dir");
+    std::fs::create_dir_all(dir).expect("create daemon dir");
+    let body = serde_json::json!({
+        "pid": pid,
+        "start_time": 1,
+        "version": "0.0.1",
+        "created_at": "2026-01-01T00:00:00Z",
+    });
+    std::fs::write(&lock, body.to_string()).expect("write lock");
+    if !m[1].is_empty() {
+        // A socket file nobody listens on.
+        drop(std::os::unix::net::UnixListener::bind(&socket).expect("bind socket"));
+    }
+    w.daemon_started = true;
+});
+
+step!(then_daemon_log_contains(w, m) {
+    let until = bound(w, &m[1]);
+    let text = w.expand(&m[2]);
+    loop {
+        let logs = find_files(&w.home, &|n| n == "stemsd.log");
+        let all: String = logs.iter().map(|f| std::fs::read_to_string(f).unwrap_or_default()).collect();
+        if all.contains(&text) {
+            return;
+        }
+        assert!(Instant::now() < until, "the daemon log ({logs:?}) does not contain {text:?} after {}s:\n{}", m[1], util::clip(&all, 3000));
+        tokio::time::sleep(POLL).await;
+    }
+});
+
+step!(then_json_greater(w, m) {
+    let min: f64 = m[2].parse().expect("number");
+    let got = nodes(w, &m[1]);
+    assert!(
+        got.len() == 1 && got[0].as_f64().is_some_and(|n| n > min),
+        "JSON at {} is {} (expected a number > {min})\n{}",
+        m[1],
+        serde_json::to_string(&got).unwrap_or_default(),
+        w.last().describe()
+    );
+});
+
+step!(then_pids_dead(w, m) {
+    let until = bound(w, &m[1]);
+    let raw = w.expand(&m[2]);
+    let v: Value = serde_json::from_str(raw.trim()).unwrap_or_else(|e| panic!("not JSON ({e}): {raw}"));
+    let pids: Vec<i32> = match &v {
+        Value::Array(a) => a.iter().filter_map(Value::as_i64).filter_map(|p| i32::try_from(p).ok()).collect(),
+        other => other.as_i64().and_then(|p| i32::try_from(p).ok()).into_iter().collect(),
+    };
+    assert!(!pids.is_empty(), "no pids in {raw}");
+    loop {
+        let alive: Vec<i32> = pids.iter().copied().filter(|p| procs::pid_alive(*p) && !procs::is_zombie(*p)).collect();
+        if alive.is_empty() {
+            return;
+        }
+        assert!(Instant::now() < until, "still alive after {}s: {alive:?}", m[1]);
+        tokio::time::sleep(POLL).await;
+    }
 });
 
 // ----------------------------------------------------------------------------
@@ -574,6 +911,73 @@ pub const STEPS: &[(&str, Step<E2eWorld>)] = &[
         r#"^the file "([^"]+)" does not exist$"#,
         then_file_not_exists,
     ),
+    // Daemon, RPCs, background commands (08/09)
+    (
+        r#"^the daemon is started( with debug RPCs)?$"#,
+        given_daemon_started,
+    ),
+    (
+        r#"^a stale daemon lock from a dead process( and its socket)?$"#,
+        given_stale_lock,
+    ),
+    (r#"^I call the daemon RPC "([^"]+)" with (.+)$"#, when_rpc),
+    (
+        r#"^I save the JSON at "([^"]+)" as "([\w-]+)"$"#,
+        when_save_json,
+    ),
+    (
+        r#"^I run "([^"]*)" in the background$"#,
+        when_run_background,
+    ),
+    (
+        r#"^the background command is stopped$"#,
+        when_background_stopped,
+    ),
+    (
+        r#"^within (\d+(?:\.\d+)?)s the background command's output contains (\[.+\]) in order$"#,
+        then_background_in_order,
+    ),
+    (
+        r#"^within (\d+(?:\.\d+)?)s the background command exits with code (\d+)$"#,
+        then_background_exits,
+    ),
+    (
+        r#"^the chaos endpoint "([^"]+)" is called on port (\S+)$"#,
+        when_chaos_port,
+    ),
+    (
+        r#"^within (\d+(?:\.\d+)?)s port (\S+) is listening$"#,
+        then_port_listening,
+    ),
+    (
+        r#"^the daemon RSS is below (\d+(?:\.\d+)?) MB$"#,
+        then_daemon_rss_below,
+    ),
+    (
+        r#"^the last command took less than (\d+) ms$"#,
+        then_last_took_less,
+    ),
+    (
+        r#"^the last command took at least (\d+) ms$"#,
+        then_last_took_at_least,
+    ),
+    (
+        r#"^within (\d+(?:\.\d+)?)s the lock file and socket do not exist$"#,
+        then_within_no_lock_socket,
+    ),
+    (r#"^the socket has mode ([0-7]{3,4})$"#, then_socket_mode),
+    (
+        r#"^within (\d+(?:\.\d+)?)s the daemon log contains "(.*)"$"#,
+        then_daemon_log_contains,
+    ),
+    (
+        r#"^the JSON at "([^"]+)" is greater than (-?\d+(?:\.\d+)?)$"#,
+        then_json_greater,
+    ),
+    (
+        r#"^within (\d+(?:\.\d+)?)s none of the pids (.+) is alive$"#,
+        then_pids_dead,
+    ),
 ];
 
 /// The step collection handed to cucumber.
@@ -592,6 +996,21 @@ pub fn collection() -> Collection<E2eWorld> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn events_of_accepts_ndjson_envelopes_and_single_lines() {
+        use serde_json::json;
+        let one = json!({"seq": 1, "kind": "daemon.started", "data": {}});
+        assert_eq!(events_of(&one), vec![one.clone()]);
+        let many = json!([one, {"seq": 2, "kind": "workspace.loaded", "data": {"x": 1}}]);
+        assert_eq!(events_of(&many).len(), 2);
+        let env = json!({"ok": true, "data": [{"seq": 1, "kind": "k", "data": {}}]});
+        assert_eq!(events_of(&env).len(), 1);
+        assert_eq!(
+            background_events("{\"a\":1}\nnot json\n\n{\"a\":2}\n"),
+            vec![json!({"a": 1}), json!({"a": 2})]
+        );
+    }
 
     /// No step text may match two regexes (cucumber would report ambiguity).
     #[test]
@@ -641,6 +1060,26 @@ mod tests {
             r#"the lock file and socket do not exist"#,
             r#"the file "config/local.ini" exists"#,
             r#"the file "config/local.ini" does not exist"#,
+            r#"the daemon is started"#,
+            r#"the daemon is started with debug RPCs"#,
+            r#"a stale daemon lock from a dead process"#,
+            r#"a stale daemon lock from a dead process and its socket"#,
+            r#"I call the daemon RPC "_debug.describe" with {"handle": 1}"#,
+            r#"I save the JSON at "$.result.id" as "handle""#,
+            r#"I run "stems events -f --json" in the background"#,
+            r#"the background command is stopped"#,
+            r#"within 5s the background command's output contains [{"kind": "daemon.started"}] in order"#,
+            r#"within 5s the background command exits with code 0"#,
+            r#"the chaos endpoint "fork?n=3" is called on port ${port:18090}"#,
+            r#"within 5s port ${port:18090} is listening"#,
+            r#"the daemon RSS is below 20 MB"#,
+            r#"the last command took less than 100 ms"#,
+            r#"the socket has mode 0600"#,
+            r#"the last command took at least 400 ms"#,
+            r#"within 2s the lock file and socket do not exist"#,
+            r#"within 2s the daemon log contains "stale lock reclaimed""#,
+            r#"the JSON at "$.result.dropped_lines" is greater than 0"#,
+            r#"within 3s none of the pids ${var:pids} is alive"#,
         ];
         let regexes: Vec<regex::Regex> = STEPS
             .iter()
@@ -652,7 +1091,7 @@ mod tests {
         }
         assert_eq!(
             STEPS.len(),
-            samples.len() - 3,
+            samples.len() - 5,
             "every step has a sample (plus optional-group variants)"
         );
     }

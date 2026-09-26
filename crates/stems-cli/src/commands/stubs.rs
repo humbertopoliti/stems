@@ -5,7 +5,7 @@
 use serde_json::json;
 use stems_core::{Error, ErrorCode};
 
-use crate::cli::{Command, ConfigCommand, DaemonCommand, ReposCommand, WatchCommand};
+use crate::cli::{Command, ConfigCommand, ReposCommand, WatchCommand};
 use crate::output::CommandOutput;
 
 /// `(command path, deliverable)` for a stub; `deliverable` is a plan
@@ -20,7 +20,6 @@ pub fn target(cmd: &Command) -> (String, &'static str) {
         Command::Attach(_) => ("attach", "27"),
         Command::Status(_) => ("status", "13"),
         Command::Logs(_) => ("logs", "12"),
-        Command::Events(_) => ("events", "08"),
         Command::Metrics(_) => ("metrics", "25"),
         Command::Health(_) => ("health", "21"),
         Command::Graph(_) => ("graph", "23"),
@@ -49,17 +48,13 @@ pub fn target(cmd: &Command) -> (String, &'static str) {
         Command::Edit(_) => ("edit", "unscheduled"),
         Command::Mcp(_) => ("mcp", "31"),
         Command::Upgrade(_) => ("upgrade", "32"),
-        Command::Daemon(d) => match d.action {
-            None => ("daemon", "08"),
-            Some(DaemonCommand::Start) => ("daemon start", "08"),
-            Some(DaemonCommand::Stop) => ("daemon stop", "08"),
-            Some(DaemonCommand::Status) => ("daemon status", "08"),
-        },
         Command::Init(_)
+        | Command::Events(_)
+        | Command::Daemon(_)
         | Command::Validate(_)
         | Command::Show(_)
         | Command::Completions(_)
-        | Command::Docs => ("", "07"),
+        | Command::Docs => ("", "implemented"),
     };
     (name.to_string(), nn)
 }

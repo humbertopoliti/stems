@@ -2,13 +2,17 @@
 source: crates/stems-cli/tests/help.rs
 expression: help
 ---
-Stop the workspace daemon
+Stop the workspace daemon.
+
+Asks it to shut down (the same orderly path as SIGTERM) and waits up to 5 s for its socket and lock
+to disappear. Exits 4 (DAEMON_NOT_RUNNING) when none is running; a stale lock left by a crashed
+daemon is removed.
 
 Usage: stems daemon stop [OPTIONS]
 
 Options:
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>

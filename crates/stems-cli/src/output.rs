@@ -1,6 +1,12 @@
 //! The output layer: every command returns a [`CommandOutput`], rendered as
 //! the JSON envelope `{ "ok", "data", "errors", "version" }` or as human
 //! text. The exit code is `errors.exit_code()` (0 when there are none).
+//!
+//! **Exception: NDJSON.** `stems events --json` prints one event object per
+//! line and no envelope (FR-CL-4: the stream is the hook for external
+//! automation, and `-f` must be consumable line by line while it runs). A
+//! command opts in with [`CommandOutput::with_ndjson`]; on failure the
+//! envelope is printed as usual, so errors stay machine-readable.
 
 use std::io::Write;
 
@@ -62,6 +68,9 @@ pub struct CommandOutput {
     /// Text printed verbatim (no envelope) unless `--json` was explicit, e.g.
     /// a completion script or `stems --version`.
     pub raw: Option<String>,
+    /// JSON mode prints this verbatim (NDJSON lines) instead of the envelope
+    /// when there are no errors (`stems events`).
+    pub ndjson: Option<String>,
 }
 
 impl CommandOutput {
@@ -92,6 +101,13 @@ impl CommandOutput {
     #[must_use]
     pub fn with_raw(mut self, text: impl Into<String>) -> Self {
         self.raw = Some(text.into());
+        self
+    }
+
+    /// Set the NDJSON text printed instead of the envelope in JSON mode.
+    #[must_use]
+    pub fn with_ndjson(mut self, text: impl Into<String>) -> Self {
+        self.ndjson = Some(text.into());
         self
     }
 
@@ -147,6 +163,10 @@ pub fn render(
         return;
     }
     match opts.mode {
+        Mode::Json if out.ndjson.is_some() && out.errors.is_empty() => {
+            let _ = stdout.write_all(out.ndjson.as_deref().unwrap_or_default().as_bytes());
+            let _ = stdout.flush();
+        }
         Mode::Json => {
             let text = serde_json::to_string_pretty(&out.envelope())
                 .unwrap_or_else(|e| format!("{{\"ok\":false,\"error\":\"{e}\"}}"));
@@ -262,6 +282,29 @@ mod tests {
         );
         let v: Value = serde_json::from_slice(&o).unwrap();
         assert_eq!(v["data"]["script"], json!("x"));
+    }
+
+    #[test]
+    fn ndjson_replaces_the_envelope_unless_there_are_errors() {
+        let out = CommandOutput::data(json!([1])).with_ndjson("{\"seq\":1}\n");
+        let (mut o, mut e) = (Vec::new(), Vec::new());
+        render(
+            &out,
+            &OutputOptions::new(true, false, false),
+            &mut o,
+            &mut e,
+        );
+        assert_eq!(String::from_utf8(o).unwrap(), "{\"seq\":1}\n");
+        let out = out.with_errors(Error::usage("x", "y"));
+        let (mut o, mut e) = (Vec::new(), Vec::new());
+        render(
+            &out,
+            &OutputOptions::new(true, false, false),
+            &mut o,
+            &mut e,
+        );
+        let v: Value = serde_json::from_slice(&o).unwrap();
+        assert_eq!(v["ok"], json!(false));
     }
 
     #[test]

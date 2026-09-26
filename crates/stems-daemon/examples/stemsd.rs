@@ -1,5 +1,5 @@
-//! Minimal standalone daemon for manual protocol testing (`nc -U`) and RSS
-//! measurement until the CLI wires `stems daemon`:
+//! Minimal standalone daemon for manual protocol testing (`nc -U`) without
+//! the CLI (normally: `stems daemon start` / `stems daemon start --foreground`):
 //!
 //! ```sh
 //! cargo run -p stems-daemon --example stemsd -- <home> <workspace>

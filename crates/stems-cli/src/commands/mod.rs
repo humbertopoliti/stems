@@ -2,6 +2,8 @@
 //! renders it and exits with its code.
 
 pub mod completions;
+pub mod daemon;
+pub mod events;
 pub mod init;
 pub mod show;
 pub mod stubs;
@@ -9,12 +11,13 @@ pub mod validate;
 pub mod version;
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::PathBuf;
 
 use stems_config::LoadOptions;
 
 use crate::cli::{Command, GlobalArgs};
-use crate::output::CommandOutput;
+use crate::output::{CommandOutput, Mode};
 
 /// Per-invocation context shared by every command.
 #[derive(Clone, Debug)]
@@ -38,16 +41,30 @@ impl Ctx {
         }
     }
 
-    /// The stems home (`--home` / `STEMS_HOME` / platform default).
+    /// The stems home (`--home` / `STEMS_HOME` / platform default), made
+    /// absolute against the cwd.
     pub fn home(&self) -> PathBuf {
-        let env = |k: &str| self.env.get(k).cloned();
-        crate::paths::home_dir_with(self.global.home.as_deref(), &env, cfg!(target_os = "macos"))
+        let home = self
+            .global
+            .home
+            .clone()
+            .or_else(|| {
+                self.env
+                    .get(crate::paths::ENV_HOME)
+                    .filter(|v| !v.is_empty())
+                    .map(PathBuf::from)
+            })
+            .unwrap_or_else(crate::paths::default_home);
+        self.cwd.join(home)
     }
 }
 
-/// Run one subcommand.
-pub fn dispatch(cmd: Command, ctx: &Ctx) -> CommandOutput {
+/// Run one subcommand. `mode` and `stdout` are for commands that stream
+/// (`events -f`); everything else returns its whole output.
+pub fn dispatch(cmd: Command, ctx: &Ctx, mode: Mode, stdout: &mut dyn Write) -> CommandOutput {
     match cmd {
+        Command::Daemon(a) => daemon::run(ctx, &a),
+        Command::Events(a) => events::run(ctx, &a, mode, stdout),
         Command::Init(a) => init::run(ctx, &a),
         Command::Validate(a) => validate::run(ctx, &a),
         Command::Show(a) => show::run(ctx, &a),

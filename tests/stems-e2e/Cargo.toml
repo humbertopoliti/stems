@@ -15,8 +15,11 @@ regex = "1.13.1"
 serde_json.workspace = true
 serde_json_path = "0.7.2"
 serde_yaml_ng.workspace = true
+# `When I call the daemon RPC ...` talks to the socket with the real client.
+stems-api = { workspace = true }
+stems-core = { workspace = true }
 tempfile.workspace = true
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time", "io-util", "sync"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time", "io-util", "sync", "net", "signal"] }
 
 # The cucumber suite. `test = false` keeps it out of `cargo test --workspace`
 # (it needs the `stems` binary built first); run it with `make e2e`, i.e.

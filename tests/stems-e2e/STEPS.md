@@ -76,6 +76,7 @@ paths expand:
 | `${outside}` | `<tmp>/outside` |
 | `${repo}` | the real repository root |
 | `${port:18090}` | the remapped value of declared port 18090 (18090 if not remapped) |
+| `${var:name}` | a value saved with `When I save the JSON at "<path>" as "<name>"` (strings unquoted, anything else as JSON text) |
 
 Anything else (e.g. `${stem.shop-web.port}`) is left as is.
 
@@ -255,7 +256,8 @@ When the chaos endpoint "fork?n=3" is called on "echo-svc"
 
 **`When the daemon is killed with <SIGNAL>`** — pid from
 `stems daemon status --json` (`$.data.pid`), then `kill(pid, SIGNAL)`
-(`SIGKILL`, `TERM`, `9` all accepted).
+(`SIGKILL`, `TERM`, `9` all accepted). For `SIGKILL` the step also waits
+(≤ 2 s) until the pid is gone, so the next step sees the crashed state.
 ```gherkin
 When the daemon is killed with SIGKILL
 ```
@@ -351,7 +353,8 @@ Then the output matches golden "status-table" ignoring columns PID,UPTIME
 ### Then: daemon-backed polling (need 08/10+)
 
 These steps call real commands; while the binary does not know the command
-they fail with `not implemented until deliverable NN`.
+they fail with `not implemented until deliverable NN` (`events` exists since
+08; `status` lands in 10/13).
 
 Assumed JSON shapes (align with these in 08/10/13, or extend the helpers in
 `src/world.rs`): `stems status --json` has `$.data.stems` as a map keyed by
@@ -359,7 +362,8 @@ stem name **or** an array of objects with `name`; a stem has `state` (or
 `status`) and `port` or `ports` (array of numbers/objects with `port`, or a
 map). `stems events --json --since 0` prints NDJSON events or an envelope
 whose `data` is an array of events. Any `pgid` field in any `--json` output is
-recorded for the leak check.
+recorded for the leak check. (08: `stems events --json` is NDJSON; a single
+event line parses as one object, which the events steps also accept.)
 
 **`Then within <n>s the stem "<stem>" is "<status>"`** — polls
 `stems status --json` every 100 ms.
@@ -376,6 +380,127 @@ Then within 5s the events stream contains {"kind": "stem.state", "stem": "echo-s
 **`Then the chaos response status is <code>`**
 ```gherkin
 Then the chaos response status is 200
+```
+
+### Daemon, RPCs and background commands (08/09)
+
+**`Given the daemon is started[ with debug RPCs]`** — `stems daemon start
+--json` (with `STEMS_DEBUG_RPC=1` in its environment, inherited by the
+detached daemon, for the `_debug.*` RPCs); must succeed. Marks the daemon as
+started so the After hook stops it.
+```gherkin
+Given the daemon is started with debug RPCs
+```
+
+**`Given a stale daemon lock from a dead process[ and its socket]`** — reads
+`$.data.lock` / `$.data.socket` from `stems daemon status --json` (no daemon
+may be running), spawns and reaps `true` to get a dead pid, and writes
+`{"pid", "start_time": 1, "version": "0.0.1", "created_at"}` to the lock
+file; `and its socket` also leaves a socket file nobody listens on.
+```gherkin
+Given a stale daemon lock from a dead process and its socket
+```
+
+**`When I call the daemon RPC "<method>" with <json>`** — connects to the
+single `stemsd.sock` under `STEMS_HOME` with the real `stems_api` client
+(actor `cli:e2e`, version check on), calls the method with the (expanded)
+JSON params and stores the outcome as the **last command**, so the JSON and
+exit-code steps apply:
+`{"ok": true, "result": <result>, "errors": []}` (exit code 0) or
+`{"ok": false, "result": null, "errors": [<stems error>]}` (exit code =
+the error's exit code). Any `pgid` in the result is recorded for the leak
+check. `_debug.*` methods need `the daemon is started with debug RPCs`.
+```gherkin
+When I call the daemon RPC "_debug.describe" with {"handle": ${var:h}}
+Then the JSON at "$.result.children[3]" exists
+```
+
+**`When I save the JSON at "<jsonpath>" as "<name>"`** — saves the node
+(several nodes: a JSON array of them) of the last command's JSON for
+`${var:name}`.
+```gherkin
+When I save the JSON at "$.result.children[*].pid" as "pids"
+```
+
+**`When I run "stems <args>" in the background`** — starts the command in its
+own process group (recorded for the leak check) and keeps collecting its
+stdout/stderr. One per scenario.
+```gherkin
+When I run "stems events -f --json" in the background
+```
+
+**`When the background command is stopped`** — SIGINT to its process group,
+then waits ≤ 5 s (SIGKILL and fail if it ignores SIGINT). A no-op if it
+already exited.
+```gherkin
+When the background command is stopped
+```
+
+**`Then within <n>s the background command's output contains <json array> in order`**
+— polls its stdout, parsed as NDJSON, until the array's elements match (as
+JSON subsets) lines in that order (other lines may come between).
+```gherkin
+Then within 5s the background command's output contains [{"kind": "daemon.started"}, {"kind": "daemon.stopping"}] in order
+```
+
+**`Then within <n>s the background command exits with code <n>`**
+```gherkin
+Then within 5s the background command exits with code 0
+```
+
+**`When the chaos endpoint "<path>" is called on port <port>`** — like the
+stem variant but with an explicit (expanded) port, for processes started
+through `_debug.start_raw`.
+```gherkin
+When the chaos endpoint "fork?n=3" is called on port ${port:18090}
+```
+
+**`Then within <n>s port <port> is listening`** — polls a TCP connect to
+`127.0.0.1:<port>` (readiness without sleeps).
+```gherkin
+Then within 10s port ${port:18090} is listening
+```
+
+**`Then within <n>s none of the pids <json> is alive`** — a pid or a JSON
+array of pids (usually `${var:...}`); zombies count as dead.
+```gherkin
+Then within 2s none of the pids ${var:pids} is alive
+```
+
+**`Then the daemon RSS is below <n> MB`** — pid from `stems daemon status
+--json`, RSS from `ps -o rss= -p <pid>`.
+```gherkin
+Then the daemon RSS is below 20 MB
+```
+
+**`Then the last command took less than <n> ms`** / **`took at least <n> ms`**
+— wall-clock time of the last command (spawn to exit), or of the last RPC.
+```gherkin
+Then the last command took less than 100 ms
+```
+
+**`Then the socket has mode <octal>`** — permission bits of the single
+`stemsd.sock` under `STEMS_HOME`.
+```gherkin
+Then the socket has mode 0600
+```
+
+**`Then within <n>s the daemon log contains "<text>"`** — polls every
+`stemsd.log` under `STEMS_HOME`.
+```gherkin
+Then within 5s the daemon log contains "stale lock reclaimed"
+```
+
+**`Then within <n>s the lock file and socket do not exist`** — polling
+variant of the step below.
+```gherkin
+Then within 2s the lock file and socket do not exist
+```
+
+**`Then the JSON at "<jsonpath>" is greater than <n>`** — exactly one numeric
+node.
+```gherkin
+Then the JSON at "$.result.dropped_lines" is greater than 0
 ```
 
 ### Then: nothing left behind

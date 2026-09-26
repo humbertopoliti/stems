@@ -17,7 +17,13 @@ pub fn markdown() -> String {
          when stdout is not a terminal or with `--json` (`--human` forces text).\n\
          Exit codes: 0 ok, 1 runtime failure, 2 config/validation/usage error,\n\
          3 partial success or orphans, 4 daemon unavailable. Commands whose\n\
-         deliverable has not landed yet return `NOT_IMPLEMENTED` (exit 1).\n",
+         deliverable has not landed yet return `NOT_IMPLEMENTED` (exit 1).\n\n\
+         **Exception:** `stems events --json` prints NDJSON, one event object per\n\
+         line (`{ts, seq, kind, stem, from, to, reason, actor, data}`) and no\n\
+         envelope, so external automation can consume `stems events -f --json`\n\
+         line by line (FR-CL-4); errors (e.g. exit 4 `DAEMON_NOT_RUNNING`) still\n\
+         print the envelope. The daemon's wire protocol is documented in\n\
+         `docs/protocol.md`.\n",
     );
     for (path, help) in visible_commands() {
         let level = if path == "stems" { "##" } else { "###" };

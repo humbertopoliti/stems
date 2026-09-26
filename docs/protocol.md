@@ -61,6 +61,41 @@ Notification (subscription frames, no `id`):
 {"jsonrpc":"2.0","method":"event","params":{ …Event… }}
 ```
 
+## From the CLI
+
+```sh
+stems daemon start --json        # spawn detached, wait ≤ 5 s for the socket
+# {"ok":true,"data":{"already_running":false,"pid":4242,"version":"0.1.0","api_version":1,
+#  "uptime_s":0,"workspace":"/path/ws","socket":"…/stemsd.sock","lock":"…/stemsd.lock",
+#  "log":"…/stemsd.log"},"errors":[],"version":"0.1.0"}
+stems daemon start --json        # again: same data with "already_running": true, exit 0
+
+stems daemon status --json       # `daemon_status` + paths
+# data: {running: true, pid, version, api_version, workspace, workspace_name, uptime_s,
+#        started_at, start_time, socket, lock, lock_state: "held", log, stem_count,
+#        last_seq, subscribers, debug_rpc, client_version, compatible}
+# not running: exit 4 DAEMON_NOT_RUNNING, data: {running: false, lock_state: "free"|"stale",
+#        workspace, socket, lock, log}; a stale lock puts "stale lock: …" in the hint
+
+stems events --json --since 0    # NDJSON: one Event per line, no envelope
+# {"ts":"…","seq":1,"kind":"daemon.started","stem":null,"from":null,"to":null,"reason":null,"actor":"daemon","data":{…}}
+# {"ts":"…","seq":2,"kind":"workspace.loaded",…}
+stems events -f --json           # the same replay, then live events until the daemon
+                                 # stops (after daemon.stopped) or Ctrl-C; exit 0
+
+stems daemon stop --json         # `shutdown`, then wait ≤ 5 s for socket + lock to go
+# data: {stopped: true, pid, via: "rpc"|"signal"}; stale lock: {stopped: false,
+#        stale_lock_removed: true, pid}; nothing at all: exit 4 DAEMON_NOT_RUNNING
+```
+
+`stems daemon status` and `stems daemon stop` accept a daemon of another stems
+version (same API version) so that the `DAEMON_VERSION_MISMATCH` hint
+(`stems daemon stop && stems daemon start`) always works; `status` then reports
+`compatible: false` with the mismatch error (exit 4). If even the API version
+differs, `stop` falls back to SIGTERM on the lock's pid. Every other command
+refuses a mismatched daemon. `_debug.*` methods have no CLI subcommand; the e2e
+harness calls them over the socket (`When I call the daemon RPC ...`).
+
 ## Try it by hand
 
 ```sh

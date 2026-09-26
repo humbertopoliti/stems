@@ -2,13 +2,17 @@
 source: crates/stems-cli/tests/help.rs
 expression: help
 ---
-Show the daemon's pid, version, socket and uptime
+Show the daemon's pid, version, socket and uptime.
+
+`data`: `{ running, pid, version, api_version, workspace, uptime_s, socket, lock, log, ... }`. Exits
+4 (DAEMON_NOT_RUNNING, `running: false`) when no daemon answers; the hint says `stale lock` when a
+crashed daemon left its lock behind.
 
 Usage: stems daemon status [OPTIONS]
 
 Options:
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
