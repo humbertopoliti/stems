@@ -15,7 +15,9 @@
 pub mod actor;
 pub mod env;
 pub mod hooks;
+pub mod overlays;
 pub mod ports;
+pub mod run;
 pub mod schedule;
 pub mod state;
 pub mod waiter;
@@ -213,6 +215,9 @@ pub struct Core {
     pub(crate) state: Option<Arc<StateStore>>,
     /// Runs lifecycle and workspace scripts (deliverable 16).
     pub(crate) scripts: crate::scripts::ScriptRunner,
+    /// `up --force-overlays` is in progress (18): overlay destinations stems
+    /// does not own are backed up and overwritten instead of refused.
+    pub(crate) force_overlays: std::sync::atomic::AtomicBool,
 }
 
 /// The supervisor. Installed into the daemon by [`Daemon::run`].
@@ -224,6 +229,8 @@ pub struct Supervisor {
     ops: tokio::sync::Mutex<()>,
     /// Cancelled by `down`/shutdown so an in-flight `up` stops waiting.
     cancel: Mutex<CancellationToken>,
+    /// Custom script runs: per-stem slots, shutdown (17).
+    runs: run::ScriptRuns,
 }
 
 /// A fresh run id (a ULID, unique per daemon run).
@@ -288,11 +295,13 @@ impl Supervisor {
                 sink,
                 state: Some(state),
                 scripts,
+                force_overlays: std::sync::atomic::AtomicBool::new(false),
             }),
             host,
             cells: Mutex::new(IndexMap::new()),
             ops: tokio::sync::Mutex::new(()),
             cancel: Mutex::new(CancellationToken::new()),
+            runs: run::ScriptRuns::default(),
         })
     }
 
@@ -402,7 +411,16 @@ impl Supervisor {
             })));
             return Err(e);
         }
+        if p.sync {
+            self.sync_existing_repos(&ws, &plan.order, actor).await;
+        }
+        self.core
+            .force_overlays
+            .store(p.force_overlays, std::sync::atomic::Ordering::SeqCst);
         let mut res = self.run_plan(&plan, &ws, &p, actor, "up").await;
+        self.core
+            .force_overlays
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         res.requested = p.stems.clone();
         self.emit(EventDraft::new(EventKind::UP_FINISHED, actor).data(json!({
             "requested": res.requested,
@@ -412,6 +430,51 @@ impl Supervisor {
             "ok": res.ok,
         })));
         Ok(res)
+    }
+
+    /// `up --sync` (20): fetch + check out the planned stems' existing git
+    /// clones. Not fatal: a failure is a `repo.failed` event and the stem
+    /// starts from the checkout it has (missing clones are cloned by the
+    /// actor, which fails the stem on error).
+    async fn sync_existing_repos(&self, ws: &Resolved, order: &[String], actor: &str) {
+        let names: Vec<String> = order
+            .iter()
+            .filter(|n| {
+                ws.workspace.stem(n).is_some_and(|s| {
+                    matches!(&s.codebase, Some(stems_config::Codebase::Git { path, .. }) if path.is_dir())
+                })
+            })
+            .cloned()
+            .collect();
+        if names.is_empty() {
+            return;
+        }
+        let opts = crate::repos::SyncOptions {
+            force_fetch: true,
+            ..Default::default()
+        };
+        let ctx = crate::repos::RepoCtx::for_core(&self.core, actor);
+        if let Err(e) = crate::repos::sync(&ws.workspace, &names, &opts, &ctx).await {
+            tracing::warn!(error = %e.message, "up --sync");
+        }
+    }
+
+    /// `repos_sync` / `repos_status` (20).
+    async fn repos(&self, method: &str, p: &Value, actor: &str) -> Result<Value, Error> {
+        let ws = self.workspace(true, actor)?;
+        let ctx = crate::repos::RepoCtx::for_core(&self.core, actor);
+        if method == Method::REPOS_SYNC {
+            let p: stems_api::ReposSyncParams = params(method, p)?;
+            let opts = crate::repos::SyncOptions {
+                force_fetch: p.force_fetch,
+                recurse_submodules: p.recurse_submodules,
+            };
+            let _ops = self.ops.lock().await;
+            to_value(crate::repos::sync(&ws.workspace, &p.stems, &opts, &ctx).await?)
+        } else {
+            let p: stems_api::ReposStatusParams = params(method, p)?;
+            to_value(crate::repos::status(&ws.workspace, &p.stems, &ctx).await?)
+        }
     }
 
     async fn run_plan(
@@ -594,6 +657,8 @@ impl Supervisor {
             .stop_set(&ws, &names, ms(p.timeout_ms), actor, "down")
             .await;
         res.skipped.extend(externals);
+        // Overlays of stems that are not running (exited on their own) (18).
+        self.cleanup_idle_overlays(&p.stems, actor);
         if p.all
             && let Err(error) = self.teardown(&ws.workspace, actor).await
         {
@@ -715,9 +780,11 @@ impl Supervisor {
         if let Some(store) = &self.core.state {
             let stamps = previous.stamps.clone();
             let runs = previous.script_runs.clone();
+            let overlays = previous.overlays.clone();
             store.update(|f| {
                 f.stamps = stamps;
                 f.script_runs = runs;
+                f.overlays = overlays;
             });
         }
         for (name, rec) in previous.stems {
@@ -758,6 +825,8 @@ impl Supervisor {
                 }
             }
         }
+        // Overlays of stems that did not survive (18).
+        self.cleanup_idle_overlays(&[], actor);
         if let Some(store) = &self.core.state {
             store.flush();
         }
@@ -934,8 +1003,23 @@ impl SupervisorHooks for Supervisor {
                 Ok(p) => self.reset(p, actor).await.and_then(to_value),
                 Err(e) => Err(e),
             },
+            m if m == Method::OVERLAYS => match params(m, p) {
+                Ok(p) => self.overlays(&p, actor).and_then(to_value),
+                Err(e) => Err(e),
+            },
+            m if m == Method::REPOS_SYNC || m == Method::REPOS_STATUS => {
+                self.repos(m, p, actor).await
+            }
             m if m == Method::STAMPS => match params(m, p) {
                 Ok(p) => self.stamps(p, actor).and_then(to_value),
+                Err(e) => Err(e),
+            },
+            m if m == Method::RUN_SCRIPT => match params(m, p) {
+                Ok(p) => self.run_script(p, actor).await,
+                Err(e) => Err(e),
+            },
+            m if m == Method::SCRIPT_CATALOG => match params(m, p) {
+                Ok(p) => self.script_catalog(p, actor).and_then(to_value),
                 Err(e) => Err(e),
             },
             _ => return None,
@@ -944,6 +1028,7 @@ impl SupervisorHooks for Supervisor {
     }
 
     async fn shutdown(&self) {
+        self.runs.shutdown().await;
         self.stop_all(stems_api::DAEMON_ACTOR, "daemon shutdown")
             .await;
     }

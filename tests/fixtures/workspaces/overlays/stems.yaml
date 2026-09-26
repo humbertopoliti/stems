@@ -1,0 +1,38 @@
+# overlays — fixture for tests/features/overlays/ (deliverable 18, FR-WS-7).
+#
+# shop-api (depends on shop-worker) gets two overlays in its codebase:
+# config/local.ini, rendered from a template with its own port
+# (`${stem.self.port}`) and its dependency's (`${stem.shop-worker.port}`),
+# which it reads at start through SHOP_CONFIG (its log shows `config:`
+# lines), and config/keep.ini, copied verbatim with `keep: true`.
+# Scenarios use a private copy of the repos, so nothing is written into the
+# real examples/repos.
+schema_version: 1
+name: overlays
+
+stems:
+  shop-worker:
+    type: process
+    codebase: ../../../../examples/repos/shop-worker
+    env:
+      SHOP_CHAOS: "1"
+      SHOP_CONTROL_PORT: "18421"
+      REDIS_URL: "redis://127.0.0.1:1/0"
+    ports: [{ name: control, port: 18421 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    restart: { policy: never }
+    scripts: { start: python3 worker.py }
+  shop-api:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    depends_on: [shop-worker]
+    env:
+      SHOP_CONFIG: "${codebase}/config/local.ini"
+    overlays:
+      - { template: overlays/shop-api/local.ini.tmpl, dest: config/local.ini }
+      - { file: overlays/shop-api/keep.ini, dest: config/keep.ini, keep: true }
+    ports: [{ name: http, port: 18422 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts: { start: python3 app.py }

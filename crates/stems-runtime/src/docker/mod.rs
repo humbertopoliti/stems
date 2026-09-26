@@ -531,6 +531,12 @@ impl DockerRuntime {
             .map_err(|e| unavailable(&self.host, e))
     }
 
+    /// `GET /version`: the engine's version string (`doctor`, deliverable 19).
+    pub async fn server_version(&self) -> Result<String, RuntimeError> {
+        let v = self.docker.version().await.map_err(|e| self.map_err(e))?;
+        Ok(v.version.unwrap_or_else(|| "unknown".into()))
+    }
+
     /// The address this runtime talks to.
     pub fn host(&self) -> &str {
         &self.host

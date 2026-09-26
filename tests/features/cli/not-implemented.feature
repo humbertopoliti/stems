@@ -6,10 +6,10 @@ Feature: Commands of later deliverables exist as stubs
   change it) when its deliverable implements the command.
 
   @error
-  Scenario: stems doctor is not implemented yet
+  Scenario: stems mcp is not implemented yet
     Given the "minimal" workspace
-    When I run "stems doctor --json"
+    When I run "stems mcp --json"
     Then the exit code is 1
     And the JSON at "$.ok" equals false
     And the JSON error has code "NOT_IMPLEMENTED"
-    And the JSON at "$.errors[0].details.deliverable" equals "19"
+    And the JSON at "$.errors[0].details.deliverable" equals "31"

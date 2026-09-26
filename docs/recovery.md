@@ -38,8 +38,9 @@ ports are **orphans**: stems reports them and only kills them with consent.
 | `version` | schema version (1) |
 | `run_id` | ULID of the daemon run that wrote the file (`STEMS_RUN_ID` of its stems) |
 | `daemon` | pid and start time of that daemon |
-| `stems.<name>` | one entry per stem with a live unit: leader `pid`, process group `pgid`, leader `start_time` (opaque, OS-specific; see [process-model.md](process-model.md#start-time-verification-pid-reuse-defence)), `container_id` (docker/compose, 14), host `ports` (`auto` = allocated for `port: auto`), materialised `overlays` (18), last known `state`, `started_at`, `log_file` (12) |
+| `stems.<name>` | one entry per stem with a live unit: leader `pid`, process group `pgid`, leader `start_time` (opaque, OS-specific; see [process-model.md](process-model.md#start-time-verification-pid-reuse-defence)), `container_id` (docker/compose, 14), host `ports` (`auto` = allocated for `port: auto`), `overlays` (reserved, always empty: see the top-level `overlays`), last known `state`, `started_at`, `log_file` (12) |
 | `stamps` | script stamps (16), carried over from run to run |
+| `overlays.<stem>` | the overlay ledger (18): `[{dest, sha256, run_id, keep}]` for every file stems materialised into a codebase, written *before* the file; independent of `stems` (a `keep: true` record outlives its stem); carried over from run to run, and records of stems that did not survive a crash are cleaned on recovery ([overlays.md](overlays.md)) |
 
 **When it is written.** On every transition of a stem with a live unit
 (started, ready, stopping, stopped/failed — the entry is removed when the
@@ -163,7 +164,7 @@ with `PORT_IN_USE`.
 
 ### `stems doctor --orphans [--yes] [--kill-foreign] [--json]`
 
-The first real `doctor` check (the rest of `doctor` is deliverable 19).
+The orphan-only mode of `stems doctor` (the full report is `docs/doctor.md`, whose `orphans` check and `--fix` reuse this scan).
 `data: {orphans: [Orphan + {action, error?}], remaining}`. Exit 0 when no
 orphan remains (none found, or all killed/adopted); exit 3 `ORPHANS_FOUND`
 (`details.orphans`: the remaining ones) otherwise. `action` is `killed`,

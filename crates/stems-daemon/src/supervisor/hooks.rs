@@ -96,7 +96,7 @@ pub(crate) fn stem_env(
 
 /// The environment of a workspace script: the daemon's (minus `STEMS_*`),
 /// workspace `env`, `--pass-env`, `STEMS_WORKSPACE`, `STEMS_RUN_ID`.
-fn workspace_env(
+pub(crate) fn workspace_env(
     core: &Core,
     ws: &Workspace,
     pass_env: &BTreeMap<String, String>,
@@ -157,6 +157,17 @@ async fn run_stem_script(
             return Ok(Some(r));
         }
         attempt += 1;
+        // FR-SC-8: back off before the retry (a stop cancels the wait).
+        let delay = stems_core::restart::backoff_delay(&super::run::retry_backoff(), attempt);
+        match cancel {
+            Some(c) => {
+                tokio::select! {
+                    () = tokio::time::sleep(delay) => {}
+                    () = c.cancelled() => return Ok(Some(ScriptResult { cancelled: true, ..r })),
+                }
+            }
+            None => tokio::time::sleep(delay).await,
+        }
     }
 }
 
@@ -252,7 +263,11 @@ pub(crate) async fn before_start(
         .iter()
         .any(|n| stem.scripts.contains_key(*n))
     {
-        return Ok(());
+        // No scripts: only the overlays (18).
+        let mut env = core.base_env.clone();
+        env.extend(pass_env.clone());
+        return super::overlays::materialise(core, &ws.workspace, stem, &env, actor)
+            .map_err(|e| fail(core, cell, e, actor));
     }
     let env =
         stem_env(core, &ws.workspace, stem, pass_env).map_err(|e| fail(core, cell, e, actor))?;
@@ -304,6 +319,9 @@ async fn setup_and_pre_start(
     if token.is_cancelled() {
         return Err(stopped_during(core, cell, actor, "setup"));
     }
+    // Overlays after setup, before pre_start (18).
+    super::overlays::materialise(core, ws, stem, env, actor)
+        .map_err(|e| fail(core, cell, e, actor))?;
     let r = run_stem_script(core, ws, stem, "pre_start", env, actor, Some(token))
         .await
         .map_err(|e| fail(core, cell, e, actor))?;

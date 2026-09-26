@@ -9,6 +9,9 @@ pub mod init;
 pub mod lifecycle;
 pub mod logs;
 pub mod orphans;
+pub mod overlays;
+pub mod repos;
+pub mod run;
 pub mod scripts;
 pub mod show;
 pub mod status;
@@ -81,6 +84,11 @@ pub fn dispatch(cmd: Command, ctx: &Ctx, mode: Mode, stdout: &mut dyn Write) -> 
         Command::Build(a) => scripts::build(ctx, &a),
         Command::Reset(a) => scripts::reset(ctx, &a),
         Command::Stamps(a) => scripts::stamps(ctx, &a),
+        Command::Repos(crate::cli::ReposCommand::Sync(a)) => repos::sync(ctx, &a),
+        Command::Repos(crate::cli::ReposCommand::Status(a)) => repos::status(ctx, &a),
+        Command::Run(a) => run::run(ctx, &a, mode, stdout),
+        Command::Scripts(a) => run::scripts(ctx, &a),
+        Command::Overlays(a) => overlays::run(ctx, &a),
         Command::Attach(a) => lifecycle::attach(ctx, &a, mode, stdout),
         Command::Status(a) => status::run(ctx, &a, mode, stdout),
         Command::Logs(a) => logs::run(ctx, &a, mode, stdout),

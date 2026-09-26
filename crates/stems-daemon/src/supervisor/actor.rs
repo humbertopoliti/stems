@@ -448,6 +448,14 @@ async fn start(
         return Ok(());
     }
     cell.info().grace = stem.stop_grace.as_duration();
+    // A git codebase whose managed clone is missing is cloned first (20).
+    let repo_ctx = crate::repos::RepoCtx::for_core(core, actor);
+    if let Err(e) =
+        crate::repos::ensure_clone(stem, &crate::repos::SyncOptions::default(), &repo_ctx).await
+    {
+        cell.fail(core, e.clone(), actor);
+        return Err(e);
+    }
     // setup (when its stamp changed) and pre_start (16).
     super::hooks::before_start(core, cell, ws, stem, actor, pass_env).await?;
     cell.transition(core, StemState::Starting, reason, actor, json!({}));
@@ -774,6 +782,8 @@ async fn stop(
         if state == StemState::Failed {
             cell.transition(core, StemState::Stopped, reason, actor, json!({}));
         }
+        // Overlays left by a failed or exited start (18).
+        super::overlays::cleanup(core, &cell.name, actor);
         return StopReply::NotRunning;
     }
     cell.bump_generation();
@@ -788,6 +798,8 @@ async fn stop(
     let outcome = super::hooks::stop_unit(core, cell, &h, &rt, grace, actor).await;
     rt.release(&h);
     super::hooks::post_stop(core, cell, actor).await;
+    // Remove the overlays stems wrote (unless modified or `keep`) (18).
+    super::overlays::cleanup(core, &cell.name, actor);
     match outcome {
         Ok(o) => {
             cell.transition(

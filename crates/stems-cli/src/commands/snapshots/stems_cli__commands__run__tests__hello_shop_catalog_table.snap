@@ -1,0 +1,17 @@
+---
+source: crates/stems-cli/src/commands/run.rs
+expression: catalog_table(&r.scripts)
+---
+STEM         SCRIPT            KIND       DESCRIPTION                                             ARGS
+(workspace)  bootstrap         lifecycle  -                                                       -
+(workspace)  nuke-databases    custom     Drop and recreate all local databases                   -
+(workspace)  teardown          lifecycle  -                                                       -
+postgres     reset             lifecycle  -                                                       -
+postgres     seed              lifecycle  Apply migrations and insert a handful of sample rows    -
+postgres     seed-large        custom     Load a large synthetic dataset for perf testing         --rows <int>=1000000
+shop-api     create-test-user  custom     Create a user with a known password for manual testing  --email <string>! --role <admin|user>=admin
+shop-api     seed              lifecycle  -                                                       -
+shop-api     setup             lifecycle  -                                                       -
+shop-api     start             lifecycle  -                                                       -
+shop-worker  start             lifecycle  -                                                       -
+shop-web     start             lifecycle  -                                                       -

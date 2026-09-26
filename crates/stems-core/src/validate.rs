@@ -11,14 +11,14 @@ use std::path::{Path, PathBuf};
 
 use serde_json::json;
 use stems_config::{
-    Codebase, Condition, ConfigPath, LoadOptions, PortRef, Profile, Resolved, Script, ScriptSource,
-    SpanIndex, StemRuntime, StemType, Workspace,
+    Codebase, Condition, ConfigPath, LoadOptions, PortRef, Profile, Requirement, Resolved, Script,
+    ScriptSource, SpanIndex, StemRuntime, StemType, Workspace,
 };
 
 use crate::error::{Error, ErrorCode, Errors, sort_errors};
 use crate::graph;
 use crate::tools::{SystemTools, ToolVersion, ToolVersions, version_command};
-use crate::version::VersionReq;
+use crate::version::{Version, VersionReq};
 
 /// `schema_version` values this binary understands.
 pub const SUPPORTED_SCHEMA_VERSIONS: &[u32] = &[1];
@@ -32,6 +32,9 @@ pub struct ValidateOptions {
     /// state; these do not count as `OVERLAY_CONFLICT`. Empty until the state
     /// store (11/18) provides them.
     pub owned_overlays: Vec<PathBuf>,
+    /// Skip the static `OVERLAY_CONFLICT` check: the daemon decides at start
+    /// time instead, by content hash and with `--force-overlays` (18).
+    pub skip_overlays: bool,
 }
 
 /// Validate a loaded workspace, probing real tools for `requires:`.
@@ -65,7 +68,9 @@ pub fn validate_with(
     v.type_requirements();
     v.scripts();
     v.codebases();
-    v.overlays(&opts.owned_overlays);
+    if !opts.skip_overlays {
+        v.overlays(&opts.owned_overlays);
+    }
     v.profiles();
     if !opts.skip_requires {
         v.requires(tools);
@@ -89,6 +94,50 @@ pub fn load_and_validate(load: LoadOptions, opts: &ValidateOptions) -> Result<Re
     } else {
         Err(Errors(errors))
     }
+}
+
+/// Warnings (never errors; `validate` still exits 0): `OVERLAY_TRACKED_FILE`
+/// for each overlay `dest` tracked in its codebase's git index, since
+/// materialising it would dirty the repo (18). Sorted by location.
+pub fn warnings(resolved: &Resolved) -> Vec<Error> {
+    let ws = &resolved.workspace;
+    let mut v = Validator {
+        ws,
+        spans: &resolved.spans,
+        out: Vec::new(),
+    };
+    for stem in ws.stems() {
+        let Some(base) = stem.codebase.as_ref().map(Codebase::path) else {
+            continue;
+        };
+        if !base.is_dir() {
+            continue;
+        }
+        let path = stem_path(&stem.name).key("overlays");
+        for (i, o) in stem.overlays.iter().enumerate() {
+            if crate::overlays::is_git_tracked(base, &o.dest) != Some(true) {
+                continue;
+            }
+            let e = Error::new(
+                ErrorCode::OverlayTrackedFile,
+                format!(
+                    "overlay destination `{}` of `{}` is tracked in the codebase's git index",
+                    o.dest.display(),
+                    stem.name
+                ),
+            )
+            .with_path(path.clone())
+            .with_hint(format!(
+                "materialising it would show up as a change in the repo: add it to .gitignore and `git rm --cached {}`, or choose another `dest`",
+                o.dest.display()
+            ))
+            .with_details(json!({ "stem": stem.name, "dest": base.join(&o.dest) }));
+            v.push(e, Some(&path.index(i)));
+        }
+    }
+    let mut out = v.out;
+    sort_errors(&mut out);
+    out
 }
 
 fn stem_path(name: &str) -> ConfigPath {
@@ -401,6 +450,20 @@ impl Validator<'_> {
     /// cloned later, so they are not checked).
     fn codebases(&mut self) {
         for stem in self.ws.stems() {
+            // Git forms: the URL must look like one (20).
+            if let Some(Codebase::Git { url, .. }) = &stem.codebase
+                && !stems_config::is_git_url(url)
+            {
+                let e = Error::new(
+                    ErrorCode::SchemaInvalid,
+                    format!("codebase of `{}`: `{url}` is not a git URL", stem.name),
+                )
+                .with_path(stem_path(&stem.name).key("codebase").key("git"))
+                .with_hint("use an https://, ssh://, git@host:path or file:// URL (a local checkout is `codebase: <path>`)")
+                .with_details(json!({ "stem": stem.name, "url": url }));
+                self.push(e, None);
+                continue;
+            }
             let Some(Codebase::Local { path }) = &stem.codebase else {
                 continue;
             };
@@ -497,61 +560,74 @@ impl Validator<'_> {
     /// `requires:` tool versions.
     fn requires(&mut self, tools: &mut dyn ToolVersions) {
         for (tool, req) in &self.ws.requires {
-            let path = ConfigPath::root().key("requires").key(tool);
-            let range: VersionReq = match req.version().parse() {
-                Ok(r) => r,
-                Err(err) => {
-                    let e = Error::new(ErrorCode::SchemaInvalid, err.to_string())
-                        .with_path(path.clone())
-                        .with_hint("use a range such as `>=20`, `^1.2`, `~3.11` or `>=1 <2`");
-                    self.push(e, None);
-                    continue;
-                }
-            };
-            let details = |found: Option<String>| json!({ "tool": tool, "required": range.as_str(), "found": found });
-            let cmd = version_command(tool, req);
-            let e = match tools.detect(tool, req) {
-                ToolVersion::Found { version, .. } if range.matches(version) => continue,
-                ToolVersion::Found { version, output } => Error::new(
-                    ErrorCode::ToolVersion,
-                    format!("`{tool}` {version} does not satisfy the required range {range}"),
-                )
-                .with_hint(format!(
-                    "install {tool} {range} (e.g. with brew, nvm, asdf or pyenv) and make sure it is first on PATH (`{cmd}` printed `{output}`), or relax requires.{tool}"
-                ))
-                .with_details(details(Some(version.to_string()))),
-                ToolVersion::Missing { reason } => Error::new(
-                    ErrorCode::ToolVersion,
-                    format!("`{tool}` {range} is required but not available: {reason}"),
-                )
-                .with_hint(format!(
-                    "install {tool} {range} and make sure `{cmd}` works in this shell, or pass --skip-requires to validate without checking tools"
-                ))
-                .with_details(details(None)),
-                ToolVersion::Unparseable { output } => Error::new(
-                    ErrorCode::ToolVersion,
-                    format!(
-                        "could not read a version of `{tool}` (required {range}) from `{cmd}` output `{output}`"
-                    ),
-                )
-                .with_hint(format!(
-                    "use the long form: `requires: {{ {tool}: {{ version: \"{range}\", command: \"<prints the version>\", regex: \"<captures it>\" }} }}`"
-                ))
-                .with_details(details(None)),
-                ToolVersion::BadRegex { reason } => {
-                    let e = Error::new(
-                        ErrorCode::SchemaInvalid,
-                        format!("invalid `regex` for requires.{tool}: {reason}"),
-                    )
-                    .with_path(path.key("regex"))
-                    .with_hint("fix the regular expression; its first capture group should match the version");
-                    self.push(e, None);
-                    continue;
-                }
-            };
-            self.push(e.with_path(path.clone()), None);
+            if let Err(e) = check_requirement(tool, req, tools) {
+                self.push(e, None);
+            }
         }
     }
+}
+
+/// Check one `requires:` entry (`validate`, `doctor`): `Ok(found version)`
+/// when the installed tool satisfies the range, else `TOOL_VERSION` (with
+/// `details { tool, required, found }`) or `SCHEMA_INVALID` for a bad range
+/// or regex. Errors carry the config path `requires.<tool>`.
+pub fn check_requirement(
+    tool: &str,
+    req: &Requirement,
+    tools: &mut dyn ToolVersions,
+) -> Result<Version, Error> {
+    let path = ConfigPath::root().key("requires").key(tool);
+    let range: VersionReq =
+        req.version()
+            .parse()
+            .map_err(|err: crate::version::VersionReqError| {
+                Error::new(ErrorCode::SchemaInvalid, err.to_string())
+                    .with_path(path.clone())
+                    .with_hint("use a range such as `>=20`, `^1.2`, `~3.11` or `>=1 <2`")
+            })?;
+    let details =
+        |found: Option<String>| json!({ "tool": tool, "required": range.as_str(), "found": found });
+    let cmd = version_command(tool, req);
+    let e = match tools.detect(tool, req) {
+        ToolVersion::Found { version, .. } if range.matches(version) => return Ok(version),
+        ToolVersion::Found { version, output } => Error::new(
+            ErrorCode::ToolVersion,
+            format!("`{tool}` {version} does not satisfy the required range {range}"),
+        )
+        .with_hint(format!(
+            "install {tool} {range} (e.g. with brew, nvm, asdf or pyenv) and make sure it is first on PATH (`{cmd}` printed `{output}`), or relax requires.{tool}"
+        ))
+        .with_details(details(Some(version.to_string()))),
+        ToolVersion::Missing { reason } => Error::new(
+            ErrorCode::ToolVersion,
+            format!("`{tool}` {range} is required but not available: {reason}"),
+        )
+        .with_hint(format!(
+            "install {tool} {range} and make sure `{cmd}` works in this shell, or pass --skip-requires to validate without checking tools"
+        ))
+        .with_details(details(None)),
+        ToolVersion::Unparseable { output } => Error::new(
+            ErrorCode::ToolVersion,
+            format!(
+                "could not read a version of `{tool}` (required {range}) from `{cmd}` output `{output}`"
+            ),
+        )
+        .with_hint(format!(
+            "use the long form: `requires: {{ {tool}: {{ version: \"{range}\", command: \"<prints the version>\", regex: \"<captures it>\" }} }}`"
+        ))
+        .with_details(details(None)),
+        ToolVersion::BadRegex { reason } => {
+            return Err(Error::new(
+                ErrorCode::SchemaInvalid,
+                format!("invalid `regex` for requires.{tool}: {reason}"),
+            )
+            .with_path(path.key("regex"))
+            .with_hint(
+                "fix the regular expression; its first capture group should match the version",
+            ));
+        }
+    };
+    Err(e.with_path(path))
 }
 
 /// The candidate within edit distance 2 of `name` (closest first).

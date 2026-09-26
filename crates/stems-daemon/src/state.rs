@@ -8,7 +8,8 @@
 //!   "stems": { "<name>": { "pid", "pgid", "start_time", "container_id",
 //!              "ports": [{"name", "port", "auto"}], "overlays": [OverlayRecord],
 //!              "state", "started_at", "log_file" } },
-//!   "stamps": { "<stem>": { "<script>": Stamp } } }
+//!   "stamps": { "<stem>": { "<script>": Stamp } },
+//!   "overlays": { "<stem>": [OverlayRecord] } }
 //! ```
 //!
 //! [`StateStore`] keeps the current [`StateFile`] in memory and rewrites the
@@ -116,6 +117,11 @@ pub struct StateFile {
     /// The last [`SCRIPT_RUNS_KEPT`] script runs, oldest first (deliverable 16).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub script_runs: Vec<ScriptRun>,
+    /// Overlays stems materialised, by stem (deliverable 18). Independent of
+    /// `stems` (a record is written *before* its file, i.e. before the stem
+    /// runs, and `keep: true` ones outlive the stem); carried from run to run.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub overlays: BTreeMap<String, Vec<OverlayRecord>>,
 }
 
 /// Script runs kept in [`StateFile::script_runs`].
@@ -164,6 +170,7 @@ impl StateFile {
             stems: BTreeMap::new(),
             stamps: StampStore::default(),
             script_runs: Vec::new(),
+            overlays: BTreeMap::new(),
         }
     }
 
@@ -395,6 +402,32 @@ impl StateStore {
     /// Change the stamps in place (and write).
     pub fn update_stamps<R>(&self, f: impl FnOnce(&mut StampStore) -> R) -> R {
         self.update(|file| f(&mut file.stamps))
+    }
+
+    /// The overlay records of `stem` (deliverable 18).
+    pub fn overlays(&self, stem: &str) -> Vec<OverlayRecord> {
+        self.lock().overlays.get(stem).cloned().unwrap_or_default()
+    }
+
+    /// Record (or replace, by `dest`) an overlay of `stem`, and write.
+    pub fn record_overlay(&self, stem: &str, rec: OverlayRecord) {
+        self.update(|f| {
+            let list = f.overlays.entry(stem.to_string()).or_default();
+            list.retain(|r| r.dest != rec.dest);
+            list.push(rec);
+        });
+    }
+
+    /// Forget the overlay of `stem` at `dest`, and write.
+    pub fn forget_overlay(&self, stem: &str, dest: &Path) {
+        self.update(|f| {
+            if let Some(list) = f.overlays.get_mut(stem) {
+                list.retain(|r| r.dest != dest);
+                if list.is_empty() {
+                    f.overlays.remove(stem);
+                }
+            }
+        });
     }
 
     /// Append a script run, keeping the last [`SCRIPT_RUNS_KEPT`].

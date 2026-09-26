@@ -366,3 +366,14 @@ fn all_errors_are_collected_and_sorted_by_location() {
     assert!(es.iter().all(|e| e.code.exit_code() == 2));
     let _ = ErrorCode::all();
 }
+
+#[test]
+fn git_codebase_urls_must_look_like_urls() {
+    let ws = Ws::new(
+        "stems:\n  a: { type: process, command: x, codebase: { git: 'not a url', ref: main } }\n  b: { type: process, command: x, codebase: { git: 'https://example.com/b.git', ref: v2 } }\n  c: { type: process, command: x, codebase: { git: 'file:///srv/c.git' } }\n  d: { type: process, command: x, codebase: { git: 'git@example.com:x/d.git' } }\n",
+        &[],
+    );
+    let es = ws.check();
+    assert_eq!(codes(&es), ["SCHEMA_INVALID"]);
+    assert_eq!(paths(&es), ["stems.a.codebase.git"]);
+}

@@ -1229,8 +1229,165 @@ step!(then_events_not_contain(w, m) {
     }
 });
 
+// ----------------------------------------------------------------------------
+// Overlays (18)
+// ----------------------------------------------------------------------------
+
+step!(given_repo_copy_git(w, m) {
+    let rel = std::path::PathBuf::from(w.expand(&m[1]));
+    let mut parts = rel.components();
+    let repo_name = parts.next().expect("path starts with the repo directory");
+    let inner: std::path::PathBuf = parts.collect();
+    let repos = w.root.join("examples/repos");
+    assert!(
+        !repos.is_symlink(),
+        "use `Given the workspace has a private copy of the repos` first"
+    );
+    let repo = repos.join(repo_name);
+    let file = repo.join(&inner);
+    if !file.exists() {
+        if let Some(dir) = file.parent() {
+            std::fs::create_dir_all(dir).unwrap_or_else(|e| panic!("creating {}: {e}", dir.display()));
+        }
+        std::fs::write(&file, "committed\n").unwrap_or_else(|e| panic!("writing {}: {e}", file.display()));
+    }
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["-c", "user.name=stems-e2e", "-c", "user.email=e2e@stems.invalid", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap_or_else(|e| panic!("running git: {e}"));
+        assert!(
+            out.status.success(),
+            "git {args:?} failed:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    let inner = inner.to_string_lossy().to_string();
+    git(&["init", "-q"]);
+    git(&["add", "--", &inner]);
+    git(&["commit", "-q", "-m", "e2e: track the overlay dest"]);
+});
+
 step!(when_run_shell(w, m) {
     w.run_shell(&m[1]).await;
+});
+
+// ----------------------------------------------------------------------------
+// Git codebases (20)
+// ----------------------------------------------------------------------------
+
+/// `git` with a neutral config and a fixed identity (the developer's global
+/// config, hooks and signing never apply).
+fn git_in(dir: &std::path::Path, args: &[&str]) {
+    let o = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_AUTHOR_NAME", "stems-e2e")
+        .env("GIT_AUTHOR_EMAIL", "e2e@stems.invalid")
+        .env("GIT_COMMITTER_NAME", "stems-e2e")
+        .env("GIT_COMMITTER_EMAIL", "e2e@stems.invalid")
+        .output()
+        .unwrap_or_else(|e| panic!("cannot run git: {e}"));
+    assert!(
+        o.status.success(),
+        "git {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&o.stderr)
+    );
+}
+
+step!(given_bare_git_repo(w, m) {
+    let name = &m[1];
+    let src = world::repo_root().join(&m[2]);
+    let dir = w.root.join("git");
+    let work = dir.join(format!("{name}-src"));
+    let bare = dir.join(format!("{name}.git"));
+    world::copy_dir(&src, &work).unwrap_or_else(|e| panic!("copying {}: {e}", src.display()));
+    git_in(&work, &["init", "-q", "-b", "main"]);
+    for (k, v) in [
+        ("user.name", "stems-e2e"),
+        ("user.email", "e2e@stems.invalid"),
+        ("commit.gpgsign", "false"),
+        ("tag.gpgsign", "false"),
+    ] {
+        git_in(&work, &["config", k, v]);
+    }
+    git_in(&work, &["add", "-A"]);
+    git_in(&work, &["commit", "-q", "-m", "initial"]);
+    git_in(&dir, &["init", "-q", "--bare", "-b", "main", &bare.display().to_string()]);
+    git_in(&work, &["remote", "add", "origin", &bare.display().to_string()]);
+    git_in(&work, &["push", "-q", "origin", "main"]);
+    w.vars.insert(format!("{name}_url"), format!("file://{}", bare.display()));
+    w.vars.insert(format!("{name}_src"), work.display().to_string());
+});
+
+// ----------------------------------------------------------------------------
+// Doctor (19)
+// ----------------------------------------------------------------------------
+
+step!(given_fake_tool(w, m) {
+    let bin = w.root.join("bin");
+    std::fs::create_dir_all(&bin).unwrap_or_else(|e| panic!("creating {}: {e}", bin.display()));
+    let file = bin.join(&m[1]);
+    std::fs::write(&file, format!("#!/bin/sh\n{}\n", w.expand(&m[2])))
+        .unwrap_or_else(|e| panic!("writing {}: {e}", file.display()));
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755))
+        .unwrap_or_else(|e| panic!("chmod {}: {e}", file.display()));
+});
+
+step!(given_state_records_overlay(w, m) {
+    let stem = m[1].clone();
+    let dest = ws_file(w, &m[2]);
+    if !dest.exists() {
+        if let Some(dir) = dest.parent() {
+            std::fs::create_dir_all(dir).unwrap_or_else(|e| panic!("creating {}: {e}", dir.display()));
+        }
+        std::fs::write(&dest, "written by stems (e2e)\n")
+            .unwrap_or_else(|e| panic!("writing {}: {e}", dest.display()));
+    }
+    let bytes = std::fs::read(&dest).unwrap_or_else(|e| panic!("reading {}: {e}", dest.display()));
+    let record = serde_json::json!({
+        "dest": dest,
+        "sha256": stems_core::overlays::hash_bytes(&bytes),
+        "run_id": "01J00000000000000000000000",
+        "keep": false,
+    });
+    let path = state_path(w).await;
+    std::fs::create_dir_all(path.parent().expect("state dir")).expect("create daemon dir");
+    let mut doc: Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_else(|| {
+            serde_json::json!({
+                "version": 1,
+                "run_id": "01J00000000000000000000000",
+                "daemon": { "pid": 1, "start_time": 1 },
+                "stems": {},
+                "stamps": {},
+            })
+        });
+    let ledger = doc
+        .as_object_mut()
+        .expect("state.json is an object")
+        .entry("overlays")
+        .or_insert_with(|| serde_json::json!({}));
+    let list = ledger
+        .as_object_mut()
+        .expect("overlays is an object")
+        .entry(stem)
+        .or_insert_with(|| serde_json::json!([]));
+    list.as_array_mut().expect("a list of records").push(record);
+    std::fs::write(&path, serde_json::to_string_pretty(&doc).expect("json")).expect("write state.json");
 });
 
 /// Every step: (regex, function). Registered for Given, When and Then.
@@ -1491,6 +1648,24 @@ pub const STEPS: &[(&str, Step<E2eWorld>)] = &[
         then_events_not_contain,
     ),
     (r#"^I run the shell command "([^"]*)"$"#, when_run_shell),
+    (
+        r#"^a bare git repository "([\w-]+)" made from "([^"]+)"$"#,
+        given_bare_git_repo,
+    ),
+    // Overlays (18)
+    (
+        r#"^the repo copy is a git repository with "([^"]+)" committed$"#,
+        given_repo_copy_git,
+    ),
+    // Doctor (19)
+    (
+        r#"^a fake tool "([\w.-]+)" on PATH that runs "(.*)"$"#,
+        given_fake_tool,
+    ),
+    (
+        r#"^the state file records an overlay for stem "([^"]+)" at "([^"]+)"$"#,
+        given_state_records_overlay,
+    ),
 ];
 
 /// The step collection handed to cucumber.
@@ -1613,6 +1788,10 @@ mod tests {
             r#"the file "hooks.log" contains "pre_start""#,
             r#"the events stream does not contain {"kind": "script.started"}"#,
             r#"I run the shell command "docker ps""#,
+            r#"the repo copy is a git repository with "shop-api/config/local.ini" committed"#,
+            r#"a bare git repository "shop" made from "examples/repos/shop-api""#,
+            r#"a fake tool "vite" on PATH that runs "echo fake vite""#,
+            r#"the state file records an overlay for stem "shop-api" at "config/local.ini""#,
         ];
         let regexes: Vec<regex::Regex> = STEPS
             .iter()

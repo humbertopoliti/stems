@@ -2,7 +2,11 @@
 source: crates/stems-cli/tests/help.rs
 expression: help
 ---
-List scripts
+List scripts.
+
+Workspace and stem scripts, lifecycle and custom, with their arguments. Reads the config locally (no
+daemon needed). `--json` prints the catalogue the TUI and MCP server use: `data: {scripts: [{stem,
+name, description, args, requires, kind, timeout, retries, concurrent, mcp_tool, input_schema}]}`.
 
 Usage: stems scripts [OPTIONS] [STEM]
 
@@ -12,7 +16,7 @@ Arguments:
 
 Options:
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>

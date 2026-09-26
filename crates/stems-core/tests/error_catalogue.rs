@@ -158,6 +158,13 @@ fn sample(code: ErrorCode) -> Error {
             "overlay destination `config/local.ini` already exists in the codebase of `local-svc` and was not written by stems",
             "stems never overwrites files it did not create: remove or rename /work/repo/config/local.ini if it is a stale copy, or choose another `dest`",
         ),
+        OverlayTrackedFile => cfg(
+            code,
+            "stems.shop-api.overlays",
+            42,
+            "overlay destination `config/local.ini` of `shop-api` is tracked in the codebase's git index",
+            "materialising it would show up as a change in the repo: add it to .gitignore and `git rm --cached config/local.ini`, or choose another `dest`",
+        ),
         ToolVersion => cfg(
             code,
             "requires.node",

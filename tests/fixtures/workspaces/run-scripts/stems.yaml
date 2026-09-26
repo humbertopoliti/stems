@@ -1,0 +1,72 @@
+# run-scripts — fixture for tests/features/run/ (deliverable 17): custom
+# stem scripts with argument schemas, a workspace script with `requires:`,
+# retries, concurrency and passthrough arguments. Process-only (no docker).
+#
+# Scripts that keep state (counters, release files) write to
+# $STEMS_STATE_DIR (under STEMS_HOME), never into the shared codebase.
+schema_version: 1
+name: run-scripts
+
+scripts:
+  needs-api:
+    command: 'echo "needs-api: shop-api is at $STEMS_WORKSPACE"'
+    description: A workspace script that needs shop-api healthy
+    requires: [shop-api]
+
+stems:
+  shop-api:
+    type: process
+    description: shop-api, the target of create-test-user
+    codebase: ../../../../examples/repos/shop-api
+    env: { SHOP_CHAOS: "1" }
+    ports: [{ name: http, port: 18611 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts:
+      start: python3 app.py
+      # A copy of hello-shop's script (FR-WS-2: scripts live in the integration repo).
+      create-test-user:
+        file: scripts/create-test-user.sh
+        description: Create a user with a known password for manual testing
+        args:
+          - { name: email, type: string, required: true, description: "Email address of the test user" }
+          - { name: role, type: enum, values: [admin, user], default: admin, description: "Role to grant" }
+      # Fails twice, then succeeds (a counter in the state dir).
+      flaky:
+        command: 'n=$(cat "$STEMS_STATE_DIR/flaky.count" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$STEMS_STATE_DIR/flaky.count"; echo "flaky attempt $n"; [ "$n" -ge 3 ]'
+        description: Fails on its first two attempts
+        retries: 3
+      always-fails:
+        command: 'echo "failing on purpose"; exit 3'
+        retries: 1
+      # One at a time (the default): a second run is queued.
+      slow:
+        command: 'echo "slow start"; sleep 2; echo "slow end"'
+        description: Takes two seconds
+      # Concurrent runs allowed: `-- wait` blocks until `-- release` ran.
+      overlap:
+        concurrent: true
+        command: |
+          case "$1" in
+            wait)
+              i=0
+              while [ ! -f "$STEMS_STATE_DIR/overlap.go" ]; do
+                i=$((i+1)); [ "$i" -gt 150 ] && exit 1; sleep 0.1
+              done
+              echo "overlap released";;
+            release) touch "$STEMS_STATE_DIR/overlap.go"; echo "overlap releasing";;
+            *) exit 2;;
+          esac
+      # No schema: everything after `--` is passed through.
+      echo-args:
+        command: 'echo "argv: $*"'
+      # A schema: `--name value` argv plus STEMS_ARG_* env.
+      env-args:
+        command: 'echo "argv: $* env: email=$STEMS_ARG_EMAIL count=$STEMS_ARG_COUNT verbose=$STEMS_ARG_VERBOSE"'
+        args:
+          - { name: email, type: string, required: true }
+          - { name: count, type: int, default: 2 }
+          - { name: verbose, type: bool }
+      short:
+        command: 'sleep 5'
+        timeout: 300ms

@@ -132,6 +132,9 @@ error_codes! {
     /// Overlay destination exists and is not stems-owned.
     OverlayConflict = "OVERLAY_CONFLICT", CONFIG,
         "an overlay `dest` already exists in the codebase and was not written by stems";
+    /// Overlay destination tracked in git (a `validate` warning, never an error).
+    OverlayTrackedFile = "OVERLAY_TRACKED_FILE", CONFIG,
+        "an overlay `dest` is tracked in the codebase's git index, so materialising it would dirty the repo (a warning)";
     /// `requires` tool missing or too old.
     ToolVersion = "TOOL_VERSION", CONFIG,
         "a tool listed under `requires:` is missing or its version does not satisfy the range";

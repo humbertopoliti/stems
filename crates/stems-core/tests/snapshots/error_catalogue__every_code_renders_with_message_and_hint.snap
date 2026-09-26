@@ -94,6 +94,11 @@ OVERLAY_CONFLICT: overlay destination `config/local.ini` already exists in the c
   at stems.yaml:15:5 (stems.local-svc.overlays)
   hint: stems never overwrites files it did not create: remove or rename /work/repo/config/local.ini if it is a stale copy, or choose another `dest`
 
+# exit 2 — an overlay `dest` is tracked in the codebase's git index, so materialising it would dirty the repo (a warning)
+OVERLAY_TRACKED_FILE: overlay destination `config/local.ini` of `shop-api` is tracked in the codebase's git index
+  at stems.yaml:42:5 (stems.shop-api.overlays)
+  hint: materialising it would show up as a change in the repo: add it to .gitignore and `git rm --cached config/local.ini`, or choose another `dest`
+
 # exit 2 — a tool listed under `requires:` is missing or its version does not satisfy the range
 TOOL_VERSION: `node` 24.6.0 does not satisfy the required range >=99
   at stems.yaml:6:5 (requires.node)

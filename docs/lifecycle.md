@@ -94,7 +94,11 @@ group, output or adoption.
 Before anything starts, `up` scans the workspace's declared ports for
 orphans (processes not started by stems); with orphans and no consent flag
 it exits 3 `ORPHANS_FOUND` and starts nothing. A new daemon first adopts the
-stems a crashed one left running. See [recovery.md](recovery.md).
+stems a crashed one left running. See [recovery.md](recovery.md). Even
+earlier (before the daemon starts), a selection that needs a docker or
+compose stem fails with `DOCKER_UNAVAILABLE` when Docker is not reachable
+(the fast `doctor` subset, [doctor.md](doctor.md)); process-only selections
+never need Docker.
 
 1. Starts the workspace daemon if none runs (detached, own session) and
    remembers that `up` started it.

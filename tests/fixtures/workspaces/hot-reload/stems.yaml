@@ -1,0 +1,27 @@
+# hot-reload — a dev server that reloads itself plus a watchdog on the same
+# sources (FR-WD-4, deliverable 19, tests/features/doctor/hot-reload-overlap.feature).
+#
+# `web` starts `vite` (a fake script the scenario puts on PATH) and also
+# watches `src/**`: `stems doctor` warns `watch.hot-reload.web`. `api`
+# watches `*.py` with a plain `python3 app.py`: no warning.
+schema_version: 1
+name: hot-reload
+
+stems:
+  web:
+    type: process
+    codebase: ../../../../examples/repos/shop-web
+    command: vite
+    ports: [{ name: http, port: 18441 }]
+    stop_grace: 1s
+    watch:
+      - { paths: ["src/**"], action: restart }
+  api:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    env: { PORT: "18442" }
+    ports: [{ name: http, port: 18442 }]
+    stop_grace: 1s
+    scripts: { start: python3 app.py }
+    watch:
+      - { paths: ["*.py"], action: restart }

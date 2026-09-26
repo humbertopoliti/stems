@@ -246,17 +246,23 @@ impl Daemon {
             env: std::env::vars().collect(),
             skip_local: false,
         };
-        let resolved =
-            stems_core::load_and_validate(load, &ValidateOptions::default()).map_err(|errs| {
-                let all = to_value(&errs).unwrap_or(Value::Null);
-                let mut first = errs.0.into_iter().next().unwrap_or_else(|| {
+        // Overlay conflicts are decided when a stem starts (by content hash,
+        // honouring `--force-overlays`), not at load (18).
+        let opts = ValidateOptions {
+            skip_overlays: true,
+            ..ValidateOptions::default()
+        };
+        let resolved = stems_core::load_and_validate(load, &opts).map_err(|errs| {
+            let all = to_value(&errs).unwrap_or(Value::Null);
+            let mut first =
+                errs.0.into_iter().next().unwrap_or_else(|| {
                     Error::internal("workspace failed to load without an error")
                 });
-                if all.as_array().is_some_and(|a| a.len() > 1) {
-                    first.details = json!({ "errors": all });
-                }
-                first
-            })?;
+            if all.as_array().is_some_and(|a| a.len() > 1) {
+                first.details = json!({ "errors": all });
+            }
+            first
+        })?;
         let ws = &resolved.workspace;
         let out = WorkspaceLoaded {
             root: ws.root.clone(),

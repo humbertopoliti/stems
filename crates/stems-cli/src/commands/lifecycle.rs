@@ -314,16 +314,6 @@ async fn up_async(
     stdout: &mut dyn Write,
 ) -> Result<CommandOutput, Errors> {
     let timeout = parse_timeout(args.timeout.as_deref())?;
-    if args.sync || args.force_overlays {
-        let (flag, nn) = if args.sync {
-            ("--sync", "20")
-        } else {
-            ("--force-overlays", "18")
-        };
-        return Err(Error::not_implemented(&format!("`stems up {flag}`"), nn)
-            .with_details(json!({ "flag": flag, "deliverable": nn }))
-            .into());
-    }
     let pass_env: BTreeMap<String, String> = args
         .pass_env
         .iter()
@@ -331,6 +321,19 @@ async fn up_async(
         .filter_map(|k| ctx.env.get(k).map(|v| (k.clone(), v.clone())))
         .collect();
     let t = client::target(ctx)?;
+    // The fast doctor subset (19): Docker must be reachable if the selection
+    // needs it, before anything (even the daemon) starts. Config errors are
+    // left to the `up` RPC (so is `--profile`, until 26 resolves profiles).
+    if args.profile.is_none()
+        && let Ok(resolved) = stems_config::load(ctx.load_options())
+    {
+        stems_daemon::doctor::preflight_up(
+            &resolved,
+            &args.stems,
+            ctx.env.get("DOCKER_HOST").cloned(),
+        )
+        .await?;
+    }
     // Attached: signals from now on tear down; detached keeps default handling.
     // The orphan prompt reads stdin: watch it for EOF only after the prompt.
     let may_prompt = mode == Mode::Human
@@ -365,6 +368,8 @@ async fn up_async(
         pass_env,
         daemon_auto_started: auto_started,
         fresh: args.fresh,
+        force_overlays: args.force_overlays,
+        sync: args.sync,
     };
     let rpc_timeout = timeout.map_or(LONG, |d| d + Duration::from_secs(10));
     let call = c.call_with_timeout::<UpResult>(Method::UP, &params, rpc_timeout);

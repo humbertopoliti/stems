@@ -1,0 +1,21 @@
+# git-codebase — fixture for tests/features/repos (deliverable 20, FR-WS-3).
+# `shop-api` is a git codebase. The URL here is deliberately unreachable
+# (repos/clone-failed.feature); the other scenarios create a bare repo from
+# examples/repos/shop-api and point `codebase.git` at it through a
+# stems.local.yaml override. The clone lands in .stems/repos/shop-api.
+# `hosted` is an external stem that is always ready, so a failed clone makes
+# `up --no-fail-fast` a partial success (exit 3).
+schema_version: 1
+name: git-codebase
+
+stems:
+  shop-api:
+    type: process
+    codebase: { git: "file:///nonexistent/repo.git", ref: main }
+    ports: [{ name: http, port: 18631 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts: { start: python3 app.py }
+  hosted:
+    type: external
+    description: Always ready; keeps `up` partially successful when the clone fails

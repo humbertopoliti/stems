@@ -5,7 +5,7 @@
 use serde_json::json;
 use stems_core::{Error, ErrorCode};
 
-use crate::cli::{Command, ConfigCommand, ReposCommand, WatchCommand};
+use crate::cli::{Command, ConfigCommand, WatchCommand};
 use crate::output::CommandOutput;
 
 /// `(command path, deliverable)` for a stub; `deliverable` is a plan
@@ -15,14 +15,8 @@ pub fn target(cmd: &Command) -> (String, &'static str) {
         Command::Metrics(_) => ("metrics", "25"),
         Command::Health(_) => ("health", "21"),
         Command::Graph(_) => ("graph", "23"),
-        Command::Run(_) => ("run", "17"),
-        Command::Scripts(_) => ("scripts", "17"),
         Command::Exec(_) => ("exec", "unscheduled"),
         Command::Shell(_) => ("shell", "unscheduled"),
-        Command::Overlays(_) => ("overlays", "18"),
-        Command::Doctor(_) => ("doctor", "19"),
-        Command::Repos(ReposCommand::Sync(_)) => ("repos sync", "20"),
-        Command::Repos(ReposCommand::Status(_)) => ("repos status", "20"),
         Command::Watch(WatchCommand::Pause(_)) => ("watch pause", "24"),
         Command::Watch(WatchCommand::Resume(_)) => ("watch resume", "24"),
         Command::Watch(WatchCommand::Status) => ("watch status", "24"),
@@ -46,6 +40,11 @@ pub fn target(cmd: &Command) -> (String, &'static str) {
         | Command::Reset(_)
         | Command::Build(_)
         | Command::Stamps(_)
+        | Command::Repos(_)
+        | Command::Run(_)
+        | Command::Scripts(_)
+        | Command::Overlays(_)
+        | Command::Doctor(_)
         | Command::Attach(_)
         | Command::Status(_)
         | Command::Logs(_)

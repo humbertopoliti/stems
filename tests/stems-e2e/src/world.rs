@@ -549,6 +549,16 @@ impl E2eWorld {
             }
         }
         cmd.env("STEMS_HOME", &self.home).env("STEMS_NO_COLOR", "1");
+        // `Given a fake tool ... on PATH` (19) puts scripts in `<root>/bin`.
+        let bin = self.root.join("bin");
+        if bin.is_dir() {
+            let path = std::env::var_os("PATH").unwrap_or_default();
+            let mut dirs = vec![bin];
+            dirs.extend(std::env::split_paths(&path));
+            if let Ok(joined) = std::env::join_paths(dirs) {
+                cmd.env("PATH", joined);
+            }
+        }
         for (k, v) in env {
             cmd.env(k, v);
         }

@@ -694,3 +694,51 @@ For checks stems has no command for (`docker exec … psql`, `curl`).
 ```gherkin
 When I run the shell command "curl -fsS http://127.0.0.1:${port:18080}/products"
 ```
+
+### Overlays (18)
+
+**`Given the repo copy is a git repository with "<repo>/<path>" committed`**
+— in the private copy of the repos (`Given the workspace has a private copy
+of the repos` first), `git init`s `<tmp>/examples/repos/<repo>` and commits
+`<path>` (created with placeholder text if it does not exist yet), with a
+throwaway identity and no signing. For `OVERLAY_TRACKED_FILE`.
+```gherkin
+Given the repo copy is a git repository with "shop-api/config/local.ini" committed
+```
+
+### Git codebases (20)
+
+**`Given a bare git repository "<name>" made from "<dir>"`** — copies
+`<repo>/<dir>` (without `__pycache__` etc.) to `<tmp>/git/<name>-src`, makes
+it a git repo on `main` with one commit (neutral config, fixed identity,
+signing off), creates the bare repo `<tmp>/git/<name>.git` and pushes `main`
+to it (`origin` of the source repo). Saves `${var:<name>_url}` (the bare
+repo's `file://` URL, for a `codebase.git` override) and `${var:<name>_src}`
+(the source working copy: commit, tag and `git push -q origin ...` there
+with a shell step to change the remote).
+```gherkin
+Given a bare git repository "shop" made from "examples/repos/shop-api"
+And a local override setting stems.shop-api.codebase.git=${var:shop_url}
+When I run the shell command "cd ${var:shop_src} && git tag v2 && git push -q origin v2"
+```
+
+### Doctor (19)
+
+**`Given a fake tool "<name>" on PATH that runs "<command>"`** — writes the
+executable script `<tmp>/bin/<name>` (`#!/bin/sh` + the expanded command);
+from then on every `stems` command (and the daemon it starts) gets
+`<tmp>/bin` first on `PATH`. For deterministic `requires:` versions and
+dev-server start commands.
+```gherkin
+Given a fake tool "node" on PATH that runs "echo v20.11.1"
+```
+
+**`Given the state file records an overlay for stem "<stem>" at "<path>"`**
+— creates the file (relative to the workspace, or absolute after expansion)
+with placeholder text if it does not exist, then adds
+`{dest, sha256 of its bytes, run_id, keep: false}` to `overlays.<stem>` of
+`state.json` (path from `stems daemon status --json`; created if missing).
+No daemon may be running. For stale-overlay checks.
+```gherkin
+Given the state file records an overlay for stem "shop-api" at "${tmp}/examples/repos/shop-api/config/local.ini"
+```

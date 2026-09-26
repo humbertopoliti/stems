@@ -1,0 +1,276 @@
+---
+source: crates/stems-cli/src/commands/run.rs
+expression: "serde_json::to_string_pretty(&r).unwrap()"
+---
+{
+  "scripts": [
+    {
+      "stem": null,
+      "name": "bootstrap",
+      "description": null,
+      "args": [],
+      "requires": [],
+      "kind": "lifecycle",
+      "timeout": null,
+      "retries": 0,
+      "concurrent": false,
+      "mcp_tool": "workspace__bootstrap",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "stem": null,
+      "name": "nuke-databases",
+      "description": "Drop and recreate all local databases",
+      "args": [],
+      "requires": [
+        "postgres"
+      ],
+      "kind": "custom",
+      "timeout": null,
+      "retries": 0,
+      "concurrent": false,
+      "mcp_tool": "workspace__nuke_databases",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "stem": null,
+      "name": "teardown",
+      "description": null,
+      "args": [],
+      "requires": [],
+      "kind": "lifecycle",
+      "timeout": null,
+      "retries": 0,
+      "concurrent": false,
+      "mcp_tool": "workspace__teardown",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "stem": "postgres",
+      "name": "reset",
+      "description": null,
+      "args": [],
+      "requires": [],
+      "kind": "lifecycle",
+      "timeout": null,
+      "retries": 0,
+      "concurrent": false,
+      "mcp_tool": "postgres__reset",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "stem": "postgres",
+      "name": "seed",
+      "description": "Apply migrations and insert a handful of sample rows",
+      "args": [],
+      "requires": [],
+      "kind": "lifecycle",
+      "timeout": null,
+      "retries": 0,
+      "concurrent": false,
+      "mcp_tool": "postgres__seed",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "stem": "postgres",
+      "name": "seed-large",
+      "description": "Load a large synthetic dataset for perf testing",
+      "args": [
+        {
+          "name": "rows",
+          "type": "int",
+          "default": 1000000,
+          "required": false,
+          "description": null,
+          "values": []
+        }
+      ],
+      "requires": [],
+      "kind": "custom",
+      "timeout": null,
+      "retries": 0,
+      "concurrent": false,
+      "mcp_tool": "postgres__seed_large",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "rows": {
+            "type": "integer",
+            "default": 1000000
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "stem": "shop-api",
+      "name": "create-test-user",
+      "description": "Create a user with a known password for manual testing",
+      "args": [
+        {
+          "name": "email",
+          "type": "string",
+          "default": null,
+          "required": true,
+          "description": "Email address of the test user",
+          "values": []
+        },
+        {
+          "name": "role",
+          "type": "enum",
+          "default": "admin",
+          "required": false,
+          "description": "Role to grant",
+          "values": [
+            "admin",
+            "user"
+          ]
+        }
+      ],
+      "requires": [],
+      "kind": "custom",
+      "timeout": null,
+      "retries": 0,
+      "concurrent": false,
+      "mcp_tool": "shop_api__create_test_user",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "description": "Email address of the test user"
+          },
+          "role": {
+            "type": "string",
+            "description": "Role to grant",
+            "enum": [
+              "admin",
+              "user"
+            ],
+            "default": "admin"
+          }
+        },
+        "required": [
+          "email"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "stem": "shop-api",
+      "name": "seed",
+      "description": null,
+      "args": [],
+      "requires": [],
+      "kind": "lifecycle",
+      "timeout": null,
+      "retries": 0,
+      "concurrent": false,
+      "mcp_tool": "shop_api__seed",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "stem": "shop-api",
+      "name": "setup",
+      "description": null,
+      "args": [],
+      "requires": [],
+      "kind": "lifecycle",
+      "timeout": null,
+      "retries": 0,
+      "concurrent": false,
+      "mcp_tool": "shop_api__setup",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "stem": "shop-api",
+      "name": "start",
+      "description": null,
+      "args": [],
+      "requires": [],
+      "kind": "lifecycle",
+      "timeout": null,
+      "retries": 0,
+      "concurrent": false,
+      "mcp_tool": "shop_api__start",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "stem": "shop-worker",
+      "name": "start",
+      "description": null,
+      "args": [],
+      "requires": [],
+      "kind": "lifecycle",
+      "timeout": null,
+      "retries": 0,
+      "concurrent": false,
+      "mcp_tool": "shop_worker__start",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "stem": "shop-web",
+      "name": "start",
+      "description": null,
+      "args": [],
+      "requires": [],
+      "kind": "lifecycle",
+      "timeout": null,
+      "retries": 0,
+      "concurrent": false,
+      "mcp_tool": "shop_web__start",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

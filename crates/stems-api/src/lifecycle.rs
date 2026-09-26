@@ -46,6 +46,14 @@ pub struct UpParams {
     /// clear their stamps first, so `setup`/`seed` run again (deliverable 16).
     #[serde(default)]
     pub fresh: bool,
+    /// Fetch and check out existing git codebases before starting (`up
+    /// --sync`, deliverable 20). Missing clones are always cloned.
+    #[serde(default)]
+    pub sync: bool,
+    /// Back up overlay destinations stems does not own and overwrite them
+    /// (`up --force-overlays`, deliverable 18).
+    #[serde(default)]
+    pub force_overlays: bool,
 }
 
 impl Default for UpParams {
@@ -60,6 +68,8 @@ impl Default for UpParams {
             pass_env: BTreeMap::new(),
             daemon_auto_started: false,
             fresh: false,
+            sync: false,
+            force_overlays: false,
         }
     }
 }

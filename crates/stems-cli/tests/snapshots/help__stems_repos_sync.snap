@@ -11,6 +11,9 @@ Arguments:
           Only these stems
 
 Options:
+      --recurse-submodules
+          (sync) Pass `--recurse-submodules` to git clone / checkout
+
   -h, --help
           Print help
 

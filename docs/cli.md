@@ -1022,7 +1022,14 @@ Global options:
 ### `stems run`
 
 ```text
-Run a stem or workspace script
+Run a stem or workspace script.
+
+`stems run <stem> <script> [-- args…]` runs a stem's script; `stems run --ws <script> [-- args…]` a
+workspace-level script (`--workspace-script` is an alias; `--workspace` stays the global flag that
+selects the workspace). Arguments after `--` are validated against the script's `args` schema
+(`SCRIPT_ARGS_INVALID`, exit 2) and passed as `--name value` flags plus `STEMS_ARG_<NAME>` env;
+scripts without a schema get them untouched. Exit 0 when the script succeeded, else 1
+(`SCRIPT_FAILED`). See docs/scripts.md.
 
 Usage: stems run [OPTIONS] [STEM] [SCRIPT] [-- <ARGS>...]
 
@@ -1037,17 +1044,21 @@ Arguments:
           Script arguments (after `--`), e.g. `-- --email a@b.c`
 
 Options:
-      --workspace-script <SCRIPT>
-          Run a workspace-level script instead of a stem script
+      --ws <SCRIPT>
+          Run a workspace-level script instead of a stem script (`--workspace-script` is an alias)
 
       --start-deps
           Start the script's `requires:` stems if they are not healthy
 
       --wait <DURATION>
-          How long to wait for a starting stem (e.g. 30s)
+          How long to wait for the stem while it is still starting (default 30s)
+
+      --no-wait
+          Return the run id at once instead of waiting for the script to finish (follow it with
+          `stems events -f`)
 
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -1081,7 +1092,11 @@ Global options:
 ### `stems scripts`
 
 ```text
-List scripts
+List scripts.
+
+Workspace and stem scripts, lifecycle and custom, with their arguments. Reads the config locally (no
+daemon needed). `--json` prints the catalogue the TUI and MCP server use: `data: {scripts: [{stem,
+name, description, args, requires, kind, timeout, retries, concurrent, mcp_tool, input_schema}]}`.
 
 Usage: stems scripts [OPTIONS] [STEM]
 
@@ -1091,7 +1106,7 @@ Arguments:
 
 Options:
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -1508,6 +1523,9 @@ Arguments:
           Only these stems
 
 Options:
+      --recurse-submodules
+          (sync) Pass `--recurse-submodules` to git clone / checkout
+
   -h, --help
           Print help
 
@@ -1552,6 +1570,9 @@ Arguments:
           Only these stems
 
 Options:
+      --recurse-submodules
+          (sync) Pass `--recurse-submodules` to git clone / checkout
+
   -h, --help
           Print help
 

@@ -1,10 +1,11 @@
-# Lifecycle scripts, hooks and stamps
+# Scripts: lifecycle, custom, hooks and stamps
 
 A stem's `scripts:` map holds its **lifecycle scripts** (fixed names, run by
-stems at fixed points) and custom scripts (run with `stems run`, deliverable
-17). The workspace has two lifecycle scripts of its own, `bootstrap` and
-`teardown` (FR-SC-1, FR-SC-6). This page covers when each one runs, the
-environment it gets, stamps, timeouts and failures. States and commands:
+stems at fixed points) and any number of **custom scripts** (run with `stems
+run`, FR-SC-2). The workspace has two lifecycle scripts of its own,
+`bootstrap` and `teardown`, and named workspace scripts (FR-SC-1, FR-SC-6).
+This page covers when each one runs, the environment it gets, stamps,
+custom scripts and their arguments, timeouts, retries and failures. States and commands:
 [lifecycle.md](lifecycle.md); logs: [logs.md](logs.md).
 
 ```yaml
@@ -29,7 +30,9 @@ stems:
 A script is an inline shell `command:` (or a bare string), or a `file:` in
 the **integration repo** (FR-WS-2). Per script: `inputs` (stamp globs,
 relative to the codebase), `stamp_env` (variables hashed into the stamp),
-`timeout` (default none), `retries` (default 0), `cwd`.
+`timeout` (default none), `retries` (default 0), `cwd`; and for scripts run
+with `stems run`: `description`, `args`, `requires`, `concurrent` (see
+[Custom scripts](#custom-scripts-and-stems-run)).
 
 ## The lifecycle order
 
@@ -89,8 +92,9 @@ Workspace scripts get the daemon's environment (minus `STEMS_*`), workspace
 `env`, `--pass-env`, `STEMS_WORKSPACE`, `STEMS_RUN_ID`, `STEMS_SCRIPT` and
 `STEMS_STATE_DIR` = `$STEMS_HOME/<ws-hash>/workspace/`.
 
-Positional arguments (`stems run`, 17) are `$1…`; for inline commands `$0`
-is the script's name.
+Arguments given with `stems run` are the positional parameters `$1…`; for
+inline commands `$0` is the script's name. Scripts with an `args` schema
+also get `STEMS_ARG_<NAME>` variables (see below).
 
 ## Working directory
 
@@ -121,8 +125,9 @@ is the script's name.
   and `tag: <script>` (FR-SC-4): `stems logs <stem> --script setup`.
   Workspace scripts log under the pseudo-stem `_workspace`
   (`stems logs _workspace --script bootstrap`).
-* `retries: N` re-runs a failed script up to N more times (not after a
-  timeout-free cancellation).
+* `retries: N` re-runs a failed script (non-zero exit or timeout) up to N
+  more times, waiting 500 ms, 1 s, 2 s, … (doubling, capped at 10 s) in
+  between (FR-SC-8). A cancellation (a stop) is never retried.
 
 ## Stamps (FR-SC-5)
 
@@ -159,6 +164,123 @@ run records nothing, so the next `up` retries.
 * `stems up --fresh` does the same for the planned stems (after
   `bootstrap`), then starts them: `setup` and `seed` run again.
 
+## Custom scripts and `stems run`
+
+Any script name that is not a lifecycle name is a **custom script**
+(FR-SC-2): `seed-large`, `create-test-user`, `flush-cache`, … Workspace
+scripts other than `bootstrap`/`teardown` are custom too.
+
+```yaml
+scripts:                                   # workspace
+  nuke-databases:
+    file: scripts/nuke.sh
+    description: Drop and recreate all local databases
+    requires: [postgres]                   # must be healthy first
+stems:
+  shop-api:
+    scripts:
+      create-test-user:
+        file: scripts/shop-api/create-test-user.sh
+        description: Create a user with a known password for manual testing
+        args:
+          - { name: email, type: string, required: true, description: "Email address" }
+          - { name: role, type: enum, values: [admin, user], default: admin }
+        timeout: 30s
+        retries: 2
+        concurrent: false                  # the default
+```
+
+```text
+stems run shop-api create-test-user -- --email a@b.c --role user
+stems run shop-api create-test-user --json -- --email a@b.c
+stems run --ws nuke-databases --start-deps
+stems scripts [stem] [--json]
+```
+
+`stems run <stem> <script> [-- args…]` runs a stem's script,
+`stems run --ws <script> [-- args…]` a workspace script (`--workspace-script`
+is an alias; plain `--workspace` is the global flag that picks the workspace).
+Any script can be run this way, lifecycle ones included (`stems run shop-api
+seed`). The daemon is started if none runs (and stopped again afterwards
+when nothing is running).
+
+### Arguments (FR-SC-7)
+
+`args` declares the script's arguments: `name`, `type` (`string`, `int`,
+`float`, `bool`, `enum` with `values`, `path`), `default`, `required`,
+`description`. What follows `--` is parsed against the schema like a
+command line (`--email a@b.c`, `--email=a@b.c`, `--verbose` for a bool,
+`--verbose false`). Anything that does not fit — a missing required
+argument, an unknown flag, a stray positional, `--rows many` for an int, a
+value outside an enum — is `SCRIPT_ARGS_INVALID` (exit 2) with `details:
+{arg, reason, stem, script}` and a hint listing the declared arguments;
+nothing runs.
+
+The script then gets the validated values, defaults applied:
+
+* as argv: `--<name> <value>` per argument, sorted by name (bools as `true` /
+  `false`): `--email a@b.c --role admin`;
+* as environment: `STEMS_ARG_<NAME>` (upper-cased, other characters → `_`):
+  `STEMS_ARG_EMAIL=a@b.c`, `STEMS_ARG_ROLE=admin`.
+
+A script **without** `args` gets everything after `--` untouched
+(passthrough), and no `STEMS_ARG_*`.
+
+Over the API (`run_script`) and from MCP, `args` may instead be a JSON object
+(`{"email": "a@b.c", "role": "user"}`), validated the same way with type
+coercion (`"42"` for an int, `42` for a string).
+
+### `requires` (FR-SC-6)
+
+`requires: [postgres, redis]` lists stems that must be `healthy` before the
+script runs. If one is not: `SCRIPT_REQUIRES_UNMET` (exit 1) with `details:
+{requires, unmet: [{stem, state}]}` — or, with `--start-deps`, stems starts
+them first (like `stems start`, dependencies included) and runs the script
+once they are healthy.
+
+### When the stem is starting, and concurrency
+
+* A stem script run while its stem is in its start sequence (`setup`,
+  `starting`, `seeding`, or healthy with `post_start`/`seed` still to run)
+  waits until it is done, up to `--wait <duration>` (default 30 s), then
+  fails with `START_TIMEOUT`. A stopped stem does not block: the script just
+  runs (it may of course need the stem, like `create-test-user`).
+* **One script at a time per stem** (and one workspace script at a time): a
+  second `stems run` waits for the first and emits `script.queued`; its
+  result says `queued: true`. A script with `concurrent: true` never waits.
+
+### Output and result
+
+Human output streams the script's output live (its tagged log lines) and
+ends with `✓ create-test-user finished in 0.8s` or `✗ create-test-user
+failed: exit 3 (0.1s)`. The exit code is 0 when the script succeeded, else
+1 with `SCRIPT_FAILED`. `--json` prints the envelope with `data:
+RunScriptResult`:
+
+```json
+{"run_id": "01J…", "stem": "shop-api", "script": "create-test-user", "ok": true,
+ "exit": 0, "signal": null, "duration_ms": 812, "timed_out": false,
+ "attempts": 1, "argv": ["--email", "a@b.c", "--role", "admin"],
+ "tail": ["create-test-user: ok (email=a@b.c, role=admin)"], "queued": false}
+```
+
+`--no-wait` returns `{run_id, stem, script}` at once; follow the run with
+`stems events -f` (every `script.*` event of the run carries `data.run_id`)
+and `stems logs <stem> --script <name> -f`.
+
+### The catalogue (`stems scripts`)
+
+`stems scripts [stem] [--json]` lists every runnable script — workspace
+scripts first, then each enabled stem's, sorted by name — as a table
+(`STEM SCRIPT KIND DESCRIPTION ARGS`) or as `data: {scripts: [{stem, name,
+description, args, requires, kind: lifecycle|custom, timeout, retries,
+concurrent, mcp_tool, input_schema}]}`. It reads the config locally and
+needs no daemon. `mcp_tool` (`shop_api__create_test_user`,
+`workspace__nuke_databases`) and `input_schema` (a JSON Schema of `args`)
+are what the MCP server publishes (FR-AI-2); the TUI's action menu uses the
+same data. The daemon serves it as the `script_catalog` RPC
+([protocol.md](protocol.md#methods)).
+
 ## Timeouts and failures
 
 `timeout: 30s` bounds a script; past it the whole process group is killed
@@ -188,7 +310,9 @@ kills the script and the stop proceeds at once.
 
 * `script.started {script, actor, args}` and `script.finished {script, exit,
   signal, duration_ms, timed_out, cancelled, ok}`, with `stem` set for stem
-  scripts.
+  scripts; `stems run` adds `run_id` and `attempt` (one pair per attempt).
+* `script.queued {script, run_id, actor, reason}`: a `stems run` waits for
+  another script of the same stem.
 * `stem.state` `stopped → setup → starting`, `healthy → seeding → healthy`
   (reason `seeded`).
 * `state.json` keeps the stamps and the last 100 runs in `script_runs:
@@ -201,5 +325,8 @@ kills the script and the stop proceeds at once.
 * Hooks and a custom `stop` script run for stems started by the current
   daemon; a stem adopted after a daemon crash is stopped with SIGTERM /
   SIGKILL and without hooks.
-* `health` scripts are deliverable 21; custom scripts, `stems run` and
-  argument schemas are 17.
+* `health` scripts are deliverable 21.
+* The retry backoff is fixed (500 ms × 2, up to 10 s); a per-script
+  `backoff:` is not configurable yet.
+* The TUI menu (30) and the MCP tools (31) build on `script_catalog` and
+  `run_script`.

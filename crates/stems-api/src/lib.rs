@@ -23,6 +23,8 @@ use stems_core::{Error, ErrorCode};
 pub mod client;
 pub mod lifecycle;
 pub mod logs;
+pub mod overlays;
+pub mod repos;
 pub mod scripts;
 
 pub use lifecycle::{
@@ -33,9 +35,15 @@ pub use logs::{
     ExportLogsParams, ExportLogsResult, LogFilter, LogRecord, QUERY_LOGS_CAP, QueryLogsParams,
     QueryLogsResult, SubscribeLogsAck, SubscribeLogsParams,
 };
+pub use overlays::{OverlayEntry, OverlayFileStatus, OverlaysParams, OverlaysResult};
+pub use repos::{
+    RepoAction, RepoSource, RepoStatus, RepoSyncResult, ReposStatusParams, ReposStatusResult,
+    ReposSyncParams, ReposSyncResult,
+};
 pub use scripts::{
-    BuildParams, BuildResult, ResetParams, ResetResult, ScriptRunSummary, StampEntry, StampsParams,
-    StampsResult,
+    BuildParams, BuildResult, CatalogScript, ResetParams, ResetResult, RunScriptAccepted,
+    RunScriptParams, RunScriptResult, ScriptArgsInput, ScriptCatalogParams, ScriptCatalogResult,
+    ScriptRunSummary, StampEntry, StampsParams, StampsResult,
 };
 
 /// Version of the wire protocol. Bumped on any incompatible change.
@@ -164,9 +172,20 @@ string_newtype! {
         RESET = "reset";
         /// List or clear stamps ([`StampsParams`] -> [`StampsResult`]).
         STAMPS = "stamps";
-        // --- reserved for later deliverables ---------------------------------
-        /// Reserved (13).
+        // --- overlays (18) -----------------------------------------------------
+        /// Recorded overlays and their status ([`OverlaysParams`] -> [`OverlaysResult`]).
+        OVERLAYS = "overlays";
+        // --- custom scripts (17) ------------------------------------------------
+        /// Run a stem or workspace script ([`RunScriptParams`] ->
+        /// [`RunScriptResult`], or [`RunScriptAccepted`] with `wait: false`).
         RUN_SCRIPT = "run_script";
+        /// Every runnable script ([`ScriptCatalogParams`] -> [`ScriptCatalogResult`]).
+        SCRIPT_CATALOG = "script_catalog";
+        // --- git codebases (20) -----------------------------------------------
+        /// Clone / fetch / check out git codebases ([`ReposSyncParams`] -> [`ReposSyncResult`]).
+        REPOS_SYNC = "repos_sync";
+        /// Per-stem codebase state ([`ReposStatusParams`] -> [`ReposStatusResult`]).
+        REPOS_STATUS = "repos_status";
         // --- crash recovery (11) ----------------------------------------------
         /// Adopt orphaned processes as their stems (`{orphans: [{stem, pid}]}`
         /// -> `{adopted: [{stem, pid, pgid}], failed: [{stem, pid, error}]}`).
@@ -234,6 +253,24 @@ string_newtype! {
         CONFIG_CHANGED = "config.changed";
         /// The config on disk is invalid.
         CONFIG_INVALID = "config.invalid";
+        /// An overlay was written (`data: {dest, backup}`; 18).
+        OVERLAY_MATERIALISED = "overlay.materialised";
+        /// An unmodified overlay was removed on stop (`data: {dest}`).
+        OVERLAY_REMOVED = "overlay.removed";
+        /// A modified overlay was left on stop (`data: {dest}`, warning).
+        OVERLAY_MODIFIED_LEFT_IN_PLACE = "overlay.modified_left_in_place";
+        /// A `keep: true` overlay was left on stop (`data: {dest}`).
+        OVERLAY_KEPT = "overlay.kept";
+        /// A git codebase was cloned (20; `data: {url, ref, sha, path}`).
+        REPO_CLONED = "repo.cloned";
+        /// A git codebase was fetched (20; `data: {url, ref, sha, updated}`).
+        REPO_FETCHED = "repo.fetched";
+        /// A git codebase was switched to its configured ref (20).
+        REPO_CHECKED_OUT = "repo.checked_out";
+        /// A git codebase was left alone because of local work (20).
+        REPO_SKIPPED_DIRTY = "repo.skipped_dirty";
+        /// Cloning / fetching / checking out failed (20; `data: {error}`).
+        REPO_FAILED = "repo.failed";
     }
 }
 

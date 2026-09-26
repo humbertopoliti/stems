@@ -13,6 +13,8 @@ Feature: hello-shop from zero to ready (phase 2 exit criterion)
 
   Scenario: up on a clean home, seeded rows served, down --all clean
     Given the "hello-shop" workspace
+    # shop-api's overlay (config/local.ini) is written into its codebase (18).
+    And the workspace has a private copy of the repos
     When I run "stems up --detach --json"
     Then the command succeeds
     And the events stream contains {"kind": "script.finished", "data": {"script": "bootstrap", "exit": 0}} before {"kind": "stem.state", "stem": "postgres", "to": "starting"}

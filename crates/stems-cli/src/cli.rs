@@ -240,8 +240,23 @@ pub enum Command {
 
     // --- scripts -----------------------------------------------------------
     /// Run a stem or workspace script.
+    ///
+    /// `stems run <stem> <script> [-- args…]` runs a stem's script;
+    /// `stems run --ws <script> [-- args…]` a workspace-level script
+    /// (`--workspace-script` is an alias; `--workspace` stays the global flag
+    /// that selects the workspace). Arguments after `--` are validated against
+    /// the script's `args` schema (`SCRIPT_ARGS_INVALID`, exit 2) and passed as
+    /// `--name value` flags plus `STEMS_ARG_<NAME>` env; scripts without a
+    /// schema get them untouched. Exit 0 when the script succeeded, else 1
+    /// (`SCRIPT_FAILED`). See docs/scripts.md.
     Run(RunArgs),
     /// List scripts.
+    ///
+    /// Workspace and stem scripts, lifecycle and custom, with their arguments.
+    /// Reads the config locally (no daemon needed). `--json` prints the
+    /// catalogue the TUI and MCP server use: `data: {scripts: [{stem, name,
+    /// description, args, requires, kind, timeout, retries, concurrent,
+    /// mcp_tool, input_schema}]}`.
     Scripts(ScriptsArgs),
     /// Run an ad-hoc command in a stem's context (env, cwd or container).
     Exec(ExecArgs),
@@ -581,15 +596,25 @@ pub struct RunArgs {
     /// Script name.
     #[arg(required_unless_present = "workspace_script")]
     pub script: Option<String>,
-    /// Run a workspace-level script instead of a stem script.
-    #[arg(long, value_name = "SCRIPT", conflicts_with_all = ["stem", "script"])]
+    /// Run a workspace-level script instead of a stem script
+    /// (`--workspace-script` is an alias).
+    #[arg(
+        long = "ws",
+        alias = "workspace-script",
+        value_name = "SCRIPT",
+        conflicts_with_all = ["stem", "script"]
+    )]
     pub workspace_script: Option<String>,
     /// Start the script's `requires:` stems if they are not healthy.
     #[arg(long)]
     pub start_deps: bool,
-    /// How long to wait for a starting stem (e.g. 30s).
+    /// How long to wait for the stem while it is still starting (default 30s).
     #[arg(long, value_name = "DURATION")]
     pub wait: Option<String>,
+    /// Return the run id at once instead of waiting for the script to finish
+    /// (follow it with `stems events -f`).
+    #[arg(long)]
+    pub no_wait: bool,
     /// Script arguments (after `--`), e.g. `-- --email a@b.c`.
     #[arg(last = true)]
     pub args: Vec<String>,
@@ -688,6 +713,9 @@ pub enum ReposCommand {
 pub struct ReposArgs {
     /// Only these stems.
     pub stems: Vec<String>,
+    /// (sync) Pass `--recurse-submodules` to git clone / checkout.
+    #[arg(long)]
+    pub recurse_submodules: bool,
 }
 
 /// `stems watch`.
@@ -897,5 +925,11 @@ mod tests {
             panic!("not run")
         };
         assert_eq!(r.workspace_script.as_deref(), Some("nuke"));
+        let cli = Cli::try_parse_from(["stems", "run", "--ws", "nuke", "--", "-x"]).unwrap();
+        let Some(Command::Run(r)) = cli.command else {
+            panic!("not run")
+        };
+        assert_eq!(r.workspace_script.as_deref(), Some("nuke"));
+        assert_eq!(r.args, ["-x"]);
     }
 }

@@ -1,0 +1,28 @@
+# docker-mixed — one docker stem and one process stem (deliverable 19,
+# tests/features/doctor/docker-unavailable.feature and @docker docker.feature).
+#
+# With Docker unreachable (DOCKER_HOST=unix:///nonexistent) `stems up echo-svc`
+# still works (process only), `stems up db` fails with DOCKER_UNAVAILABLE
+# before anything starts, and `stems doctor` fails `docker.reachable`.
+schema_version: 1
+name: docker-mixed
+
+stems:
+  echo-svc:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    env:
+      PORT: "18431"
+      SHOP_CHAOS: "1"
+    ports: [{ name: http, port: 18431 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts: { start: python3 app.py }
+  db:
+    type: docker
+    image: postgres:16
+    ports: [{ name: pg, port: 18432, container_port: 5432 }]
+    env:
+      POSTGRES_PASSWORD: local
+    health: { type: tcp, interval: 400ms, timeout: 300ms, retries: 5, start_timeout: 60s }
+    stop_grace: 2s

@@ -63,6 +63,23 @@ stems down
 | `shop-web` | process | `port: auto`, `${stem.shop-api.port}` substitution, depends on shop-api |
 | `httpbin` | external | monitor-only; shows `unknown` when offline, never started or stopped by stems |
 
+### Codebases from git (alternative)
+
+Every example stem uses a local path (`codebase: ../../repos/shop-api`), so
+the examples work offline. A codebase can instead be a git repository that
+stems clones into `.stems/repos/<stem>` on the first `up` and keeps at a ref
+with `stems repos sync` (see `docs/repos.md`):
+
+```yaml
+stems:
+  shop-api:
+    codebase: { git: git@github.com:acme/shop-api.git, ref: main }
+```
+
+A developer who already has it checked out points at their copy in
+`stems.local.yaml` (`stems: { shop-api: { codebase: ~/work/shop-api } }`),
+which replaces the git form entirely.
+
 The `minimal` workspace is a single `echo-svc` process stem (shop-api run
 standalone, no DB) with a 200 ms `tcp` health check — the workhorse for the
 fast E2E suite, and small enough to read in one sitting.

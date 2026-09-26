@@ -125,7 +125,7 @@ the connection stays usable. For a stream:
 | `subscribe_events` | `{since_seq?}` | ack `{subscribed: true, last_seq}`, then `event` notifications (see below) |
 | `load_workspace` | `{path}` | `{root, name, stems: [name], sources: [path]}`; emits `workspace.loaded`; config errors are returned as the first error with all of them in `details.errors` |
 | `shutdown` | `{}` | `{stopping: true}`, then the orderly shutdown path runs |
-| `up` | `UpParams {stems?, profile?, detach?, timeout_ms?, fail_fast? (true), max_parallel? (4), pass_env? {K: V}, daemon_auto_started?, fresh?}` | `UpResult {ok, requested, ready: [stem], failed: [{stem, error}], skipped: [stem]}` — long-running; progress is the event stream (see [lifecycle.md](lifecycle.md)) |
+| `up` | `UpParams {stems?, profile?, detach?, timeout_ms?, fail_fast? (true), max_parallel? (4), pass_env? {K: V}, daemon_auto_started?, fresh?, force_overlays?, sync?}` | `UpResult {ok, requested, ready: [stem], failed: [{stem, error}], skipped: [stem]}` — long-running; progress is the event stream (see [lifecycle.md](lifecycle.md)) |
 | `down` | `DownParams {stems?, all?, timeout_ms?}` | `DownResult {ok, stopped, skipped, failed: [{stem, error}], daemon_stopping}`; with `daemon_stopping` the daemon shuts down right after replying |
 | `start` | `StartParams {stems, no_deps?, timeout_ms?}` | `UpResult`; external stems: `NOT_MANAGED` |
 | `stop` | `StopParams {stems, cascade?, timeout_ms?}` | `DownResult`; running dependants without `cascade`: `HAS_DEPENDANTS` (`details.dependants`) |
@@ -138,6 +138,11 @@ the connection stays usable. For a stream:
 | `build` | `BuildParams {stems?}` | `BuildResult {ok, built: [{stem, script, exit, duration_ms}], skipped, failed: [{stem, error}]}` — runs `build` scripts ([scripts.md](scripts.md)) |
 | `reset` | `ResetParams {stems?}` | `ResetResult {ok, stopped, reset: [{stem, script, exit, duration_ms}], cleared, failed}` — stops the stems, runs `reset`, clears their stamps |
 | `stamps` | `StampsParams {stem?, clear?}` | `StampsResult {stamps: [{stem, script, hash, computed_at, inputs}], cleared}` |
+| `run_script` | `RunScriptParams {stem? (null: workspace script), name, args? ([argv] \| {name: value}), wait? (true), start_deps?, ready_timeout_ms? (30000)}` | `RunScriptResult {run_id, stem, script, ok, exit, signal, duration_ms, timed_out, attempts, argv, tail, queued, error?}`; with `wait: false` at once `RunScriptAccepted {run_id, stem, script}` (follow the `script.*` events with that `data.run_id`). A failed script is a successful call with `ok: false` and `error` (`SCRIPT_FAILED`); bad args: `SCRIPT_ARGS_INVALID` (`details {arg, reason, stem, script}`); unhealthy `requires`: `SCRIPT_REQUIRES_UNMET` (`details {requires, unmet: [{stem, state}], start_error}`); stem still starting past the bound: `START_TIMEOUT` ([scripts.md](scripts.md#custom-scripts-and-stems-run)) |
+| `script_catalog` | `ScriptCatalogParams {stem?}` | `ScriptCatalogResult {scripts: [{stem, name, description, args: [{name, type, default, required, description, values}], requires, kind: lifecycle\|custom, timeout, retries, concurrent, mcp_tool, input_schema}]}` — what the TUI (30) and MCP (31) consume |
+| `overlays` | `OverlaysParams {stem?}` | `OverlaysResult {overlays: [{stem, dest, status: present\|modified\|missing, keep, sha256, run_id}]}` ([overlays.md](overlays.md)) |
+| `repos_sync` | `ReposSyncParams {stems?, force_fetch? (true), recurse_submodules?}` | `ReposSyncResult {ok, repos: [{stem, path, action, ref, sha, message, error?}]}` — clone / fetch / check out git codebases ([repos.md](repos.md)) |
+| `repos_status` | `ReposStatusParams {stems?}` | `ReposStatusResult {repos: [{stem, source, path, url, ref, branch, sha, dirty, ahead, behind, exists}]}` |
 | `_debug.start_raw` | `{spec: ProcessSpec}` | runtime `Handle` (only with `STEMS_DEBUG_RPC=1`) |
 | `_debug.stop_raw` | `{handle, grace_ms?}` | `"graceful" \| "killed" \| "already_dead"` |
 | `_debug.describe` | `{handle}` | `RuntimeFacts` |
@@ -147,9 +152,8 @@ port, auto}], uptime_s, started_at, restarts, seeded, health, error}` plus `env`
 stems set for the process) with `verbose`. Semantics of the lifecycle methods:
 [lifecycle.md](lifecycle.md).
 
-Reserved for later deliverables (answer `NOT_IMPLEMENTED` until then):
-`run_script` (13). `Method` is an open string type: new methods never change
-the frame format.
+Methods a daemon does not know answer `NOT_IMPLEMENTED`. `Method` is an
+open string type: new methods never change the frame format.
 
 `_debug.*` `handle` is either the `Handle` object returned by `start_raw` or its
 numeric `id`. Debug processes emit `process.output` (`data: {handle, pid,
@@ -197,12 +201,24 @@ consumers must ignore unknown kinds): `daemon.started`, `daemon.stopping`,
 `stem.health`, `process.exited`, `process.output`, `up.started`, `up.finished`,
 `down.started`, `down.finished`, `script.queued`, `script.started`,
 `script.finished`, `watch.triggered`, `watch.paused`, `watch.reconfigured`,
-`config.changed`, `config.invalid`.
+`config.changed`, `config.invalid`, `overlay.materialised` (`data: {dest,
+keep, backup}`), `overlay.removed`, `overlay.kept`,
+`overlay.modified_left_in_place` (`data: {dest}`; see
+[overlays.md](overlays.md)), `repo.cloned`, `repo.fetched`,
+`repo.checked_out`, `repo.skipped_dirty`, `repo.failed` (see
+[repos.md](repos.md#logs-and-events)).
 
 Recovery payloads (deliverable 11): `stem.adopted` `data: {pid, pgid,
 started_at}` (followed by `stem.state` `stopped → healthy`, reason
 `adopted`); `stem.recovered_dead` `data: {pid, pgid, start_time,
 container_id}` (the state entry was cleared). See [recovery.md](recovery.md).
+
+Script payloads (deliverables 16, 17): `script.started` `data: {script,
+actor, args, run_id?, attempt?}`; `script.finished` `data: {script, exit,
+signal, duration_ms, timed_out, cancelled, ok, run_id?, attempt?}`;
+`script.queued` `data: {script, run_id, actor, reason}` (a `run_script` waiting
+for another script of the same stem). `run_id` and `attempt` (1-based) are
+set for `run_script` runs. See [scripts.md](scripts.md).
 
 Lifecycle payloads (deliverable 10): `stem.state` has `from`/`to`/`reason`
 and `data: {pid, error?, outcome?, exit_code?, signal?}`;

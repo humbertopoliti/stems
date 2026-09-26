@@ -72,6 +72,9 @@ pub struct RunContext {
     pub actor: String,
     /// Cancelling kills the script's process group.
     pub cancel: Option<CancellationToken>,
+    /// Extra fields for the `script.started` / `script.finished` events'
+    /// `data` (17: `run_id`, `attempt`).
+    pub event_extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// How a script run ended.
@@ -251,6 +254,13 @@ pub fn script_text(ws_root: &Path, script: &Script) -> Result<String, Error> {
     }
 }
 
+/// Merge `extra` into the object `data`.
+fn extend(data: &mut serde_json::Value, extra: &serde_json::Map<String, serde_json::Value>) {
+    if let Some(m) = data.as_object_mut() {
+        m.extend(extra.iter().map(|(k, v)| (k.clone(), v.clone())));
+    }
+}
+
 fn is_executable(p: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     p.metadata()
@@ -374,11 +384,13 @@ impl ScriptRunner {
 
         let started = Utc::now();
         let t0 = Instant::now();
-        let mut ev = EventDraft::new(EventKind::SCRIPT_STARTED, &ctx.actor).data(json!({
+        let mut data = json!({
             "script": name,
             "actor": ctx.actor,
             "args": ctx.args,
-        }));
+        });
+        extend(&mut data, &ctx.event_extra);
+        let mut ev = EventDraft::new(EventKind::SCRIPT_STARTED, &ctx.actor).data(data);
         if let Some(s) = stem {
             ev = ev.stem(s);
         }
@@ -390,15 +402,7 @@ impl ScriptRunner {
                 let err = Error::new(ErrorCode::ScriptFailed, format!("cannot start {what}: {e}"))
                     .with_hint("check the script's file (it must be readable) and `cwd`")
                     .with_details(json!({ "stem": stem, "script": name, "reason": "spawn" }));
-                self.finished(
-                    stem,
-                    name,
-                    &ctx.actor,
-                    ExitStatus::UNKNOWN,
-                    t0,
-                    false,
-                    false,
-                );
+                self.finished(stem, name, &ctx, ExitStatus::UNKNOWN, t0, false, false);
                 self.record(stem, name, started, None, false);
                 return Err(err);
             }
@@ -471,7 +475,7 @@ impl ScriptRunner {
             .await;
         }
 
-        self.finished(stem, name, &ctx.actor, status, t0, timed_out, cancelled);
+        self.finished(stem, name, &ctx, status, t0, timed_out, cancelled);
         self.record(stem, name, started, status.code, timed_out);
         let tail = tail
             .lock()
@@ -496,13 +500,13 @@ impl ScriptRunner {
         &self,
         stem: Option<&str>,
         name: &str,
-        actor: &str,
+        ctx: &RunContext,
         status: ExitStatus,
         t0: Instant,
         timed_out: bool,
         cancelled: bool,
     ) {
-        let mut ev = EventDraft::new(EventKind::SCRIPT_FINISHED, actor).data(json!({
+        let mut data = json!({
             "script": name,
             "exit": status.code,
             "signal": status.signal,
@@ -510,7 +514,9 @@ impl ScriptRunner {
             "timed_out": timed_out,
             "cancelled": cancelled,
             "ok": status.success() && !timed_out && !cancelled,
-        }));
+        });
+        extend(&mut data, &ctx.event_extra);
+        let mut ev = EventDraft::new(EventKind::SCRIPT_FINISHED, &ctx.actor).data(data);
         if let Some(s) = stem {
             ev = ev.stem(s);
         }
