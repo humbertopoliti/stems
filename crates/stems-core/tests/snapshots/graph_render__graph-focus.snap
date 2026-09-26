@@ -1,0 +1,11 @@
+---
+source: crates/stems-core/tests/graph_render.rs
+expression: "text(&hello_shop().focus(\"shop-api\"))"
+---
+                                        ┌────────────┐
+                                    ╭──▶│ postgres · │
+┌────────────┐      ┌────────────┐  │   └────────────┘
+│ shop-web · ├─────▶│ shop-api · ├──┤
+└────────────┘      └────────────┘  │   ┌────────────┐
+                                    ╰──▶│ redis    · │
+                                        └────────────┘

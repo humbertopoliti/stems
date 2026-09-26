@@ -1,0 +1,14 @@
+---
+source: crates/stems-core/tests/graph_render.rs
+expression: "render_text(&l, &opts)"
+---
+                                                  ┌─────────┐
+                                       ╭── amqp ─▶│ queue · ├╌╌╮
+                            ┌───────┐  │          └─────────┘  ╎           ┌──────┐
+           ╭── http :8080 ─▶│ api · ├──┤                       ├─┬── tcp ─▶│ db · │
+┌───────┐  │                └───────┘  ╰───────────────────────╯ ╎         └──────┘
+│ web · ├──┤                                                     ╎
+└───────┘  ╰╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╯
+
+soft edges not drawn (they would close a cycle):
+  db ╌╌▶ web

@@ -1,0 +1,26 @@
+---
+source: crates/stems-core/tests/graph_render.rs
+expression: "render_mermaid(&hello_shop(), &opts)"
+---
+graph LR
+  shop_web["shop-web !<br/>dep shop-api"]
+  shop_api["shop-api ✗<br/>health: 503"]
+  shop_worker["shop-worker ↻"]
+  postgres["postgres ✓"]
+  redis["redis ✓"]
+  httpbin["httpbin ?"]
+  shop_api -->|healthy| postgres
+  shop_api -->|healthy| redis
+  shop_worker -->|healthy| redis
+  shop_worker -->|seeded| postgres
+  shop_web -->|healthy| shop_api
+  classDef healthy stroke:#2e7d32,stroke-width:2px
+  class postgres,redis healthy
+  classDef failed stroke:#c62828,stroke-width:2px
+  class shop_api failed
+  classDef degraded stroke:#f9a825,stroke-width:2px
+  class shop_web degraded
+  classDef unknown stroke:#8e24aa,stroke-width:2px
+  class httpbin unknown
+  classDef transitioning stroke:#00838f,stroke-width:2px
+  class shop_worker transitioning

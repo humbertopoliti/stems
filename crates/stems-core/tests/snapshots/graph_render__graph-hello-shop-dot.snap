@@ -1,0 +1,20 @@
+---
+source: crates/stems-core/tests/graph_render.rs
+expression: "render_dot(&hello_shop(), &RenderOptions::default())"
+---
+digraph stems {
+  rankdir=LR;
+  node [shape=box, style=rounded, fontname="Helvetica"];
+  edge [fontname="Helvetica", fontsize=10];
+  "shop-web";
+  "shop-api";
+  "shop-worker";
+  "postgres";
+  "redis";
+  "httpbin";
+  "shop-api" -> "postgres" [label="healthy"];
+  "shop-api" -> "redis" [label="healthy"];
+  "shop-worker" -> "redis" [label="healthy"];
+  "shop-worker" -> "postgres" [label="seeded"];
+  "shop-web" -> "shop-api" [label="healthy"];
+}

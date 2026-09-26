@@ -1,0 +1,16 @@
+---
+source: crates/stems-core/tests/graph_render.rs
+expression: "render_mermaid(&hello_shop(), &RenderOptions::default())"
+---
+graph LR
+  shop_web["shop-web"]
+  shop_api["shop-api"]
+  shop_worker["shop-worker"]
+  postgres["postgres"]
+  redis["redis"]
+  httpbin["httpbin"]
+  shop_api -->|healthy| postgres
+  shop_api -->|healthy| redis
+  shop_worker -->|healthy| redis
+  shop_worker -->|seeded| postgres
+  shop_web -->|healthy| shop_api

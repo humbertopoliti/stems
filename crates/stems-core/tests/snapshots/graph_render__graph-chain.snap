@@ -1,0 +1,7 @@
+---
+source: crates/stems-core/tests/graph_render.rs
+expression: text(&l)
+---
+┌───────┐      ┌───────┐      ┌──────┐
+│ web · ├─────▶│ api · ├─────▶│ db · │
+└───────┘      └───────┘      └──────┘

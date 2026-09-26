@@ -1,0 +1,11 @@
+---
+source: crates/stems-core/tests/graph_render.rs
+expression: text(&l)
+---
+               ┌─────────┐
+           ╭──▶│ left  · ├──╮
+┌───────┐  │   └─────────┘  │   ┌────────┐
+│ top · ├──┤                ├──▶│ base · │
+└───────┘  │   ┌─────────┐  │   └────────┘
+           ╰──▶│ right · ├──╯
+               └─────────┘

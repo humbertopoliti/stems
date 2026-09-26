@@ -1,0 +1,92 @@
+---
+source: crates/stems-core/tests/graph_render.rs
+expression: "serde_json::to_string_pretty(&v).unwrap()"
+---
+{
+  "nodes": [
+    {
+      "name": "shop-web",
+      "type": "process",
+      "status": "stopped",
+      "glyph": "·",
+      "reason": null
+    },
+    {
+      "name": "shop-api",
+      "type": "process",
+      "status": "stopped",
+      "glyph": "·",
+      "reason": null
+    },
+    {
+      "name": "shop-worker",
+      "type": "process",
+      "status": "stopped",
+      "glyph": "·",
+      "reason": null
+    },
+    {
+      "name": "postgres",
+      "type": "docker",
+      "status": "stopped",
+      "glyph": "·",
+      "reason": null
+    },
+    {
+      "name": "redis",
+      "type": "compose",
+      "status": "stopped",
+      "glyph": "·",
+      "reason": null
+    },
+    {
+      "name": "httpbin",
+      "type": "external",
+      "status": "stopped",
+      "glyph": "·",
+      "reason": null
+    }
+  ],
+  "edges": [
+    {
+      "from": "shop-api",
+      "to": "postgres",
+      "condition": "healthy",
+      "soft": false,
+      "protocol": null,
+      "via": null
+    },
+    {
+      "from": "shop-api",
+      "to": "redis",
+      "condition": "healthy",
+      "soft": false,
+      "protocol": null,
+      "via": null
+    },
+    {
+      "from": "shop-worker",
+      "to": "redis",
+      "condition": "healthy",
+      "soft": false,
+      "protocol": null,
+      "via": null
+    },
+    {
+      "from": "shop-worker",
+      "to": "postgres",
+      "condition": "seeded",
+      "soft": false,
+      "protocol": null,
+      "via": null
+    },
+    {
+      "from": "shop-web",
+      "to": "shop-api",
+      "condition": "healthy",
+      "soft": false,
+      "protocol": null,
+      "via": null
+    }
+  ]
+}

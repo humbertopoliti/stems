@@ -1,0 +1,16 @@
+---
+source: crates/stems-core/tests/graph_render.rs
+expression: "render_text(&hello_shop(), &opts)"
+---
+┌──────────────┐      ┌───────────────┐
+│ shop-web   ! ├─────▶│ shop-api    ✗ ├──╮     ┌────────────┐
+│ dep shop-api │      │ health: 503   │  ├─┬──▶│ postgres ✓ │
+└──────────────┘      └───────────────┘  │ │   └────────────┘
+                                         │ │
+                      ┌───────────────┐  │ │   ┌────────────┐
+                      │ shop-worker ↻ ├──┴─┴──▶│ redis    ✓ │
+                      └───────────────┘        └────────────┘
+
+                                               ┌────────────┐
+                                               │ httpbin  ? │
+                                               └────────────┘

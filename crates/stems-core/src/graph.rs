@@ -10,6 +10,9 @@ use stems_config::{ConfigPath, Stem, Workspace};
 
 use crate::error::{Error, ErrorCode};
 
+pub use crate::layout::{Layout, layout};
+pub use crate::render::{RenderOptions, render_dot, render_mermaid, render_text, to_json};
+
 /// A dependency cycle: stem names in edge order, the first one repeated at
 /// the end is implied (`["a", "b"]` is `a -> b -> a`).
 #[derive(Clone, Debug, PartialEq, Eq)]

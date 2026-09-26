@@ -5,15 +5,21 @@
 //! - [`Error`] / [`ErrorCode`] / [`Errors`]: the single error type (§7.5).
 //! - [`validate::validate`]: every static check of `stems validate`.
 //! - [`graph::start_order`] / [`graph::stop_order`] (or [`WorkspaceGraph`]).
+//! - [`layout::layout`] and [`render`]: `stems graph` text/Mermaid/DOT/JSON.
+//! - [`status::StemState`] / [`status::Glyph`]: lifecycle states and glyphs.
 
 mod error;
 pub mod graph;
+pub mod layout;
+pub mod render;
+pub mod status;
 pub mod tools;
 pub mod validate;
 pub mod version;
 
 pub use error::{Error, ErrorCode, Errors, Span, UnknownErrorCode, exit, sort_errors};
 pub use graph::{Cycle, WorkspaceGraph, start_order, stop_order};
+pub use status::{Glyph, StemState};
 pub use validate::{ValidateOptions, load_and_validate, validate};
 
 /// Name of this crate, used to prove the workspace wiring in tests.
