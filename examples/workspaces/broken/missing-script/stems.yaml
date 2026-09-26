@@ -1,0 +1,15 @@
+# broken/missing-script — a script references a file that does not exist
+# in the integration repo.
+schema_version: 1
+name: broken-missing-script
+
+stems:
+  shop-api:
+    type: process
+    description: start script points at a file that does not exist
+    codebase: ../../../repos/shop-api
+    ports: [{ name: http, port: 18080 }]
+    health: { type: tcp, port: 18080, interval: 200ms }
+    scripts:
+      start:
+        file: scripts/nope.sh

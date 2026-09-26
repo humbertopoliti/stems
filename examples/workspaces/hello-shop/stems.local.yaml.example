@@ -1,0 +1,18 @@
+# stems.local.yaml.example — copy this to stems.local.yaml (gitignored) and
+# edit it to override the committed config for your machine only.
+#
+# Deep-merges over stems.yaml (FR-WS-4). Arrays of scripts are REPLACED per
+# key, not concatenated.
+
+stems:
+  shop-api:
+    # Point at an existing checkout instead of the bundled example repo.
+    # codebase: ~/work/shop-api
+    env:
+      SHOP_CHAOS: "1"
+  shop-web:
+    # Disable a stem entirely for your local runs.
+    enabled: false
+
+profiles:
+  default: backend

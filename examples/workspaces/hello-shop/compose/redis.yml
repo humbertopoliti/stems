@@ -1,0 +1,11 @@
+# compose/redis.yml — wrapped by the "redis" compose stem in stems.yaml.
+#
+# stems shells out to `docker compose` for lifecycle and reads container
+# ids for logs/metrics (REQUIREMENTS.md §4.2, FR-ST-3: compose).
+services:
+  redis:
+    image: "redis:7"
+    ports:
+      - "${REDIS_PORT:-16379}:6379"
+    command: >
+      redis-server ${REDIS_ARGS:-}

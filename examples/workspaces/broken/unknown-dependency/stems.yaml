@@ -1,0 +1,16 @@
+# broken/unknown-dependency — shop-api depends_on a stem that does not
+# exist in this workspace.
+schema_version: 1
+name: broken-unknown-dependency
+
+stems:
+  shop-api:
+    type: process
+    description: depends on a stem that is not declared anywhere
+    codebase: ../../../repos/shop-api
+    depends_on:
+      - { stem: postgres, condition: healthy }
+    ports: [{ name: http, port: 18080 }]
+    health: { type: tcp, port: 18080, interval: 200ms }
+    scripts:
+      start: python3 app.py

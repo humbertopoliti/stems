@@ -1,0 +1,6 @@
+{
+  "code": "CODEBASE_NOT_FOUND",
+  "path": "stems.shop-api.codebase",
+  "exit": 2,
+  "message_contains": "does-not-exist"
+}

@@ -1,0 +1,21 @@
+# broken/port-conflict — two stems statically declare the same port
+# (5432). A static duplicate declaration is code PORT_CONFLICT (distinct
+# from PORT_IN_USE, which is for a live process already holding the port
+# at runtime; see REQUIREMENTS.md §7.5).
+schema_version: 1
+name: broken-port-conflict
+
+stems:
+  postgres:
+    type: docker
+    description: first stem to declare port 5432
+    image: postgres:16
+    ports: [{ name: pg, port: 5432 }]
+    health: { type: command, command: "true", interval: 200ms }
+
+  postgres-replica:
+    type: docker
+    description: second stem declaring the same port 5432
+    image: postgres:16
+    ports: [{ name: pg, port: 5432 }]
+    health: { type: command, command: "true", interval: 200ms }

@@ -1,0 +1,6 @@
+{
+  "code": "SCRIPT_NOT_FOUND",
+  "path": "stems.shop-api.scripts.start",
+  "exit": 2,
+  "message_contains": "scripts/nope.sh"
+}

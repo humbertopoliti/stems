@@ -1,0 +1,233 @@
+# stems.yaml — the hello-shop integration repo.
+#
+# This is a worked example that exercises every v1 stem type and every graph
+# feature (REQUIREMENTS.md §7.1). It is heavily commented on purpose: this
+# file is the primary documentation for the config format, alongside
+# REQUIREMENTS.md §6.6 (the sketch this was adapted from).
+#
+# NOTE (phase 0): `stems` itself does not exist yet. This workspace will not
+# validate or run until deliverables 05/06 land. See examples/README.md.
+
+schema_version: 1
+name: hello-shop
+
+# ---------------------------------------------------------------------------
+# Named variables, usable anywhere as ${var.<name>}.
+# ---------------------------------------------------------------------------
+vars:
+  pg_user: shop
+
+# ---------------------------------------------------------------------------
+# Tool requirements checked by `stems doctor` / `stems validate`.
+# We deliberately do NOT require docker or node here: CI machines without
+# Docker must still be able to validate this workspace (see DECISIONS.md).
+# ---------------------------------------------------------------------------
+requires:
+  python3: ">=3.9"
+
+# ---------------------------------------------------------------------------
+# Agent / MCP interface guard (FR-AI-3). Destructive MCP operations
+# (down --volumes, reset, killing orphans) are refused unless this is true
+# or the caller passes confirm: true AND this is enabled.
+# ---------------------------------------------------------------------------
+agent:
+  allow_destructive: false
+
+# ---------------------------------------------------------------------------
+# Named subsets of stems (FR-WS-8). `stems up --profile backend`.
+# ---------------------------------------------------------------------------
+profiles:
+  default: [postgres, redis, shop-api, shop-worker, shop-web, httpbin]
+  backend: [postgres, redis, shop-api, shop-worker]
+  # process-only omits postgres/redis on purpose to demonstrate that a
+  # profile is just a *starting set*: shop-api's depends_on still names
+  # postgres and redis in the stem definitions below. Whether `up` pulls
+  # those dependencies into the closure automatically is a later
+  # deliverable's problem (profile-closure semantics); for now the
+  # depends_on edges stay declared exactly as they would in any profile.
+  process-only: [shop-api, shop-worker, shop-web]
+
+# ---------------------------------------------------------------------------
+# Workspace-level scripts. Run with `stems run --workspace <name>`.
+# ---------------------------------------------------------------------------
+scripts:
+  bootstrap: scripts/bootstrap.sh
+  teardown: scripts/teardown.sh
+  nuke-databases:
+    file: scripts/nuke.sh
+    description: Drop and recreate all local databases
+    requires: [postgres]
+
+stems:
+  # -------------------------------------------------------------------------
+  # postgres — type: docker
+  # Demonstrates: image, ports, volumes, env, command health check,
+  # `reset` and `seed`/`seed-large` scripts.
+  # -------------------------------------------------------------------------
+  postgres:
+    type: docker
+    description: Postgres 16 database backing shop-api
+    image: postgres:16
+    ports: [{ name: pg, port: 15432, container_port: 5432 }]
+    env:
+      POSTGRES_USER: "${var.pg_user}"
+      POSTGRES_PASSWORD: local
+      POSTGRES_DB: shop
+    volumes: ["hello-shop-pgdata:/var/lib/postgresql/data"]
+    health:
+      type: command
+      command: "pg_isready -U ${var.pg_user}"
+      interval: 400ms
+      timeout: 300ms
+      retries: 5
+      start_period: 1s
+    stop_grace: 2s
+    scripts:
+      reset: docker volume rm hello-shop-pgdata
+      seed:
+        file: scripts/postgres/seed.sh
+        description: Apply migrations and insert a handful of sample rows
+      seed-large:
+        file: scripts/postgres/seed-large.sh
+        description: Load a large synthetic dataset for perf testing
+        args: [{ name: rows, type: int, default: 1000000 }]
+
+  # -------------------------------------------------------------------------
+  # redis — type: compose
+  # Demonstrates: wrapping an existing docker-compose file.
+  # -------------------------------------------------------------------------
+  redis:
+    type: compose
+    description: Redis 7, used as shop-worker's queue and shop-api's cache
+    file: compose/redis.yml
+    service: redis
+    project_name: hello-shop
+    ports: [{ name: redis, port: 16379, container_port: 6379 }]
+    health:
+      type: command
+      command: "redis-cli -p 16379 ping"
+      interval: 400ms
+      timeout: 300ms
+      retries: 5
+      start_period: 1s
+    stop_grace: 2s
+
+  # -------------------------------------------------------------------------
+  # shop-api — type: process
+  # Demonstrates: git-free local codebase path, `setup` with stamps and
+  # `inputs`, env files, an overlay, http health, a watchdog restart, custom
+  # scripts with args, depends_on postgres (healthy) + redis (healthy).
+  # -------------------------------------------------------------------------
+  shop-api:
+    type: process
+    description: Python stdlib HTTP service (products, users, chaos endpoints)
+    codebase: ../../repos/shop-api
+    depends_on:
+      - { stem: postgres, condition: healthy }
+      - { stem: redis, condition: healthy }
+    env_files: [env/shop-api.env]
+    env:
+      PORT: "18080"
+      HOST: "0.0.0.0"
+      DATABASE_URL: "postgres://${var.pg_user}:local@localhost:${stem.postgres.port}/shop"
+      REDIS_URL: "redis://localhost:${stem.redis.port}"
+      SHOP_CONFIG: "${codebase}/config/local.ini"
+      SHOP_CHAOS: "1"
+    overlays:
+      - { template: overlays/shop-api/local.ini.tmpl, dest: config/local.ini }
+    ports: [{ name: http, port: 18080 }]
+    health:
+      type: http
+      url: "http://localhost:${stem.shop-api.port}/healthz"
+      interval: 400ms
+      timeout: 300ms
+      retries: 5
+      start_period: 1s
+    stop_grace: 2s
+    scripts:
+      setup:
+        file: scripts/shop-api/setup.sh
+        inputs: ["migrations/**"]
+      seed:
+        command: "echo 'shop-api seed: products are already seeded via postgres seed script, nothing to do'"
+      start: python3 app.py
+      create-test-user:
+        file: scripts/shop-api/create-test-user.sh
+        description: Create a user with a known password for manual testing
+        args:
+          - { name: email, type: string, required: true, description: "Email address of the test user" }
+          - { name: role, type: enum, values: [admin, user], default: admin, description: "Role to grant" }
+    watch:
+      - { paths: ["*.py"], action: restart, debounce: 800ms }
+
+  # -------------------------------------------------------------------------
+  # shop-worker — type: process
+  # Demonstrates: on-failure restart policy with backoff, depends on redis
+  # (healthy) + postgres (seeded), a control port for chaos commands.
+  # -------------------------------------------------------------------------
+  shop-worker:
+    type: process
+    description: Redis queue consumer with a chaos control HTTP port
+    codebase: ../../repos/shop-worker
+    depends_on:
+      - { stem: redis, condition: healthy }
+      - { stem: postgres, condition: seeded }
+    env_files: []
+    env:
+      REDIS_URL: "redis://localhost:${stem.redis.port}"
+      SHOP_QUEUE: "shop-jobs"
+      SHOP_CONTROL_PORT: "18081"
+      SHOP_CHAOS: "1"
+    ports: [{ name: control, port: 18081 }]
+    health:
+      type: tcp
+      port: 18081
+      interval: 400ms
+      timeout: 300ms
+      retries: 5
+      start_period: 1s
+    stop_grace: 2s
+    restart:
+      policy: on-failure
+      max: 5
+    scripts:
+      start: python3 worker.py
+
+  # -------------------------------------------------------------------------
+  # shop-web — type: process
+  # Demonstrates: port: auto, ${stem.shop-api.port} substitution, depends
+  # on shop-api.
+  # -------------------------------------------------------------------------
+  shop-web:
+    type: process
+    description: Static site + tiny dev server that renders the product list
+    codebase: ../../repos/shop-web
+    depends_on: [shop-api]
+    env:
+      API_URL: "http://localhost:${stem.shop-api.port}"
+    ports: [{ name: http, port: auto }]
+    health:
+      type: http
+      url: "http://localhost:${stem.shop-web.port}/"
+      interval: 400ms
+      timeout: 300ms
+      retries: 5
+      start_period: 1s
+    stop_grace: 2s
+    scripts:
+      start: python3 serve.py
+
+  # -------------------------------------------------------------------------
+  # httpbin — type: external
+  # Demonstrates: monitor-only, shows `unknown` when offline. Never started
+  # or stopped by stems.
+  # -------------------------------------------------------------------------
+  httpbin:
+    type: external
+    description: Public httpbin instance, treated as a hosted dependency
+    health:
+      type: http
+      url: "https://httpbin.org/get"
+      interval: 500ms
+      timeout: 400ms
+      retries: 3

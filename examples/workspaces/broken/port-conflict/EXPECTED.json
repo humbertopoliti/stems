@@ -1,0 +1,6 @@
+{
+  "code": "PORT_CONFLICT",
+  "path": "stems.postgres-replica.ports",
+  "exit": 2,
+  "message_contains": "5432"
+}

@@ -1,0 +1,6 @@
+{
+  "code": "UNRESOLVED_VARIABLE",
+  "path": "stems.shop-api.env.DATABASE_URL",
+  "exit": 2,
+  "message_contains": "var.nope"
+}

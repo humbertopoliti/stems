@@ -1,0 +1,6 @@
+{
+  "code": "TOOL_VERSION",
+  "path": "requires.node",
+  "exit": 2,
+  "message_contains": ">=99"
+}

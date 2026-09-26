@@ -1,0 +1,31 @@
+# stems.yaml — the smallest valid workspace: one process stem, no docker.
+# This is the fast-suite workhorse (REQUIREMENTS.md §7.1, §7.3): E2E (fast)
+# scenarios run against this workspace so they never need Docker.
+
+schema_version: 1
+name: minimal
+
+stems:
+  echo-svc:
+    type: process
+    description: shop-api run standalone with no DB, for fast tests
+    codebase: ../../repos/shop-api
+    env:
+      PORT: "18090"
+      SHOP_CHAOS: "1"
+    ports: [{ name: http, port: 18090 }]
+    health:
+      type: tcp
+      port: 18090
+      interval: 200ms
+      timeout: 150ms
+      retries: 5
+      start_period: 500ms
+    stop_grace: 2s
+    scripts:
+      start: python3 app.py
+      # Trivial custom script used by the MCP deliverable (31) to exercise
+      # a zero-arg custom script end to end.
+      ping:
+        command: "echo pong"
+        description: Prints pong

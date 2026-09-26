@@ -1,0 +1,16 @@
+# broken/tool-version — requires a tool version that cannot be satisfied.
+schema_version: 1
+name: broken-tool-version
+
+requires:
+  node: ">=99"
+
+stems:
+  shop-web:
+    type: process
+    description: workspace requires an unreasonably new node version
+    codebase: ../../../repos/shop-web
+    ports: [{ name: http, port: auto }]
+    health: { type: tcp, port: 18091, interval: 200ms }
+    scripts:
+      start: python3 serve.py

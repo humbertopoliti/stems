@@ -1,0 +1,6 @@
+{
+  "code": "SCHEMA_INVALID",
+  "path": "stems.shop-api.type",
+  "exit": 2,
+  "message_contains": "rocket"
+}

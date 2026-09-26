@@ -1,0 +1,6 @@
+{
+  "code": "UNKNOWN_DEPENDENCY",
+  "path": "stems.shop-api.depends_on",
+  "exit": 2,
+  "message_contains": "postgres"
+}

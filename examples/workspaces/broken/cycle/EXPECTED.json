@@ -1,0 +1,6 @@
+{
+  "code": "CYCLE",
+  "path": "stems.shop-api.depends_on",
+  "exit": 2,
+  "message_contains": "shop-api -> shop-worker -> shop-api"
+}

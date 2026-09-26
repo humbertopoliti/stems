@@ -1,0 +1,19 @@
+# broken/overlay-conflict — overlay dest collides with a file that is
+# already tracked (committed) inside the stem's codebase. The codebase
+# here is a tiny local "repo/" dir committed inside this broken workspace
+# directory itself, so the collision is self-contained and needs no
+# reference to examples/repos.
+schema_version: 1
+name: broken-overlay-conflict
+
+stems:
+  local-svc:
+    type: process
+    description: overlay dest collides with a tracked file in its codebase
+    codebase: repo
+    overlays:
+      - { template: overlays/local.ini.tmpl, dest: config/local.ini }
+    ports: [{ name: http, port: 18080 }]
+    health: { type: tcp, port: 18080, interval: 200ms }
+    scripts:
+      start: python3 -c "print('hi')"

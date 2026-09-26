@@ -1,0 +1,22 @@
+# broken/seeded-without-seed — a depends_on edge uses `condition: seeded`
+# on a dependency that declares no `seed` script, so the condition can
+# never be satisfied.
+schema_version: 1
+name: broken-seeded-without-seed
+
+stems:
+  postgres:
+    type: docker
+    description: has no seed script
+    image: postgres:16
+    ports: [{ name: pg, port: 15432 }]
+    health: { type: command, command: "true", interval: 200ms }
+
+  shop-worker:
+    type: process
+    description: waits on postgres being "seeded", but postgres has no seed script
+    codebase: ../../../repos/shop-worker
+    depends_on:
+      - { stem: postgres, condition: seeded }
+    scripts:
+      start: python3 worker.py

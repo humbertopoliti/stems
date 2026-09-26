@@ -1,0 +1,6 @@
+{
+  "code": "OVERLAY_CONFLICT",
+  "path": "stems.local-svc.overlays",
+  "exit": 2,
+  "message_contains": "config/local.ini"
+}

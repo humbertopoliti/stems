@@ -1,0 +1,19 @@
+# broken/unresolved-variable — references ${var.nope}, which is never
+# declared under vars:.
+schema_version: 1
+name: broken-unresolved-variable
+
+vars:
+  pg_user: shop
+
+stems:
+  shop-api:
+    type: process
+    description: env references an undeclared variable
+    codebase: ../../../repos/shop-api
+    env:
+      DATABASE_URL: "postgres://${var.nope}@localhost:5432/shop"
+    ports: [{ name: http, port: 18080 }]
+    health: { type: tcp, port: 18080, interval: 200ms }
+    scripts:
+      start: python3 app.py

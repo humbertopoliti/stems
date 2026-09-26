@@ -1,0 +1,13 @@
+# broken/codebase-not-found — codebase path does not exist on disk.
+schema_version: 1
+name: broken-codebase-not-found
+
+stems:
+  shop-api:
+    type: process
+    description: codebase path points nowhere
+    codebase: ../../../repos/does-not-exist
+    ports: [{ name: http, port: 18080 }]
+    health: { type: tcp, port: 18080, interval: 200ms }
+    scripts:
+      start: python3 app.py

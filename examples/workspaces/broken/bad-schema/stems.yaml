@@ -1,0 +1,14 @@
+# broken/bad-schema — a stem with an invalid `type`. Used by 06's
+# table-driven validation scenarios (see EXPECTED.json in this directory).
+schema_version: 1
+name: broken-bad-schema
+
+stems:
+  shop-api:
+    type: rocket
+    description: invalid type value, should fail schema validation
+    codebase: ../../../repos/shop-api
+    ports: [{ name: http, port: 18080 }]
+    health: { type: tcp, port: 18080, interval: 200ms }
+    scripts:
+      start: python3 app.py

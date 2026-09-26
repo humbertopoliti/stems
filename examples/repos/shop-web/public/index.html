@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Shop</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; }
+    li { padding: .25rem 0; }
+    .muted { color: #666; }
+    .error { color: #b00020; }
+  </style>
+</head>
+<body>
+  <h1>Shop</h1>
+  <p class="muted">Products from <code id="api"></code></p>
+  <ul id="products"><li class="muted">Loading...</li></ul>
+  <script>
+    // Replaced by serve.py at request time with the API_URL environment variable.
+    const API_URL = "__API_URL__";
+    document.getElementById("api").textContent = API_URL;
+    const list = document.getElementById("products");
+    fetch(API_URL + "/products")
+      .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(items => {
+        list.replaceChildren(...items.map(p => {
+          const li = document.createElement("li");
+          li.textContent = p.name + " - " + (p.price_cents / 100).toFixed(2);
+          return li;
+        }));
+      })
+      .catch(err => {
+        const li = document.createElement("li");
+        li.className = "error";
+        li.textContent = "Could not load products: " + err.message;
+        list.replaceChildren(li);
+      });
+  </script>
+</body>
+</html>

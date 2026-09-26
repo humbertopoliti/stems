@@ -1,0 +1,6 @@
+{
+  "code": "SEEDED_WITHOUT_SEED",
+  "path": "stems.shop-worker.depends_on",
+  "exit": 2,
+  "message_contains": "postgres"
+}

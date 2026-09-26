@@ -1,0 +1,26 @@
+# broken/cycle — shop-api depends on shop-worker, which depends back on
+# shop-api. Message must name the cycle "shop-api -> shop-worker -> shop-api"
+# per REQUIREMENTS.md §7.4 example scenario.
+schema_version: 1
+name: broken-cycle
+
+stems:
+  shop-api:
+    type: process
+    description: first half of a dependency cycle
+    codebase: ../../../repos/shop-api
+    depends_on:
+      - { stem: shop-worker, condition: healthy }
+    ports: [{ name: http, port: 18080 }]
+    health: { type: tcp, port: 18080, interval: 200ms }
+    scripts:
+      start: python3 app.py
+
+  shop-worker:
+    type: process
+    description: second half of a dependency cycle
+    codebase: ../../../repos/shop-worker
+    depends_on:
+      - { stem: shop-api, condition: healthy }
+    scripts:
+      start: python3 worker.py
