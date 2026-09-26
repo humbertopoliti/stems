@@ -24,7 +24,19 @@ Options:
           Overall deadline (e.g. 90s)
 
       --fail-fast
-          Stop starting further layers after the first failure
+          Stop starting further stems after the first failure (the default)
+
+      --no-fail-fast
+          Keep starting stems that do not depend on a failed one
+
+      --max-parallel <N>
+          Stems starting concurrently
+          
+          [default: 4]
+
+      --pass-env <VAR>
+          Pass these variables of the current shell to every stem (applied last; repeat or
+          comma-separate)
 
       --no-watch
           Do not start watchdogs

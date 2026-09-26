@@ -123,13 +123,23 @@ the connection stays usable. For a stream:
 | `subscribe_events` | `{since_seq?}` | ack `{subscribed: true, last_seq}`, then `event` notifications (see below) |
 | `load_workspace` | `{path}` | `{root, name, stems: [name], sources: [path]}`; emits `workspace.loaded`; config errors are returned as the first error with all of them in `details.errors` |
 | `shutdown` | `{}` | `{stopping: true}`, then the orderly shutdown path runs |
+| `up` | `UpParams {stems?, profile?, detach?, timeout_ms?, fail_fast? (true), max_parallel? (4), pass_env? {K: V}, daemon_auto_started?}` | `UpResult {ok, requested, ready: [stem], failed: [{stem, error}], skipped: [stem]}` — long-running; progress is the event stream (see [lifecycle.md](lifecycle.md)) |
+| `down` | `DownParams {stems?, all?, timeout_ms?}` | `DownResult {ok, stopped, skipped, failed: [{stem, error}], daemon_stopping}`; with `daemon_stopping` the daemon shuts down right after replying |
+| `start` | `StartParams {stems, no_deps?, timeout_ms?}` | `UpResult`; external stems: `NOT_MANAGED` |
+| `stop` | `StopParams {stems, cascade?, timeout_ms?}` | `DownResult`; running dependants without `cascade`: `HAS_DEPENDANTS` (`details.dependants`) |
+| `restart` | `RestartParams {stems, no_deps?, build?, timeout_ms?}` | `UpResult` (ports kept); `build: true` is `NOT_IMPLEMENTED` until 16 |
+| `status` | `StatusParams {stems?, verbose?}` | `StatusResult {stems: [StemStatus], summary: {healthy, degraded, failed, stopped, unknown, starting}}` |
 | `_debug.start_raw` | `{spec: ProcessSpec}` | runtime `Handle` (only with `STEMS_DEBUG_RPC=1`) |
 | `_debug.stop_raw` | `{handle, grace_ms?}` | `"graceful" \| "killed" \| "already_dead"` |
 | `_debug.describe` | `{handle}` | `RuntimeFacts` |
 
-Reserved for later deliverables (answer `NOT_IMPLEMENTED` until then): `up`,
-`down`, `start`, `stop`, `restart`, `status` (10), `logs`, `subscribe_logs` (12),
-`run_script` (13). `Method` is an open string type: new methods never change
+`StemStatus` is `{name, type, state, glyph, reason, pid, pgid, ports: [{name,
+port, auto}], uptime_s, started_at, restarts, health, error}` plus `env` (what
+stems set for the process) with `verbose`. Semantics of the lifecycle methods:
+[lifecycle.md](lifecycle.md).
+
+Reserved for later deliverables (answer `NOT_IMPLEMENTED` until then): `logs`,
+`subscribe_logs` (12), `run_script` (13). `Method` is an open string type: new methods never change
 the frame format.
 
 `_debug.*` `handle` is either the `Handle` object returned by `start_raw` or its
@@ -170,6 +180,14 @@ consumers must ignore unknown kinds): `daemon.started`, `daemon.stopping`,
 `down.started`, `down.finished`, `script.queued`, `script.started`,
 `script.finished`, `watch.triggered`, `watch.paused`, `watch.reconfigured`,
 `config.changed`, `config.invalid`.
+
+Lifecycle payloads (deliverable 10): `stem.state` has `from`/`to`/`reason`
+and `data: {pid, error?, outcome?, exit_code?, signal?}`;
+`stem.port_allocated` `data: {name, port}`; `process.exited` (supervised
+stems) `data: {pid, code, signal}`; `up.started` `data: {requested, stems,
+layers, detach}`; `up.finished` `data: {requested, started, failed, skipped,
+ok}`; `down.started` `data: {requested, all}`; `down.finished` `data:
+{stopped, skipped, failed, daemon_stopping}`.
 
 ## Errors
 

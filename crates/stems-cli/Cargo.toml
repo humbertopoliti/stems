@@ -26,6 +26,7 @@ stems-daemon = { workspace = true }
 tokio = { workspace = true }
 futures = { workspace = true }
 nix = { workspace = true }
+libc = { workspace = true }
 chrono = { workspace = true }
 
 [dev-dependencies]

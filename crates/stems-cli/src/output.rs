@@ -7,6 +7,10 @@
 //! automation, and `-f` must be consumable line by line while it runs). A
 //! command opts in with [`CommandOutput::with_ndjson`]; on failure the
 //! envelope is printed as usual, so errors stay machine-readable.
+//!
+//! `stems up --json` (and `attach --json`) also stream NDJSON events while
+//! they run and then print the envelope as the **last line**, compact
+//! ([`CommandOutput::compact`]); a reader takes the last line as the result.
 
 use std::io::Write;
 
@@ -71,6 +75,11 @@ pub struct CommandOutput {
     /// JSON mode prints this verbatim (NDJSON lines) instead of the envelope
     /// when there are no errors (`stems events`).
     pub ndjson: Option<String>,
+    /// Exit code overriding the one derived from `errors` (`up`: 3 when
+    /// some stems failed and others are ready).
+    pub exit: Option<i32>,
+    /// Print the envelope on one line (it ends an NDJSON stream: `up --json`).
+    pub compact: bool,
 }
 
 impl CommandOutput {
@@ -118,9 +127,23 @@ impl CommandOutput {
         self
     }
 
+    /// Set an explicit exit code.
+    #[must_use]
+    pub fn with_exit(mut self, code: i32) -> Self {
+        self.exit = Some(code);
+        self
+    }
+
+    /// Print the envelope on a single line.
+    #[must_use]
+    pub fn compact(mut self) -> Self {
+        self.compact = true;
+        self
+    }
+
     /// Process exit code.
     pub fn exit_code(&self) -> i32 {
-        self.errors.exit_code()
+        self.exit.unwrap_or_else(|| self.errors.exit_code())
     }
 
     /// The JSON envelope.
@@ -168,8 +191,13 @@ pub fn render(
             let _ = stdout.flush();
         }
         Mode::Json => {
-            let text = serde_json::to_string_pretty(&out.envelope())
-                .unwrap_or_else(|e| format!("{{\"ok\":false,\"error\":\"{e}\"}}"));
+            let env = out.envelope();
+            let text = if out.compact {
+                serde_json::to_string(&env)
+            } else {
+                serde_json::to_string_pretty(&env)
+            }
+            .unwrap_or_else(|e| format!("{{\"ok\":false,\"error\":\"{e}\"}}"));
             let _ = writeln!(stdout, "{text}");
             let _ = stdout.flush();
         }

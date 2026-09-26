@@ -2,6 +2,7 @@
 //! (`Daemon::run`).
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -88,6 +89,7 @@ pub struct Daemon {
     debug: Option<DebugRpc>,
     shutdown_tx: watch::Sender<bool>,
     shutdown_by: Mutex<Option<(String, String)>>,
+    started_by_up: AtomicBool,
 }
 
 fn read<T>(l: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
@@ -132,6 +134,7 @@ impl Daemon {
             events,
             shutdown_tx: watch::Sender::new(false),
             shutdown_by: Mutex::new(None),
+            started_by_up: AtomicBool::new(false),
         })
     }
 
@@ -153,6 +156,17 @@ impl Daemon {
     /// Install the supervisor hooks (deliverable 10).
     pub fn set_supervisor(&self, hooks: Arc<dyn SupervisorHooks>) {
         *write(&self.supervisor) = Some(hooks);
+    }
+
+    /// The daemon was auto-started by `stems up` (then `down` of the last
+    /// running stem also shuts it down).
+    pub fn started_by_up(&self) -> bool {
+        self.started_by_up.load(Ordering::SeqCst)
+    }
+
+    /// Record that `stems up` auto-started this daemon.
+    pub fn set_started_by_up(&self) {
+        self.started_by_up.store(true, Ordering::SeqCst);
     }
 
     fn supervisor(&self) -> Option<Arc<dyn SupervisorHooks>> {
@@ -243,9 +257,13 @@ impl Daemon {
         Ok(out)
     }
 
-    /// Run a daemon until shutdown (see the crate docs for the lifecycle).
+    /// Run a daemon with the [`Supervisor`](crate::supervisor::Supervisor)
+    /// installed until shutdown (see the crate docs for the lifecycle).
     pub async fn run(opts: RunOptions) -> Result<(), Error> {
-        Self::run_with(opts, |_| {}).await
+        Self::run_with(opts, |d| {
+            d.set_supervisor(crate::supervisor::Supervisor::for_daemon(d));
+        })
+        .await
     }
 
     /// [`Daemon::run`] with a hook called once the daemon exists, before the

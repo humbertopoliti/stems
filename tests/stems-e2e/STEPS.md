@@ -208,7 +208,7 @@ Given the "hello-shop" workspace is up in detached mode with profile "process-on
 ```
 
 **`Given a stray process "<shell command>" is running in a new process group`**
-— `sh -c <command>` in its own process group, cwd = workspace, with
+— `sh -c <command>` (placeholders expanded) in its own process group, cwd = workspace, with
 `STEMS_HOME` set; its pgid is recorded, so if it is still alive at the end
 the After hook reports `LEAK:` (this is the selftest). Stop it explicitly
 with `When the stray processes are stopped` if the scenario needs a
@@ -262,6 +262,13 @@ When the chaos endpoint "fork?n=3" is called on "echo-svc"
 When the daemon is killed with SIGKILL
 ```
 
+**`Then the stray processes are still running`** — every stray started by
+this scenario is alive (e.g. stems did not kill a foreign process holding a
+port).
+```gherkin
+Then the stray processes are still running
+```
+
 **`When the stray processes are stopped`** — SIGKILL the process groups of
 strays started by this scenario and reap them.
 ```gherkin
@@ -287,7 +294,8 @@ Then the command fails
 ```
 
 JSON steps use the last command's stdout parsed as JSON (a single document,
-or NDJSON returned as an array). Paths are RFC 9535 JSONPath
+or NDJSON returned as an array; NDJSON whose last line is an envelope, as
+printed by `stems up --json`, parses as that envelope). Paths are RFC 9535 JSONPath
 (`serde_json_path`); quote keys with dashes: `$.data.stems['shop-api']`.
 Expected values are JSON; anything that is not valid JSON is taken as a bare
 string.
@@ -295,6 +303,12 @@ string.
 **`Then the JSON at "<jsonpath>" equals <json>`** — exactly one node, equal.
 ```gherkin
 Then the JSON at "$.data.stems['shop-web'].enabled" equals false
+```
+
+**`Then the JSON at "<jsonpath>" does not equal <json>`** — exactly one
+node, different from the value (e.g. a pid after `restart`).
+```gherkin
+Then the JSON at "$.data.stems[0].pid" does not equal ${var:pid}
 ```
 
 **`Then the JSON at "<jsonpath>" contains <json>`** — some node contains the
@@ -356,8 +370,9 @@ These steps call real commands; while the binary does not know the command
 they fail with `not implemented until deliverable NN` (`events` exists since
 08; `status` lands in 10/13).
 
-Assumed JSON shapes (align with these in 08/10/13, or extend the helpers in
-`src/world.rs`): `stems status --json` has `$.data.stems` as a map keyed by
+Assumed JSON shapes (10 settled `status` on an array of objects with `name`,
+`state` and `ports: [{name, port, auto}]`; the helpers in `src/world.rs`
+accept these alternatives): `stems status --json` has `$.data.stems` as a map keyed by
 stem name **or** an array of objects with `name`; a stem has `state` (or
 `status`) and `port` or `ports` (array of numbers/objects with `port`, or a
 map). `stems events --json --since 0` prints NDJSON events or an envelope
@@ -375,6 +390,14 @@ Then within 10s the stem "echo-svc" is "healthy"
 `stems events --json --since 0` until some event is a superset.
 ```gherkin
 Then within 5s the events stream contains {"kind": "stem.state", "stem": "echo-svc", "to": "healthy"}
+```
+
+**`Then the events stream contains <json-subset> before <json-subset>`** —
+one `stems events --json --since 0`: the first event matching the first
+subset has a lower `seq` than the first event matching the second (both
+must exist). Ordering proofs without sleeps.
+```gherkin
+Then the events stream contains {"stem": "a", "to": "healthy"} before {"stem": "b", "to": "starting"}
 ```
 
 **`Then the chaos response status is <code>`**

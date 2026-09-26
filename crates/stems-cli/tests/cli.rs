@@ -83,11 +83,11 @@ fn help_prints_normally() {
 
 #[test]
 fn stubs_are_not_implemented_with_their_deliverable() {
-    let (code, out, _) = invoke(&["status"], false, repo());
+    let (code, out, _) = invoke(&["doctor"], false, repo());
     assert_eq!(code, 1);
     let v = json(&out);
     assert_eq!(v["errors"][0]["code"], "NOT_IMPLEMENTED");
-    assert_eq!(v["errors"][0]["details"]["deliverable"], "13");
+    assert_eq!(v["errors"][0]["details"]["deliverable"], "19");
 }
 
 #[test]
@@ -117,7 +117,10 @@ fn show_one_stem_and_unknown_stem() {
     assert_eq!(code, 0);
     let v = json(&out);
     assert_eq!(v["data"]["name"], "echo-svc");
-    assert_eq!(v["data"]["defaults"]["logs.keep"], "5");
+    assert_eq!(
+        v["data"]["defaults"]["logs.keep"],
+        stems_config::defaults::LOGS_KEEP.to_string()
+    );
     let (code, out, _) = invoke(&["show", "nope"], false, ws);
     assert_eq!(code, 2);
     assert_eq!(json(&out)["errors"][0]["code"], "UNKNOWN_STEM");

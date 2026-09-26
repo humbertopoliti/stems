@@ -1,0 +1,27 @@
+# auto-port — fixture for lifecycle/auto-port.feature (FR-ST-5, FR-WS-10).
+#
+# `api` has `port: auto`: the daemon allocates a free port when it starts
+# and publishes it as ${stem.api.port}, which `web` uses in its env (the
+# loader leaves the reference in place for the daemon to fill).
+schema_version: 1
+name: auto-port
+
+stems:
+  api:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    env: { SHOP_CHAOS: "1" }
+    ports: [{ name: http, port: auto }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts: { start: python3 app.py }
+  web:
+    type: process
+    codebase: ../../../../examples/repos/shop-web
+    depends_on: [api]
+    env:
+      API_URL: "http://localhost:${stem.api.port}"
+    ports: [{ name: http, port: 18501 }]
+    health: { type: http, url: "http://localhost:${stem.web.port}/", interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts: { start: python3 serve.py }

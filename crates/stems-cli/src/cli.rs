@@ -201,7 +201,7 @@ pub enum Command {
     Stop(StopArgs),
     /// Restart stems (stop, then start).
     Restart(RestartArgs),
-    /// Open the TUI connected to the workspace daemon.
+    /// Follow the workspace daemon (plain event stream until the TUI lands).
     Attach(AttachArgs),
     /// Show the state of every stem.
     Status(StatusArgs),
@@ -334,9 +334,19 @@ pub struct UpArgs {
     /// Overall deadline (e.g. 90s).
     #[arg(long, value_name = "DURATION")]
     pub timeout: Option<String>,
-    /// Stop starting further layers after the first failure.
-    #[arg(long)]
+    /// Stop starting further stems after the first failure (the default).
+    #[arg(long, conflicts_with = "no_fail_fast")]
     pub fail_fast: bool,
+    /// Keep starting stems that do not depend on a failed one.
+    #[arg(long)]
+    pub no_fail_fast: bool,
+    /// Stems starting concurrently.
+    #[arg(long, value_name = "N", default_value_t = 4)]
+    pub max_parallel: usize,
+    /// Pass these variables of the current shell to every stem (applied
+    /// last; repeat or comma-separate).
+    #[arg(long, value_name = "VAR", value_delimiter = ',')]
+    pub pass_env: Vec<String>,
     /// Do not start watchdogs.
     #[arg(long)]
     pub no_watch: bool,
@@ -404,6 +414,9 @@ pub struct RestartArgs {
     /// Do not start unstarted dependencies.
     #[arg(long)]
     pub no_deps: bool,
+    /// Re-run the `build` script first.
+    #[arg(long)]
+    pub build: bool,
     /// Deadline (e.g. 60s).
     #[arg(long, value_name = "DURATION")]
     pub timeout: Option<String>,

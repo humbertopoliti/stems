@@ -1,0 +1,46 @@
+# process-chain — fixture for lifecycle/ordering.feature (FR-GR-2).
+#
+# Four shop-api processes in a diamond: b and c depend on a, d depends on b
+# and c. Each sleeps SHOP_SLEEP_START seconds before it listens, so the
+# `stem.state` events show that dependants start only after their
+# dependencies are healthy, and that b and c start concurrently.
+# `PORT` is set by stems from each stem's first port.
+schema_version: 1
+name: process-chain
+
+stems:
+  a:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    env: { SHOP_SLEEP_START: "0.5" }
+    ports: [{ name: http, port: 18301 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts: { start: python3 app.py }
+  b:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    depends_on: [a]
+    env: { SHOP_SLEEP_START: "0.5" }
+    ports: [{ name: http, port: 18302 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts: { start: python3 app.py }
+  c:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    depends_on: [a]
+    env: { SHOP_SLEEP_START: "0.5" }
+    ports: [{ name: http, port: 18303 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts: { start: python3 app.py }
+  d:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    depends_on: [b, c]
+    env: { SHOP_SLEEP_START: "0.5" }
+    ports: [{ name: http, port: 18304 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts: { start: python3 app.py }

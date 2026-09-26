@@ -6,6 +6,7 @@
 //! * [`events`] — the event ring + broadcast.
 //! * [`server`] — the socket server (newline-delimited JSON-RPC 2.0).
 //! * [`Daemon`] — built-in methods, the [`SupervisorHooks`] slot, [`Daemon::run`].
+//! * [`supervisor`] — `up`/`down`/`start`/`stop`/`restart`/`status` (deliverable 10).
 //! * [`spawn_detached`] / [`wait_for_socket`] — used by the CLI to auto-start.
 //!
 //! Lifecycle of [`Daemon::run`]: take the lock (reclaiming a stale one), log
@@ -23,6 +24,7 @@ pub mod logging;
 pub mod paths;
 pub mod server;
 mod spawn;
+pub mod supervisor;
 
 pub use daemon::{Daemon, NO_WORKSPACE_DIR, RunOptions};
 pub use events::{EventBus, EventDraft};
@@ -30,6 +32,7 @@ pub use handler::{Handler, RequestCtx, SupervisorHooks};
 pub use lock::{Lock, LockGuard, LockState};
 pub use paths::{DaemonPaths, default_home, resolve_home, workspace_hash, workspace_root};
 pub use spawn::{daemon_args, spawn_detached, wait_for_socket};
+pub use supervisor::Supervisor;
 
 /// Name of this crate, used to prove the workspace wiring in tests.
 pub const CRATE_NAME: &str = env!("CARGO_PKG_NAME");

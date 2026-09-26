@@ -12,13 +12,6 @@ use crate::output::CommandOutput;
 /// number (`"10"`) or `"unscheduled"`.
 pub fn target(cmd: &Command) -> (String, &'static str) {
     let (name, nn): (&str, &str) = match cmd {
-        Command::Up(_) => ("up", "10"),
-        Command::Down(_) => ("down", "10"),
-        Command::Start(_) => ("start", "10"),
-        Command::Stop(_) => ("stop", "10"),
-        Command::Restart(_) => ("restart", "10"),
-        Command::Attach(_) => ("attach", "27"),
-        Command::Status(_) => ("status", "13"),
         Command::Logs(_) => ("logs", "12"),
         Command::Metrics(_) => ("metrics", "25"),
         Command::Health(_) => ("health", "21"),
@@ -49,6 +42,13 @@ pub fn target(cmd: &Command) -> (String, &'static str) {
         Command::Mcp(_) => ("mcp", "31"),
         Command::Upgrade(_) => ("upgrade", "32"),
         Command::Init(_)
+        | Command::Up(_)
+        | Command::Down(_)
+        | Command::Start(_)
+        | Command::Stop(_)
+        | Command::Restart(_)
+        | Command::Attach(_)
+        | Command::Status(_)
         | Command::Events(_)
         | Command::Daemon(_)
         | Command::Validate(_)

@@ -67,7 +67,9 @@ pub fn split_args(line: &str) -> Result<Vec<String>, String> {
 }
 
 /// Parses command stdout as JSON: a single document, or NDJSON (one document
-/// per non-empty line) returned as an array. `None` if neither.
+/// per non-empty line) returned as an array, except that NDJSON ending with
+/// an envelope (`stems up --json`: progress events, then the result) yields
+/// that envelope. `None` if neither.
 pub fn parse_json_output(stdout: &str) -> Option<Value> {
     let trimmed = stdout.trim();
     if trimmed.is_empty() {
@@ -81,7 +83,18 @@ pub fn parse_json_output(stdout: &str) -> Option<Value> {
         .filter(|l| !l.trim().is_empty())
         .map(serde_json::from_str::<Value>)
         .collect();
-    lines.ok().map(Value::Array)
+    let mut lines = lines.ok()?;
+    // `stems up --json`: NDJSON progress events, then the envelope as the
+    // last line. The envelope is the command's result.
+    if lines.last().is_some_and(is_envelope) {
+        return lines.pop();
+    }
+    Some(Value::Array(lines))
+}
+
+/// A stems JSON envelope (`ok` + `version` + `errors`).
+pub fn is_envelope(v: &Value) -> bool {
+    v.get("ok").is_some() && v.get("version").is_some() && v.get("errors").is_some()
 }
 
 /// Parses an expected value written in a step. Valid JSON is taken as is;
@@ -174,6 +187,12 @@ mod tests {
         assert_eq!(
             parse_json_output("{\"a\":1}\n\n{\"a\":2}\n"),
             Some(json!([{"a":1},{"a":2}]))
+        );
+        assert_eq!(
+            parse_json_output(
+                "{\"seq\":1}\n{\"ok\":true,\"data\":1,\"errors\":[],\"version\":\"0\"}\n"
+            ),
+            Some(serde_json::json!({"ok": true, "data": 1, "errors": [], "version": "0"}))
         );
         assert_eq!(parse_json_output("error: nope"), None);
         assert_eq!(parse_json_output("  "), None);

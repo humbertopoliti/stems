@@ -16,6 +16,7 @@ async-trait = { workspace = true }
 chrono = { workspace = true }
 dirs = { workspace = true }
 futures = { workspace = true }
+indexmap = { workspace = true }
 libc = { workspace = true }
 nix = { workspace = true }
 serde = { workspace = true }

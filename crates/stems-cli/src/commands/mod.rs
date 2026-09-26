@@ -5,7 +5,9 @@ pub mod completions;
 pub mod daemon;
 pub mod events;
 pub mod init;
+pub mod lifecycle;
 pub mod show;
+pub mod status;
 pub mod stubs;
 pub mod validate;
 pub mod version;
@@ -66,6 +68,13 @@ pub fn dispatch(cmd: Command, ctx: &Ctx, mode: Mode, stdout: &mut dyn Write) -> 
         Command::Daemon(a) => daemon::run(ctx, &a),
         Command::Events(a) => events::run(ctx, &a, mode, stdout),
         Command::Init(a) => init::run(ctx, &a),
+        Command::Up(a) => lifecycle::up(ctx, &a, mode, stdout),
+        Command::Down(a) => lifecycle::down(ctx, &a),
+        Command::Start(a) => lifecycle::start(ctx, &a),
+        Command::Stop(a) => lifecycle::stop(ctx, &a),
+        Command::Restart(a) => lifecycle::restart(ctx, &a),
+        Command::Attach(a) => lifecycle::attach(ctx, &a, mode, stdout),
+        Command::Status(a) => status::run(ctx, &a),
         Command::Validate(a) => validate::run(ctx, &a),
         Command::Show(a) => show::run(ctx, &a),
         Command::Completions(a) => completions::run(&a),

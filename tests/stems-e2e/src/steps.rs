@@ -92,7 +92,7 @@ step!(given_workspace_up(w, m) {
 step!(given_stray_process(w, m) {
     let mut cmd = tokio::process::Command::new("sh");
     cmd.arg("-c")
-        .arg(&m[1])
+        .arg(w.expand(&m[1]))
         .current_dir(w.default_cwd())
         .env("STEMS_HOME", &w.home)
         .stdin(std::process::Stdio::null())
@@ -103,6 +103,18 @@ step!(given_stray_process(w, m) {
     let pgid = child.id().and_then(|p| i32::try_from(p).ok()).expect("stray has a pid");
     w.pgids.insert(pgid);
     w.strays.push(child);
+});
+
+step!(then_strays_running(w, m) {
+    assert!(!w.strays.is_empty(), "no stray process was started in this scenario");
+    for child in &mut w.strays {
+        let pid = child.id().and_then(|p| i32::try_from(p).ok()).unwrap_or(0);
+        let exited = child.try_wait().ok().flatten();
+        assert!(
+            exited.is_none() && procs::pid_alive(pid),
+            "stray process {pid} is not running any more ({exited:?})"
+        );
+    }
 });
 
 step!(when_strays_stopped(w, m) {
@@ -189,6 +201,18 @@ step!(then_json_equals(w, m) {
     assert!(
         got.len() == 1 && got[0] == &want,
         "JSON at {} is {} (expected {want})\n{}",
+        m[1],
+        serde_json::to_string(&got).unwrap_or_default(),
+        w.last().describe()
+    );
+});
+
+step!(then_json_not_equals(w, m) {
+    let want = expected(w, &m[2]);
+    let got = nodes(w, &m[1]);
+    assert!(
+        got.len() == 1 && got[0] != &want,
+        "JSON at {} is {} (expected exactly one node different from {want})\n{}",
         m[1],
         serde_json::to_string(&got).unwrap_or_default(),
         w.last().describe()
@@ -360,6 +384,25 @@ step!(then_within_events(w, m) {
         );
         tokio::time::sleep(POLL).await;
     }
+});
+
+step!(then_events_before(w, m) {
+    let (first, second) = (expected(w, &m[1]), expected(w, &m[2]));
+    let out = w.run("stems events --json --since 0", None, &[]).await;
+    out.guard_implemented("08");
+    let events = out.json.as_ref().map(events_of).unwrap_or_default();
+    let seq = |want: &Value| {
+        events
+            .iter()
+            .find(|e| util::is_subset(want, e))
+            .and_then(|e| e.get("seq").and_then(Value::as_u64))
+    };
+    let (a, b) = (seq(&first), seq(&second));
+    assert!(
+        matches!((a, b), (Some(a), Some(b)) if a < b),
+        "expected an event matching {first} (seq {a:?}) before one matching {second} (seq {b:?})\n{}",
+        out.describe()
+    );
 });
 
 step!(when_chaos(w, m) {
@@ -851,11 +894,19 @@ pub const STEPS: &[(&str, Step<E2eWorld>)] = &[
     ),
     (r#"^the daemon is killed with (\S+)$"#, when_daemon_killed),
     (r#"^the stray processes are stopped$"#, when_strays_stopped),
+    (
+        r#"^the stray processes are still running$"#,
+        then_strays_running,
+    ),
     // Then
     (r#"^the exit code is (\d+)$"#, then_exit_code),
     (r#"^the command succeeds$"#, then_succeeds),
     (r#"^the command fails$"#, then_fails),
     (r#"^the JSON at "([^"]+)" equals (.+)$"#, then_json_equals),
+    (
+        r#"^the JSON at "([^"]+)" does not equal (.+)$"#,
+        then_json_not_equals,
+    ),
     (
         r#"^the JSON at "([^"]+)" contains (.+)$"#,
         then_json_contains,
@@ -893,6 +944,10 @@ pub const STEPS: &[(&str, Step<E2eWorld>)] = &[
         then_within_events,
     ),
     (r#"^the chaos response status is (\d+)$"#, then_chaos_status),
+    (
+        r#"^the events stream contains (\{.*?\}) before (\{.*\})$"#,
+        then_events_before,
+    ),
     (
         r#"^no process from the workspace's process groups is alive$"#,
         then_no_process_alive,
@@ -1080,6 +1135,9 @@ mod tests {
             r#"within 2s the daemon log contains "stale lock reclaimed""#,
             r#"the JSON at "$.result.dropped_lines" is greater than 0"#,
             r#"within 3s none of the pids ${var:pids} is alive"#,
+            r#"the JSON at "$.data.stems[0].pid" does not equal ${var:pid}"#,
+            r#"the events stream contains {"stem": "a", "to": "healthy"} before {"stem": "b", "to": "starting"}"#,
+            r#"the stray processes are still running"#,
         ];
         let regexes: Vec<regex::Regex> = STEPS
             .iter()

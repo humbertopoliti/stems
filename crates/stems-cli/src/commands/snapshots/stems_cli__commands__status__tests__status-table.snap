@@ -1,0 +1,8 @@
+---
+source: crates/stems-cli/src/commands/status.rs
+expression: table(&st)
+---
+   STEM      TYPE     STATE    PID   PORTS  UPTIME
+✓  echo-svc  process  healthy  4242  18090  1m15s
+·  web       process  stopped  -     auto   -
+1 healthy, 0 degraded, 0 failed, 0 starting, 1 stopped, 0 unknown

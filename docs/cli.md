@@ -44,7 +44,7 @@ Commands:
   start        Start stems (and unstarted hard dependencies)
   stop         Stop stems
   restart      Restart stems (stop, then start)
-  attach       Open the TUI connected to the workspace daemon
+  attach       Follow the workspace daemon (plain event stream until the TUI lands)
   status       Show the state of every stem
   logs         Show or follow stem and script logs
   events       Show or follow the event stream (NDJSON with --json)
@@ -337,7 +337,19 @@ Options:
           Overall deadline (e.g. 90s)
 
       --fail-fast
-          Stop starting further layers after the first failure
+          Stop starting further stems after the first failure (the default)
+
+      --no-fail-fast
+          Keep starting stems that do not depend on a failed one
+
+      --max-parallel <N>
+          Stems starting concurrently
+          
+          [default: 4]
+
+      --pass-env <VAR>
+          Pass these variables of the current shell to every stem (applied last; repeat or
+          comma-separate)
 
       --no-watch
           Do not start watchdogs
@@ -551,6 +563,9 @@ Options:
       --no-deps
           Do not start unstarted dependencies
 
+      --build
+          Re-run the `build` script first
+
       --timeout <DURATION>
           Deadline (e.g. 60s)
 
@@ -589,7 +604,7 @@ Global options:
 ### `stems attach`
 
 ```text
-Open the TUI connected to the workspace daemon
+Follow the workspace daemon (plain event stream until the TUI lands)
 
 Usage: stems attach [OPTIONS]
 

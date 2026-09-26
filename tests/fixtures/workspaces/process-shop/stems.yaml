@@ -1,0 +1,41 @@
+# process-shop — the hello-shop process stems without docker/compose/external
+# (lifecycle/partial-failure.feature, lifecycle/start-stop-restart.feature).
+#
+# Layers: [shop-api, shop-worker] then [shop-web] (shop-web depends on
+# shop-api). shop-worker runs without redis (it retries) and serves its
+# chaos control port. Scenarios crash a stem at start with a local
+# override: stems.<name>.env.SHOP_CRASH_ON_START="3".
+schema_version: 1
+name: process-shop
+
+stems:
+  shop-api:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    env: { SHOP_CHAOS: "1" }
+    ports: [{ name: http, port: 18401 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_period: 300ms, start_timeout: 10s }
+    stop_grace: 1s
+    scripts: { start: python3 app.py }
+  shop-worker:
+    type: process
+    codebase: ../../../../examples/repos/shop-worker
+    env:
+      SHOP_CHAOS: "1"
+      SHOP_CONTROL_PORT: "18402"
+      REDIS_URL: "redis://127.0.0.1:1/0"
+    ports: [{ name: control, port: 18402 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    restart: { policy: never }
+    scripts: { start: python3 worker.py }
+  shop-web:
+    type: process
+    codebase: ../../../../examples/repos/shop-web
+    depends_on: [shop-api]
+    env:
+      API_URL: "http://localhost:${stem.shop-api.port}"
+    ports: [{ name: http, port: 18403 }]
+    health: { type: http, url: "http://localhost:${stem.shop-web.port}/", interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts: { start: python3 serve.py }

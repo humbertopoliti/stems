@@ -21,6 +21,12 @@ use stems_core::{Error, ErrorCode};
 
 #[cfg(feature = "client")]
 pub mod client;
+pub mod lifecycle;
+
+pub use lifecycle::{
+    DownParams, DownResult, PortStatus, RestartParams, StartParams, StatusParams, StatusResult,
+    StatusSummary, StemFailure, StemStatus, StopParams, UpParams, UpResult,
+};
 
 /// Version of the wire protocol. Bumped on any incompatible change.
 pub const API_VERSION: u32 = 1;
@@ -120,19 +126,20 @@ string_newtype! {
         LOAD_WORKSPACE = "load_workspace";
         /// [`DaemonStatus`].
         DAEMON_STATUS = "daemon_status";
-        // --- reserved for later deliverables ---------------------------------
-        /// Reserved (10).
+        // --- lifecycle (10) ------------------------------------------------------
+        /// Bring stems up ([`UpParams`] -> [`UpResult`]); long-running.
         UP = "up";
-        /// Reserved (10).
+        /// Stop stems ([`DownParams`] -> [`DownResult`]).
         DOWN = "down";
-        /// Reserved (10).
+        /// Start stems and their dependencies ([`StartParams`] -> [`UpResult`]).
         START = "start";
-        /// Reserved (10).
+        /// Stop stems ([`StopParams`] -> [`DownResult`]).
         STOP = "stop";
-        /// Reserved (10).
+        /// Stop then start, keeping ports ([`RestartParams`] -> [`UpResult`]).
         RESTART = "restart";
-        /// Reserved (10).
+        /// Per-stem state ([`StatusParams`] -> [`StatusResult`]).
         STATUS = "status";
+        // --- reserved for later deliverables ---------------------------------
         /// Reserved (12).
         LOGS = "logs";
         /// Reserved (12): streaming, like `subscribe_events`, with `log` notifications.

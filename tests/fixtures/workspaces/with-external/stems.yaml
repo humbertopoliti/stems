@@ -1,0 +1,17 @@
+# with-external — fixture for lifecycle/external.feature: one process stem
+# and one external stem. stems never starts or stops `hosted`; without a
+# health probe (21) its state is `unknown`. Deliverable 13 extends this.
+schema_version: 1
+name: with-external
+
+stems:
+  api:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    ports: [{ name: http, port: 18601 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts: { start: python3 app.py }
+  hosted:
+    type: external
+    description: A hosted dependency stems only monitors
