@@ -1,137 +1,193 @@
 # stems examples
 
-> **Phase 0 banner:** `stems` itself does not exist yet — this deliverable
-> (03) ships the config format and fixtures ahead of the tool. None of the
-> commands below will actually run until deliverables 05 (config loading)
-> and 06 (validation) land, and `stems up` needs the daemon/supervisor
-> work in later phases. The YAML and scripts here are real and
-> hand-checked, but treat every `stems ...` invocation below as a preview
-> of the intended UX, not something you can run today.
-
 This folder is both a worked example for new users and the fixture set the
 test suite validates against (REQUIREMENTS.md §7.1).
 
 ```
 examples/
   repos/            # stand-in code repositories (never modified by stems)
+    shop-api/       # Python stdlib HTTP service with /__chaos/* endpoints
+    shop-web/       # static site + tiny dev server
+    shop-worker/    # queue consumer with a chaos control port
   workspaces/
-    hello-shop/     # the full example: every stem type, every graph feature
-    minimal/        # smallest valid workspace, used by the fast E2E suite
+    minimal/        # one process stem; the smallest valid workspace
+    shop-lite/      # api + web + worker, no containers  ← start here without Docker
+    hello-shop/     # the full example: docker, compose, external, every feature
     broken/         # one deliberately invalid workspace per error class
 ```
 
-## Walkthrough: clone to `stems up`
+Only Python 3 is needed for `minimal` and `shop-lite`. `hello-shop` also
+needs Docker (Docker Desktop, Colima or OrbStack) with the compose v2 plugin.
+
+## 0. Build the binary
+
+There is no published release yet, so build from source (Rust 1.96):
 
 ```sh
-# 1. Install stems (once it ships)
-brew install <org>/tap/stems
-
-# 2. Clone this repo and go to the example integration repo
-git clone <this-repo>
-cd stems/examples/workspaces/hello-shop
-
-# 3. (optional) copy the local override template and edit it
-cp stems.local.yaml.example stems.local.yaml
-
-# 4. Bring the whole workspace up, attached, with a live TUI
-stems up
-
-# Or bring up just the process stems + their declared deps, detached:
-stems up --profile backend --detach
-stems attach
-
-# 5. Poke around
-stems status --json
-stems logs shop-api -f
-stems graph
-
-# 6. Run a custom script
-stems run shop-api create-test-user -- --email test@example.com --role admin
-
-# 7. Tear everything down
-stems down
+git clone <this-repo> && cd stems
+cargo build --release -p stems-cli
+export PATH="$PWD/target/release:$PATH"   # or copy target/release/stems somewhere on PATH
+stems --version
 ```
 
-## Per-stem "what it demonstrates" table
+## 1. Ten-minute tour with `shop-lite` (no Docker)
+
+```sh
+cd examples/workspaces/shop-lite
+stems validate           # schema, paths, cycles, ports; prints the start order
+stems doctor             # tools, ports, codebases, scripts, orphans
+stems up                 # starts api + worker, then web; opens the dashboard
+```
+
+The dashboard is a full-screen TUI. Useful keys: `Tab` cycles Graph → Table →
+Detail → Logs → Events, `j/k` move, `Enter` opens the detail of a stem,
+`:` opens the script menu, `Ctrl-P` is a command palette, `?` shows all keys,
+`q` asks whether to stop everything, detach, or cancel. Choose **d** to detach
+and keep things running; the commands below assume the daemon is still up
+(or use `stems up --detach` from the start).
+
+```sh
+stems status                      # table with glyphs, pids, ports, uptime, restarts
+stems status --json               # the same data for scripts and agents
+stems graph --edges               # dependency graph with live status
+stems logs shop-api -f            # follow one stem; Ctrl-C to stop
+stems logs -f                     # all stems interleaved
+stems logs shop-api --level error --since 5m
+stems metrics                     # CPU, memory, children, sparklines
+stems health shop-api             # last probe results with latency
+stems events -f --json            # NDJSON event stream, the hook for automation
+
+# run a custom script declared in stems.yaml (arguments are validated)
+stems run shop-api create-test-user -- --email a@b.c --role admin
+stems logs shop-api --script create-test-user
+
+# see the overlay stems rendered into the code repo (removed again on down)
+stems overlays
+cat ../../repos/shop-api/config/local.ini
+```
+
+### Break things on purpose
+
+`shop-api` and `shop-worker` expose chaos endpoints because the workspace sets
+`SHOP_CHAOS=1`. Ports are the declared ones (18080 for the api, 18081 for the
+worker's control port); `shop-web` gets a free port shown in `stems status`.
+
+```sh
+curl "localhost:18080/__chaos/unhealthy?for=5s"   # /healthz returns 503 → ✗ unhealthy, then ✓ again
+curl "localhost:18081/__chaos/crash?code=3"       # worker exits 3 → restarted with backoff (see RESTARTS)
+curl "localhost:18080/__chaos/fork?n=3"           # child processes → shown in `stems metrics` CHILDREN
+curl "localhost:18080/__chaos/logs?n=200&level=error"
+curl "localhost:18080/__chaos/alloc?mb=200"       # memory grows in `stems metrics`; alloc?mb=0 frees it
+curl "localhost:18080/__chaos/spin?ms=3000"       # CPU spike
+curl "localhost:18080/__chaos/hang-on-stop"       # ignores SIGTERM → SIGKILL after stop_grace on down
+touch ../../repos/shop-api/app.py                  # watchdog restarts shop-api (see `stems events`)
+stems watch pause shop-api                        # ...and stop it doing that
+```
+
+Kill the daemon to see crash recovery:
+
+```sh
+kill -9 "$(stems daemon status --json | python3 -c 'import json,sys;print(json.load(sys.stdin)["data"]["pid"])')"
+stems status          # DAEMON_NOT_RUNNING, with a hint that stems are still alive
+stems up --detach     # adopts the running processes (events show stem.adopted), nothing started twice
+stems down            # cleans everything up, including the overlay
+```
+
+### Change config while running
+
+```sh
+stems config set stems.shop-api.env.GREETING hello   # writes stems.local.yaml, keeps comments
+stems config diff                                    # shop-api: restart_required (env)
+stems config apply --yes                             # restarts only shop-api
+stems config unset stems.shop-api.env.GREETING
+```
+
+### Tear down
+
+```sh
+stems down            # stops everything in reverse order, removes overlays, stops the daemon
+stems doctor          # confirms nothing is left behind
+```
+
+## 2. `minimal`: one stem
+
+```sh
+cd examples/workspaces/minimal
+stems up --detach && stems status && stems run echo-svc ping && stems down --all
+```
+
+Used by the fast test suite; a good template for your own first workspace
+(`stems init --from minimal` scaffolds it into a new directory).
+
+## 3. `hello-shop`: the full example (needs Docker)
+
+Adds `postgres` (docker stem: image, volume, command health check, seed
+scripts), `redis` (compose stem wrapping `compose/redis.yml`) and `httpbin`
+(external stem: monitored, never started). Both process stems depend on the
+containers, so nothing starts without Docker; `stems validate` still works and
+`stems doctor` tells you what is missing.
+
+```sh
+cd examples/workspaces/hello-shop
+cp stems.local.yaml.example stems.local.yaml    # optional per-developer overrides
+stems doctor
+stems up --profile backend --detach             # postgres, redis, shop-api, shop-worker
+stems up                                        # everything, attached
+stems run postgres seed-large -- --rows 100000
+stems down --volumes --yes                      # also removes the hello-shop_pgdata volume
+```
 
 | Stem | Type | Demonstrates |
 |---|---|---|
 | `postgres` | docker | image, ports, volumes, env, `command` health check, `reset` and `seed`/`seed-large` scripts |
 | `redis` | compose | wrapping an existing `compose/redis.yml` file |
-| `shop-api` | process | local (git-free) codebase path, `setup` with stamps and `inputs`, `env_files`, an overlay, `http` health, a watchdog restart, custom scripts with args (`create-test-user`), depends on postgres (healthy) + redis (healthy) |
+| `shop-api` | process | `setup` with stamps and `inputs`, `env_files`, an overlay, `http` health, a watchdog restart, custom scripts with args, depends on postgres + redis |
 | `shop-worker` | process | `on-failure` restart policy with backoff, depends on redis (healthy) + postgres (seeded), a chaos control HTTP port |
 | `shop-web` | process | `port: auto`, `${stem.shop-api.port}` substitution, depends on shop-api |
-| `httpbin` | external | monitor-only; shows `unknown` when offline, never started or stopped by stems |
+| `httpbin` | external | monitor-only; `unknown` when unreachable, never started or stopped |
 
-### Docker and compose stems (`[postgres]`, `[redis]`)
+The docker and compose paths were developed on a machine without Docker and are
+verified by the `@docker` scenarios (`make e2e-docker`); see `docs/docker.md`
+and `docs/compose.md` for the verification checklist.
 
-`postgres` (docker, deliverable 14) and `redis` (compose, deliverable 15)
-are **implemented, verified on Linux CI only**: the development machine
-has no Docker, so the `@docker` scenarios (`make e2e-docker`) and the
-checklists in `docs/docker.md` / `docs/compose.md` are the verification
-path. What to expect:
+### Git codebases
 
-- `stems up postgres` runs the container `hello-shop-postgres` (labels
-  `stems.workspace=hello-shop`, `stems.stem=postgres`) on host port 15432,
-  with the named volume `hello-shop_pgdata` (the config's
-  `hello-shop-pgdata`, prefixed `<ws>_` without doubling the name).
-- `stems up redis` runs `docker compose -f compose/redis.yml -p hello-shop
-  up -d --no-deps redis`; the stem passes `REDIS_PORT` so a port override
-  in `stems.local.yaml` reaches the compose file.
-- `stems down` removes both containers and keeps the volume;
-  `stems down --volumes --yes` also deletes `hello-shop_pgdata`.
-- Without Docker, `stems up postgres` fails fast with `DOCKER_UNAVAILABLE`
-  (hint "start Docker Desktop") before anything starts; a selection
-  whose closure has no docker/compose stem never contacts Docker.
-
-### Codebases from git (alternative)
-
-Every example stem uses a local path (`codebase: ../../repos/shop-api`), so
-the examples work offline. A codebase can instead be a git repository that
-stems clones into `.stems/repos/<stem>` on the first `up` and keeps at a ref
-with `stems repos sync` (see `docs/repos.md`):
+Instead of a relative path, a stem's `codebase` can be a git URL; stems clones
+it under `.stems/repos/<stem>` on first `up` and never touches a dirty tree:
 
 ```yaml
-stems:
   shop-api:
     codebase: { git: git@github.com:acme/shop-api.git, ref: main }
 ```
 
-A developer who already has it checked out points at their copy in
-`stems.local.yaml` (`stems: { shop-api: { codebase: ~/work/shop-api } }`),
-which replaces the git form entirely.
+`stems repos status` / `stems repos sync` manage the checkouts, and a
+developer can repoint a stem at a local checkout in `stems.local.yaml`.
 
-The `minimal` workspace is a single `echo-svc` process stem (shop-api run
-standalone, no DB) with a 200 ms `tcp` health check — the workhorse for the
-fast E2E suite, and small enough to read in one sitting.
+## 4. `broken/*`: the error catalogue
 
-The `broken/*` workspaces are intentionally invalid, one error class per
-directory, each with an `EXPECTED.json` describing the error `code`,
-config `path`, exit code and a `message_contains` substring (see
-REQUIREMENTS.md §7.4/§7.5). They are the table-driven fixtures for 06's
-validation scenarios, not something you should try to bring up.
-
-## Chaos by hand
-
-With `SHOP_CHAOS=1` (set in `stems.yaml` for `shop-api` and `shop-worker`),
-the example services expose control endpoints so you can provoke failure
-modes yourself, without waiting for a test suite:
+Each directory has a `stems.yaml` with exactly one problem and an
+`EXPECTED.json` naming the error code. Try them:
 
 ```sh
-# shop-api, once it is up on its declared port (18080 in hello-shop):
-curl "http://localhost:18080/__chaos/crash?code=3"          # exits with code 3
-curl "http://localhost:18080/__chaos/unhealthy?for=5s"       # /healthz -> 503 for 5s
-curl "http://localhost:18080/__chaos/hang-on-stop"           # ignores SIGTERM
-curl "http://localhost:18080/__chaos/fork?n=3"               # spawns 3 children
-curl "http://localhost:18080/__chaos/logs?n=1000&level=error" # emits 1000 error lines
-curl "http://localhost:18080/__chaos/alloc?mb=300"           # allocates 300MB
-curl "http://localhost:18080/__chaos/touch?file=src/x.py"    # touches a watched file
-curl "http://localhost:18080/__chaos/spin?ms=3000"           # busy-loops one core
-
-# Env-driven, set before starting the stem:
-SHOP_SLEEP_START=20      # delay before binding the port
-SHOP_CRASH_ON_START=3    # exit immediately with this code on boot
+cd examples/workspaces/broken/cycle && stems validate; echo "exit $?"
+cd ../port-conflict && stems validate --json | python3 -m json.tool
 ```
 
-See REQUIREMENTS.md §7.2 for the full table and what each endpoint is used
-to verify.
+## 5. Agents: the MCP server
+
+```sh
+stems mcp --workspace examples/workspaces/shop-lite --auto-start
+```
+
+Point Claude Code, Cursor or any MCP client at it (`docs/mcp.md` has the
+config snippet). Every command above is a tool; custom scripts become tools
+automatically; destructive tools need `confirm: true` and
+`agent.allow_destructive: true` in `stems.yaml`.
+
+## Where state lives
+
+Nothing is written into `examples/repos` except declared overlays. The daemon
+socket, lock, `state.json`, logs and metrics live under
+`~/Library/Application Support/stems/<workspace-hash>/` (macOS) or
+`$XDG_STATE_HOME/stems/…` (Linux); `STEMS_HOME` overrides it. `stems doctor`
+finds and fixes stale files there.

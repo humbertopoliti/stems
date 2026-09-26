@@ -1,0 +1,10 @@
+; overlays/shop-api/local.ini.tmpl
+;
+; Rendered by stems into shop-api's codebase at config/local.ini before the
+; stem starts, and removed again on `stems down`. The code repo is never
+; modified permanently. shop-api logs this file's contents at startup.
+[server]
+port = ${stem.self.port}
+
+[features]
+chaos = true

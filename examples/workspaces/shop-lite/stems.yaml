@@ -1,0 +1,70 @@
+# yaml-language-server: $schema=../../../schema/stems.schema.json
+#
+# shop-lite: the hello-shop services WITHOUT containers, so it runs anywhere
+# Python 3 is installed. Use this to try stems when you have no Docker.
+# For the full example (postgres in docker, redis via compose) see ../hello-shop.
+schema_version: 1
+name: shop-lite
+
+vars:
+  api_port: "18080"
+
+profiles:
+  default: [shop-api, shop-web, shop-worker]
+  api-only: [shop-api]
+
+stems:
+  shop-api:
+    type: process
+    description: Python stdlib HTTP service (products, users, chaos endpoints)
+    codebase: ../../repos/shop-api
+    env:
+      PORT: "${var.api_port}"
+      SHOP_CHAOS: "1"                       # enables /__chaos/* so you can break it on purpose
+      SHOP_CONFIG: "${codebase}/config/local.ini"
+    ports: [{ name: http, port: 18080 }]
+    health: { type: http, url: "http://localhost:${stem.self.port}/healthz", interval: 500ms, timeout: 400ms, retries: 3 }
+    stop_grace: 2s
+    overlays:
+      # rendered from a template in THIS repo into the code repo at start, removed on down
+      - { template: overlays/shop-api/local.ini.tmpl, dest: config/local.ini }
+    watch:
+      # edit examples/repos/shop-api/app.py and watch the stem restart
+      - { paths: ["*.py"], action: restart, debounce: 800ms }
+    restart: { policy: on-failure, max: 3 }
+    scripts:
+      start: python3 app.py
+      create-test-user:
+        file: scripts/shop-api/create-test-user.sh
+        description: Create a user with a known password for manual testing
+        args:
+          - { name: email, type: string, required: true, description: "Email address of the test user" }
+          - { name: role, type: enum, values: [admin, user], default: admin, description: "Role to grant" }
+
+  shop-web:
+    type: process
+    description: Static site + tiny dev server that renders the product list
+    codebase: ../../repos/shop-web
+    depends_on: [{ stem: shop-api, condition: healthy, protocol: http }]
+    env:
+      API_URL: "http://localhost:${stem.shop-api.port}"
+    ports: [{ name: http, port: auto }]     # pick a free port; see it in `stems status`
+    health: { type: http, url: "http://localhost:${stem.self.port}/", interval: 500ms, timeout: 400ms, retries: 3 }
+    stop_grace: 2s
+    scripts:
+      start: python3 serve.py
+
+  shop-worker:
+    type: process
+    description: Queue consumer; without redis it just retries and heartbeats, but its chaos port lets you crash it
+    codebase: ../../repos/shop-worker
+    env:
+      SHOP_CHAOS: "1"
+      SHOP_CONTROL_PORT: "18081"
+      REDIS_URL: "redis://localhost:16379"  # nothing listens here in shop-lite; the worker logs WARN and retries
+    ports: [{ name: control, port: 18081 }]
+    health: { type: tcp, port: 18081, interval: 500ms, timeout: 400ms, retries: 3 }
+    stop_grace: 2s
+    restart: { policy: on-failure, max: 5, backoff: { initial: 500ms, max: 5s, factor: 2 } }
+    scripts:
+      start: python3 worker.py
