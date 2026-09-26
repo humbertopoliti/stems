@@ -214,6 +214,59 @@ impl StringOrList {
 }
 
 // ---------------------------------------------------------------------------
+// Tool requirements
+// ---------------------------------------------------------------------------
+
+/// A `requires:` entry: a version range for a known tool (`node: ">=20"`), or
+/// a range plus the command that prints the version and an optional regex
+/// whose first capture group (else whole match) is the version.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum Requirement {
+    /// `">=20"`, `"^1.2"`, `">=1 <2"`.
+    Version(String),
+    /// `{ version, command, regex }`.
+    Custom(RequirementSpec),
+}
+
+/// Long form of a [`Requirement`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RequirementSpec {
+    /// Version range, e.g. `">=1.2 <2"`.
+    pub version: String,
+    /// Shell command printing the version; default `<tool> --version`.
+    pub command: Option<String>,
+    /// Regex extracting the version from the command output (first capture
+    /// group, else the whole match); default: the first `N[.N[.N]]` number.
+    pub regex: Option<String>,
+}
+
+impl Requirement {
+    /// The version range.
+    pub fn version(&self) -> &str {
+        match self {
+            Self::Version(v) => v,
+            Self::Custom(s) => &s.version,
+        }
+    }
+    /// Custom version command, if any.
+    pub fn command(&self) -> Option<&str> {
+        match self {
+            Self::Version(_) => None,
+            Self::Custom(s) => s.command.as_deref(),
+        }
+    }
+    /// Custom extraction regex, if any.
+    pub fn regex(&self) -> Option<&str> {
+        match self {
+            Self::Version(_) => None,
+            Self::Custom(s) => s.regex.as_deref(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // File modes
 // ---------------------------------------------------------------------------
 

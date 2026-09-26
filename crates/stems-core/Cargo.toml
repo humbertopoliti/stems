@@ -8,4 +8,14 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+petgraph = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 stems-config = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }
+serde.workspace = true
+tempfile = { workspace = true }

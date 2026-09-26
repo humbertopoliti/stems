@@ -10,8 +10,8 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::types::{
-    ArgType, ByteSize, Condition, Dur, FileMode, HealthType, Protocol, RestartPolicy, Scalar,
-    StemType, StringOrList, WatchAction, WatchRoot,
+    ArgType, ByteSize, Condition, Dur, FileMode, HealthType, Protocol, Requirement, RestartPolicy,
+    Scalar, StemType, StringOrList, WatchAction, WatchRoot,
 };
 
 /// Deserialize "a string, or else a `T`", giving `T`'s own error message
@@ -78,9 +78,10 @@ pub struct RawWorkspace {
     /// Environment applied to every stem (stem `env` wins).
     #[serde(default)]
     pub env: IndexMap<String, Scalar>,
-    /// Tool version requirements, e.g. `node: ">=20"`.
+    /// Tool version requirements, e.g. `node: ">=20"`, or
+    /// `mytool: { version: ">=1.2", command: "mytool -V", regex: "v([0-9.]+)" }`.
     #[serde(default)]
-    pub requires: IndexMap<String, String>,
+    pub requires: IndexMap<String, Requirement>,
     /// Named subsets of stems.
     #[serde(default)]
     pub profiles: IndexMap<String, RawProfile>,

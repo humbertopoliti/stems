@@ -1,0 +1,48 @@
+---
+source: crates/stems-core/tests/broken_examples.rs
+expression: "out.replace(&root, \"<repo>\")"
+---
+## bad-schema (exit 2)
+SCHEMA_INVALID: unknown variant `rocket`, expected one of `process`, `docker`, `compose`, `external`
+  at <repo>/examples/workspaces/broken/bad-schema/stems.yaml:8:11 (stems.shop-api.type)
+  hint: fix `stems.shop-api.type`; every field and allowed value is in schema/stems.schema.json (point your editor at it for completion)
+
+## codebase-not-found (exit 2)
+CODEBASE_NOT_FOUND: codebase of `shop-api` does not exist: <repo>/examples/repos/does-not-exist
+  at <repo>/examples/workspaces/broken/codebase-not-found/stems.yaml:9:5 (stems.shop-api.codebase)
+  hint: fix `codebase:` (relative paths start at <repo>/examples/workspaces/broken/codebase-not-found) or point it at your checkout in stems.local.yaml: `stems: { shop-api: { codebase: ~/src/shop-api } }`
+
+## cycle (exit 2)
+CYCLE: dependency cycle: shop-api -> shop-worker -> shop-api
+  at <repo>/examples/workspaces/broken/cycle/stems.yaml:13:9 (stems.shop-api.depends_on)
+  hint: remove the edge shop-worker -> shop-api or mark it `soft: true` (soft edges do not order starts)
+
+## missing-script (exit 2)
+SCRIPT_NOT_FOUND: script file `scripts/nope.sh` (stems.shop-api.scripts.start) does not exist in the integration repo
+  at <repo>/examples/workspaces/broken/missing-script/stems.yaml:15:9 (stems.shop-api.scripts.start)
+  hint: create `scripts/nope.sh` in <repo>/examples/workspaces/broken/missing-script or fix the `file:` path (it is relative to the directory of stems.yaml)
+
+## overlay-conflict (exit 2)
+OVERLAY_CONFLICT: overlay destination `config/local.ini` already exists in the codebase of `local-svc` and was not written by stems
+  at <repo>/examples/workspaces/broken/overlay-conflict/stems.yaml:15:9 (stems.local-svc.overlays)
+  hint: stems never overwrites files it did not create: remove or rename <repo>/examples/workspaces/broken/overlay-conflict/repo/config/local.ini if it is a stale copy, or choose another `dest`
+
+## port-conflict (exit 2)
+PORT_CONFLICT: port 5432 is declared by both `postgres` (stems.postgres.ports[0]) and `postgres-replica` (stems.postgres-replica.ports[0])
+  at <repo>/examples/workspaces/broken/port-conflict/stems.yaml:20:13 (stems.postgres-replica.ports)
+  hint: map a different host port for `postgres-replica` (keep `container_port`, change `port`); two stems cannot listen on the same host port
+
+## seeded-without-seed (exit 2)
+SEEDED_WITHOUT_SEED: stem `shop-worker` waits for `postgres` to be seeded, but `postgres` has no `seed` script
+  at <repo>/examples/workspaces/broken/seeded-without-seed/stems.yaml:20:9 (stems.shop-worker.depends_on)
+  hint: add a `seed` script to stems.postgres.scripts, or use `condition: healthy` on this edge
+
+## unknown-dependency (exit 2)
+UNKNOWN_DEPENDENCY: stem `shop-api` depends on `postgres`, which is not defined
+  at <repo>/examples/workspaces/broken/unknown-dependency/stems.yaml:12:9 (stems.shop-api.depends_on)
+  hint: define a stem named `postgres` under `stems:` or remove it from stems.shop-api.depends_on
+
+## unresolved-variable (exit 2)
+UNRESOLVED_VARIABLE: unresolved reference `${var.nope}`: variable `nope` is not declared
+  at <repo>/examples/workspaces/broken/unresolved-variable/stems.yaml:15:7 (stems.shop-api.env.DATABASE_URL)
+  hint: declare it under `vars:`

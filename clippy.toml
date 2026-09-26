@@ -2,3 +2,7 @@ msrv = "1.96.1"
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true
+
+# stems_core::Error (code, message, path, span, hint, details) is ~192 bytes
+# and is the Err type of the whole tool; do not box it (deliverable 06).
+large-error-threshold = 256

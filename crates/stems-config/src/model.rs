@@ -2,14 +2,15 @@
 //! substituted, paths absolute. `Option` only remains where "absent" is a
 //! meaningful state with no default.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
 use crate::types::{
-    ArgType, ByteSize, Condition, Dur, FileMode, HealthType, Protocol, RestartPolicy, Scalar,
-    StemType, WatchAction, WatchRoot,
+    ArgType, ByteSize, Condition, Dur, FileMode, HealthType, Protocol, Requirement, RestartPolicy,
+    Scalar, StemType, WatchAction, WatchRoot,
 };
 
 /// Fixed lifecycle script names for stems (FR-SC-1).
@@ -50,8 +51,8 @@ pub struct Workspace {
     pub vars: IndexMap<String, String>,
     /// Workspace-level env (already folded into each stem's `env`).
     pub env: IndexMap<String, String>,
-    /// Tool requirements.
-    pub requires: IndexMap<String, String>,
+    /// Tool requirements (checked by `validate` / `doctor`).
+    pub requires: IndexMap<String, Requirement>,
     /// Profiles.
     pub profiles: IndexMap<String, Profile>,
     /// Default profile, if any.
@@ -88,8 +89,9 @@ impl Workspace {
         self.stems.values().filter(|s| !s.enabled)
     }
 
-    /// Enabled stems in start order. Placeholder: declaration order until
-    /// deliverable 06 adds the dependency graph.
+    /// Enabled stems in declaration order. The dependency order (layers
+    /// for parallel start) is `stems_core::graph::start_order`, which this
+    /// crate cannot call.
     pub fn stems_in_order(&self) -> Vec<&Stem> {
         self.stems().collect()
     }
@@ -151,6 +153,12 @@ pub struct Stem {
     pub enabled: bool,
     /// Effective env: workspace `env` overlaid with the stem's `env`.
     pub env: IndexMap<String, String>,
+    /// The subset of `env` whose keys were set by `stems.local.yaml`
+    /// (workspace-level or this stem's `env:` there), with their effective
+    /// values. The runtime re-applies these after `env_files` so the
+    /// FR-ST-4 order holds: workspace env → stem env → env_files → local → shell.
+    #[serde(default)]
+    pub local_env: BTreeMap<String, String>,
     /// Env files (absolute), applied by the runtime after `env`.
     pub env_files: Vec<PathBuf>,
     /// Ports.

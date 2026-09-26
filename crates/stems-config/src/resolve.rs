@@ -209,6 +209,10 @@ pub(crate) fn resolve_workspace(
 
 fn resolve_script(s: &RawScript, default_cwd: &Path, p: &ConfigPath, ctx: &mut Ctx<'_>) -> Script {
     let spec = match s {
+        RawScript::Inline(c) if names_script_file(c, ctx.root) => RawScriptSpec {
+            file: Some(c.trim().to_string()),
+            ..Default::default()
+        },
         RawScript::Inline(c) => RawScriptSpec {
             command: Some(c.clone()),
             ..Default::default()
@@ -257,6 +261,14 @@ fn resolve_script(s: &RawScript, default_cwd: &Path, p: &ConfigPath, ctx: &mut C
             .as_deref()
             .map_or_else(|| default_cwd.to_path_buf(), |c| ctx.path(default_cwd, c)),
     }
+}
+
+/// A bare-string script (`seed: scripts/postgres/seed.sh`) is a file when it
+/// is a single word (no whitespace) naming an existing file relative to the
+/// integration repo; anything else is an inline shell command.
+pub(crate) fn names_script_file(s: &str, root: &Path) -> bool {
+    let t = s.trim();
+    !t.is_empty() && !t.contains(char::is_whitespace) && !t.contains('$') && root.join(t).is_file()
 }
 
 /// Fields that only apply to some stem types: (field, is set, allowed types).
@@ -504,6 +516,7 @@ fn resolve_stem(
         codebase,
         enabled: rs.enabled.unwrap_or(d::STEM_ENABLED),
         env,
+        local_env: Default::default(),
         env_files: rs
             .env_files
             .clone()
@@ -598,4 +611,61 @@ fn resolve_health(
         start_period: h.start_period.unwrap_or(d::HEALTH_START_PERIOD),
         start_timeout: h.start_timeout.unwrap_or(d::HEALTH_START_TIMEOUT),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bare_script_names_a_file_only_when_it_exists_and_has_no_spaces() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("scripts/postgres")).unwrap();
+        std::fs::write(root.join("scripts/postgres/seed.sh"), "#!/bin/sh\n").unwrap();
+        assert!(names_script_file("scripts/postgres/seed.sh", root));
+        assert!(names_script_file(" scripts/postgres/seed.sh ", root));
+        // Missing file, a command with arguments, a directory, a bare command.
+        assert!(!names_script_file("scripts/postgres/nope.sh", root));
+        assert!(!names_script_file("sh scripts/postgres/seed.sh", root));
+        assert!(!names_script_file("scripts/postgres", root));
+        assert!(!names_script_file("true", root));
+        assert!(!names_script_file("", root));
+    }
+
+    #[test]
+    fn bare_script_resolves_to_file_or_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        std::fs::create_dir_all(root.join("scripts")).unwrap();
+        std::fs::write(root.join("scripts/seed.sh"), "#!/bin/sh\n").unwrap();
+        let raw = RawWorkspace::default();
+        let mut ctx = Ctx::new(&raw, &root, None);
+        let p = ConfigPath::root().key("scripts").key("seed");
+        let file = resolve_script(
+            &RawScript::Inline("scripts/seed.sh".into()),
+            &root,
+            &p,
+            &mut ctx,
+        );
+        assert_eq!(
+            file.source,
+            ScriptSource::File(root.join("scripts/seed.sh"))
+        );
+        let cmd = resolve_script(
+            &RawScript::Inline("scripts/nope.sh".into()),
+            &root,
+            &p,
+            &mut ctx,
+        );
+        assert_eq!(cmd.source, ScriptSource::Command("scripts/nope.sh".into()));
+        let cmd = resolve_script(
+            &RawScript::Inline("python3 app.py".into()),
+            &root,
+            &p,
+            &mut ctx,
+        );
+        assert_eq!(cmd.source, ScriptSource::Command("python3 app.py".into()));
+        assert!(ctx.diagnostics.is_empty());
+    }
 }

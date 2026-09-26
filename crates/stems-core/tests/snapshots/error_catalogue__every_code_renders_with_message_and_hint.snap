@@ -1,0 +1,209 @@
+---
+source: crates/stems-core/tests/error_catalogue.rs
+expression: out
+---
+# exit 2 — the config does not match the schema (YAML syntax, unknown field, wrong type, invalid value)
+SCHEMA_INVALID: unknown variant `rocket`, expected one of `process`, `docker`, `compose`, `external`
+  at stems.yaml:8:5 (stems.shop-api.type)
+  hint: fix `stems.shop-api.type`; every field and allowed value is in schema/stems.schema.json (point your editor at it for completion)
+
+# exit 2 — `schema_version` is not supported by this stems binary
+SCHEMA_VERSION_UNSUPPORTED: schema_version 2 requires a newer stems than 0.1.0 (supported: 1)
+  at stems.yaml:1:5 (schema_version)
+  hint: upgrade stems (`brew upgrade stems`) to one that supports schema_version 2, or set `schema_version: 1`
+
+# exit 2 — no stems.yaml found (--workspace, STEMS_WORKSPACE, or walking up from the cwd)
+WORKSPACE_NOT_FOUND: no stems.yaml found in /work/app or any parent directory
+  hint: run `stems init` to create one, or pass --workspace <dir> / set STEMS_WORKSPACE
+
+# exit 2 — an `include:` or `extends:` target does not exist or cannot be read
+INCLUDE_NOT_FOUND: include `teams/payments.yaml` not found
+  at stems.yaml:6:5 (include[0])
+  hint: fix the path (it is relative to the file that names it) or create the file
+
+# exit 2 — `include:` / `extends:` files form a cycle
+INCLUDE_CYCLE: include cycle: stems.yaml -> teams/a.yaml -> stems.yaml
+  at stems.yaml:6:5 (include[0])
+  hint: remove one of the include/extends entries
+
+# exit 2 — a config file exists but cannot be read
+CONFIG_READ_FAILED: stems.local.yaml cannot be read: permission denied
+  hint: check that the file is readable by your user (permissions, not a directory)
+
+# exit 2 — the same stem is defined in two included files
+DUPLICATE_STEM: stem `payments` is defined in both teams/payments.yaml and teams/billing.yaml
+  at stems.yaml:12:5 (stems.payments)
+  hint: keep one definition; override fields from stems.local.yaml instead of redefining the stem
+
+# exit 2 — a `${var.x}` / `${stem.x…}` / `${env.X}` reference cannot be resolved
+UNRESOLVED_VARIABLE: unresolved reference `${var.nope}`: variable `nope` is not declared
+  at stems.yaml:15:5 (stems.shop-api.env.DATABASE_URL)
+  hint: declare it under `vars:`
+
+# exit 2 — a command argument, profile or script `requires` names a stem that does not exist
+UNKNOWN_STEM: profile `backend` lists `shop-apii`, which is not a stem
+  at stems.yaml:30:5 (profiles.backend[2])
+  hint: did you mean `shop-api`? otherwise remove `shop-apii` from profile `backend`
+
+# exit 2 — a `depends_on` edge names a stem that is not defined
+UNKNOWN_DEPENDENCY: stem `shop-api` depends on `postgres`, which is not defined
+  at stems.yaml:12:5 (stems.shop-api.depends_on)
+  hint: define a stem named `postgres` under `stems:` or remove it from stems.shop-api.depends_on
+
+# exit 2 — an enabled stem has a hard `depends_on` edge to a stem with `enabled: false`
+DEPENDENCY_DISABLED: stem `shop-web` needs `shop-api`, which is disabled (`enabled: false`)
+  at stems.yaml:40:5 (stems.shop-web.depends_on)
+  hint: enable `shop-api` (remove `enabled: false`, usually in stems.local.yaml), disable `shop-web` too, or mark the edge `soft: true`
+
+# exit 2 — hard `depends_on` edges form a cycle (mark one edge `soft: true` to break it)
+CYCLE: dependency cycle: shop-api -> shop-worker -> shop-api
+  at stems.yaml:13:5 (stems.shop-api.depends_on)
+  hint: remove the edge shop-worker -> shop-api or mark it `soft: true` (soft edges do not order starts)
+
+# exit 2 — a `depends_on` edge uses `condition: seeded` on a stem with no `seed` script
+SEEDED_WITHOUT_SEED: stem `shop-worker` waits for `postgres` to be seeded, but `postgres` has no `seed` script
+  at stems.yaml:20:5 (stems.shop-worker.depends_on)
+  hint: add a `seed` script to stems.postgres.scripts, or use `condition: healthy` on this edge
+
+# exit 2 — two enabled stems statically declare the same host port
+PORT_CONFLICT: port 5432 is declared by both `postgres` (stems.postgres.ports[0]) and `postgres-replica` (stems.postgres-replica.ports[0])
+  at stems.yaml:20:5 (stems.postgres-replica.ports)
+  hint: map a different host port for `postgres-replica` (keep `container_port`, change `port`); two stems cannot listen on the same host port
+
+# exit 2 — a script `file:` does not exist in the integration repo, or a named script does not exist
+SCRIPT_NOT_FOUND: script file `scripts/nope.sh` (stems.shop-api.scripts.start) does not exist in the integration repo
+  at stems.yaml:15:5 (stems.shop-api.scripts.start)
+  hint: create `scripts/nope.sh` in /work/integration or fix the `file:` path (it is relative to the directory of stems.yaml)
+
+# exit 2 — a script `file:` points outside the integration repo (`..`, absolute path or symlink)
+SCRIPT_OUTSIDE_WORKSPACE: script file `/etc/seed.sh` (stems.shop-api.scripts.seed) is outside the integration repo /work/integration
+  at stems.yaml:18:5 (stems.shop-api.scripts.seed)
+  hint: scripts live in the integration repo (FR-WS-2): move the script under it and reference it relative to stems.yaml, e.g. `file: scripts/<stem>/<name>.sh`
+
+# exit 2 — arguments passed to a script do not match its declared `args`
+SCRIPT_ARGS_INVALID: script `create-test-user` of `shop-api` requires `--email`
+  hint: pass it after `--`: `stems run shop-api create-test-user -- --email a@b.c` (see `stems run shop-api --list`)
+
+# exit 2 — a local `codebase:` path does not exist or is not a directory
+CODEBASE_NOT_FOUND: codebase of `shop-api` does not exist: /work/repos/does-not-exist
+  at stems.yaml:9:5 (stems.shop-api.codebase)
+  hint: fix `codebase:` (relative paths start at /work/integration) or point it at your checkout in stems.local.yaml: `stems: { shop-api: { codebase: ~/src/shop-api } }`
+
+# exit 2 — an overlay `dest` already exists in the codebase and was not written by stems
+OVERLAY_CONFLICT: overlay destination `config/local.ini` already exists in the codebase of `local-svc` and was not written by stems
+  at stems.yaml:15:5 (stems.local-svc.overlays)
+  hint: stems never overwrites files it did not create: remove or rename /work/repo/config/local.ini if it is a stale copy, or choose another `dest`
+
+# exit 2 — a tool listed under `requires:` is missing or its version does not satisfy the range
+TOOL_VERSION: `node` 24.6.0 does not satisfy the required range >=99
+  at stems.yaml:6:5 (requires.node)
+  hint: install node >=99 (e.g. with brew, nvm, asdf or pyenv) and make sure it is first on PATH (`node --version` printed `v24.6.0`), or relax requires.node
+
+# exit 2 — with `strict_profiles: true`, a profile omits a hard dependency of one of its stems
+PROFILE_MISSING_DEPENDENCY: profile `web-only` omits `shop-api`, a hard dependency of `shop-web`, and `strict_profiles` is on
+  at stems.yaml:33:5 (profiles.web-only)
+  hint: add `shop-api` to the profile, or set `strict_profiles: false` to pull dependencies in automatically
+
+# exit 2 — a destructive operation was requested without `--yes` / `confirm: true`
+DESTRUCTIVE_NOT_CONFIRMED: `down --volumes` deletes data and needs confirmation
+  hint: re-run with --yes (CLI) or `confirm: true` (MCP)
+
+# exit 2 — a destructive MCP operation was refused because `agent.allow_destructive` is false
+DESTRUCTIVE_NOT_ALLOWED: destructive MCP operation `reset` refused: `agent.allow_destructive` is false
+  hint: set `agent: { allow_destructive: true }` in stems.yaml (or stems.local.yaml) if agents may reset data
+
+# exit 2 — invalid command line (unknown subcommand, bad flag or argument)
+USAGE: unrecognized subcommand `upp`
+  hint: did you mean `up`? run `stems --help` for the list of commands
+
+# exit 1 — `stems init` found an existing stems.yaml
+ALREADY_INITIALISED: /work/integration already contains stems.yaml
+  hint: edit the existing stems.yaml, or run `stems init` in an empty directory
+
+# exit 1 — a declared port is already held by another process (with its pid and command)
+PORT_IN_USE: port 18080 of `shop-api` is in use by pid 4242 (python3 -m http.server 18080)
+  hint: stop that process (`kill 4242`) or change stems.shop-api.ports; `stems doctor --orphans` lists leftovers from earlier runs
+
+# exit 1 — a script exited non-zero (exit code and last 20 lines in details)
+SCRIPT_FAILED: script `seed` of `postgres` exited with status 1
+  hint: see the last lines in details, or `stems logs postgres --script seed`
+
+# exit 1 — a script's `requires:` stems are not healthy (pass `--start-deps` to start them)
+SCRIPT_REQUIRES_UNMET: workspace script `nuke-databases` requires `postgres`, which is not healthy
+  hint: start it first (`stems up postgres`) or pass --start-deps
+
+# exit 1 — a stem's `setup` script failed, so the stem was not started
+SETUP_FAILED: setup of `shop-api` failed (exit status 2); the stem was not started
+  hint: fix the script and run `stems up shop-api` again; `stems logs shop-api --script setup` shows its output
+
+# exit 1 — a stem did not become healthy within its `start_timeout`
+HEALTH_TIMEOUT: `shop-api` did not become healthy within 60s (http://localhost:18080/healthz)
+  hint: check `stems logs shop-api`; raise `health.start_timeout` if it is just slow to boot
+
+# exit 1 — a stem did not start within its timeout
+START_TIMEOUT: `postgres` did not start within 60s
+  hint: check `stems logs postgres` and `docker ps -a` for the container state
+
+# exit 1 — a stem ignored SIGTERM for `stop_grace` and was killed
+STOP_TIMEOUT_KILLED: `shop-worker` ignored SIGTERM for 2s and was killed
+  hint: handle SIGTERM in the service, or raise `stop_grace`
+
+# exit 1 — a stem crashed more than `restart.max` times within `restart.window`
+MAX_RESTARTS: `shop-worker` crashed 6 times in 10m; giving up
+  hint: check `stems logs shop-worker`, fix the crash, then `stems start shop-worker`
+
+# exit 1 — the operation does not apply to an external stem (stems never starts or stops it)
+NOT_MANAGED: `httpbin` is an external stem; stems never starts or stops it
+  hint: start it yourself; stems only monitors its health
+
+# exit 1 — the stem has running dependants (use `--cascade`)
+HAS_DEPENDANTS: cannot stop `shop-api`: `shop-web` depends on it and is running
+  hint: stop the dependants first, or pass --cascade to stop them too
+
+# exit 1 — Docker is not installed or its daemon is not reachable
+DOCKER_UNAVAILABLE: cannot reach the Docker daemon at unix:///var/run/docker.sock
+  hint: start Docker Desktop (or colima), then retry; `stems doctor` checks the connection
+
+# exit 1 — pulling a docker image failed
+IMAGE_PULL_FAILED: pulling `postgres:16` failed: manifest unknown
+  hint: check the image name and tag, and `docker login` if the registry is private
+
+# exit 1 — a `docker compose` command failed
+COMPOSE_FAILED: `docker compose -p hello-shop up -d redis` exited with status 1
+  hint: see the compose output in details; run the same command by hand to reproduce
+
+# exit 1 — a compose project with this name is already running outside stems (set `adopt: true`)
+COMPOSE_PROJECT_IN_USE: compose project `hello-shop` is already running outside stems
+  hint: stop it (`docker compose -p hello-shop down`) or set `adopt: true` on the stem to take it over
+
+# exit 1 — a git codebase needs `git`, which is not on PATH
+GIT_NOT_INSTALLED: `shop-api` has a git codebase but `git` is not on PATH
+  hint: install git (`xcode-select --install` or `brew install git`)
+
+# exit 1 — cloning or fetching a git codebase failed
+GIT_CLONE_FAILED: cloning git@github.com:acme/shop-api.git failed: permission denied (publickey)
+  hint: check your SSH key / access to the repository, then `stems repos sync shop-api`
+
+# exit 1 — another stems daemon holds this workspace's lock
+LOCK_HELD: another stems daemon (pid 777) holds the lock for this workspace
+  hint: use that daemon (`stems status`), or stop it with `stems daemon stop`
+
+# exit 1 — the command is not implemented yet in this build
+NOT_IMPLEMENTED: `stems graph` is not implemented until deliverable 23
+  hint: upgrade stems, or use a command that is available (`stems --help`)
+
+# exit 1 — an unexpected internal error (a bug: please report it)
+INTERNAL: state file has an unexpected shape
+  hint: this is a bug in stems; please report it with the command you ran
+
+# exit 3 — processes or containers from a previous run are still alive but not tracked
+ORPHANS_FOUND: 2 processes from a previous run are still alive (ports 18080, 18081)
+  hint: inspect them with `stems doctor --orphans`, then `stems doctor --orphans --yes` to kill them
+
+# exit 4 — the stems daemon for this workspace is not running
+DAEMON_NOT_RUNNING: no stems daemon is running for this workspace
+  hint: start one with `stems up` (or `stems daemon start`)
+
+# exit 4 — the running daemon is a different stems version than this client
+DAEMON_VERSION_MISMATCH: the daemon is stems 0.0.1 but this client is 0.1.0
+  hint: restart the daemon: `stems daemon stop && stems up`

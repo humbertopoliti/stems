@@ -65,8 +65,8 @@ pub const HEALTH_START_PERIOD: Dur = Dur::from_secs(0);
 /// `health.start_timeout`.
 pub const HEALTH_START_TIMEOUT: Dur = Dur::from_secs(60);
 
-/// `restart.policy`.
-pub const RESTART_POLICY: RestartPolicy = RestartPolicy::Never;
+/// `restart.policy` (plan 22: crash-looping stems restart up to `max` times).
+pub const RESTART_POLICY: RestartPolicy = RestartPolicy::OnFailure;
 /// `restart.max`.
 pub const RESTART_MAX: u32 = 5;
 /// `restart.window`.

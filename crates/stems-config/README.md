@@ -4,8 +4,8 @@ Loads a stems workspace: finds `stems.yaml`, expands `extends` / `include`,
 overlays `stems.local.yaml`, applies defaults, substitutes `${…}` references
 and returns a fully resolved `Workspace`. It also generates the JSON Schema in
 `schema/stems.schema.json`. Semantic validation (unknown dependencies, cycles,
-port conflicts, missing files) is deliverable 06; this crate only rejects what
-cannot be parsed.
+port conflicts, missing files) is `stems_core::validate` (deliverable 06);
+this crate only rejects what cannot be parsed.
 
 ```rust
 let resolved = stems_config::load(stems_config::LoadOptions::from_process()?)?;
@@ -65,7 +65,10 @@ keeps `web` fully defined but disabled: `Workspace::stem("web")` returns it,
 
 Workspace-level `env` is folded into each stem's `env` (stem keys win).
 `env_files` are *not* read here: they are resolved to absolute paths and the
-runtime applies them after `env` (FR-ST-4).
+runtime applies them after `env` (FR-ST-4). Keys set by `stems.local.yaml`
+(its workspace-level `env` or the stem's `env`) are also recorded, with their
+effective values, in `Stem::local_env`, so the runtime can re-apply them after
+`env_files`: workspace env → stem env → env_files → local → shell.
 
 ## Substitution
 
@@ -108,10 +111,21 @@ source location. Loading never panics on bad references.
   checkout directory is `path` if given, else `<repos_dir>/<stem>` with
   `repos_dir` defaulting to `<workspace>/.stems/repos`. Nothing is cloned here.
 - Script `file:`, overlay `template:`/`file:`, `env_files` and compose `file:`
-  are relative to the workspace root. Process `cwd` and script `cwd` are
+  are relative to the workspace root.
+- A bare-string script (`seed: scripts/postgres/seed.sh`) is a **file** when
+  it is a single word (no whitespace, no `$`) naming an existing file relative
+  to the workspace root; otherwise it is an inline shell command
+  (`start: python3 app.py`). Use `file:` explicitly to get a validation error
+  (`SCRIPT_NOT_FOUND`) when the file is missing. Process `cwd` and script `cwd` are
   relative to the stem's codebase (else the workspace root). Docker
   `build.context` is relative to the codebase (else the workspace root),
   `build.dockerfile` relative to the context.
+
+## `requires`
+
+`requires: { node: ">=20" }` or, for tools without a built-in probe,
+`requires: { mytool: { version: ">=1.2", command: "mytool -V", regex: "v([0-9.]+)" } }`
+(`Requirement::{Version, Custom}`). Checking versions is `stems_core::validate`.
 
 ## Defaults
 

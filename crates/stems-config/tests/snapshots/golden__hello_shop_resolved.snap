@@ -51,7 +51,7 @@ workspace:
   repos_dir: <ws>/.stems/repos
   scripts:
     bootstrap:
-      command: scripts/bootstrap.sh
+      file: <ws>/scripts/bootstrap.sh
       description: null
       args: []
       inputs: []
@@ -62,7 +62,7 @@ workspace:
       stamp_env: []
       cwd: <ws>
     teardown:
-      command: scripts/teardown.sh
+      file: <ws>/scripts/teardown.sh
       description: null
       args: []
       inputs: []
@@ -104,6 +104,7 @@ workspace:
         POSTGRES_USER: shop
         POSTGRES_PASSWORD: local
         POSTGRES_DB: shop
+      local_env: {}
       env_files: []
       ports:
       - name: pg
@@ -165,7 +166,7 @@ workspace:
         start_timeout: 1m
       watch: []
       restart:
-        policy: never
+        policy: on-failure
         max: 5
         window: 10m
         backoff:
@@ -192,6 +193,7 @@ workspace:
       codebase: null
       enabled: true
       env: {}
+      local_env: {}
       env_files: []
       ports:
       - name: redis
@@ -214,7 +216,7 @@ workspace:
         start_timeout: 1m
       watch: []
       restart:
-        policy: never
+        policy: on-failure
         max: 5
         window: 10m
         backoff:
@@ -249,6 +251,7 @@ workspace:
         REDIS_URL: redis://localhost:16379
         SHOP_CONFIG: <repo>/examples/repos/shop-api/config/local.ini
         SHOP_CHAOS: '1'
+      local_env: {}
       env_files:
       - <ws>/env/shop-api.env
       ports:
@@ -354,7 +357,7 @@ workspace:
         settle: 0s
         root: codebase
       restart:
-        policy: never
+        policy: on-failure
         max: 5
         window: 10m
         backoff:
@@ -391,6 +394,7 @@ workspace:
         SHOP_QUEUE: shop-jobs
         SHOP_CONTROL_PORT: '18081'
         SHOP_CHAOS: '1'
+      local_env: {}
       env_files: []
       ports:
       - name: control
@@ -464,6 +468,7 @@ workspace:
       enabled: true
       env:
         API_URL: http://localhost:18080
+      local_env: {}
       env_files: []
       ports:
       - name: http
@@ -502,7 +507,7 @@ workspace:
         start_timeout: 1m
       watch: []
       restart:
-        policy: never
+        policy: on-failure
         max: 5
         window: 10m
         backoff:
@@ -525,6 +530,7 @@ workspace:
       codebase: null
       enabled: true
       env: {}
+      local_env: {}
       env_files: []
       ports: []
       depends_on: []
@@ -544,7 +550,7 @@ workspace:
         start_timeout: 1m
       watch: []
       restart:
-        policy: never
+        policy: on-failure
         max: 5
         window: 10m
         backoff:

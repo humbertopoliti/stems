@@ -1,0 +1,21 @@
+# two-errors — a workspace with two independent validation errors, used by
+# tests/features/validate/multiple.feature and crates/stems-core/tests:
+#   1. `api` depends on `database`, which is not defined (UNKNOWN_DEPENDENCY);
+#   2. `api` and `web` both declare host port 18100 (PORT_CONFLICT).
+# `stems validate` must report both in one run.
+schema_version: 1
+name: two-errors
+
+stems:
+  api:
+    type: process
+    description: depends on a stem that does not exist
+    command: python3 -m http.server 18100
+    depends_on: [database]
+    ports: [{ name: http, port: 18100 }]
+
+  web:
+    type: process
+    description: declares the same host port as api
+    command: python3 -m http.server 18100
+    ports: [{ name: http, port: 18100 }]

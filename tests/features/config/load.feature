@@ -1,4 +1,4 @@
-@FR-WS-1 @FR-WS-4
+@FR-WS-1 @FR-WS-4 @FR-WS-10 @FR-ST-2 @FR-ST-4 @FR-WS-3
 Feature: Loading stems.yaml with a local override
   The resolved config merges stems.local.yaml over stems.yaml, keeps stems
   disabled locally listed with enabled=false, and substitutes ${stem.<n>.port}.

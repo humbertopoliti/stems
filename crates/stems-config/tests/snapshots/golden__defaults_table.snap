@@ -37,7 +37,7 @@ stems.<n>.health.timeout                      1s
 stems.<n>.health.retries                      3
 stems.<n>.health.start_period                 0s
 stems.<n>.health.start_timeout                1m
-stems.<n>.restart.policy                      never
+stems.<n>.restart.policy                      on-failure
 stems.<n>.restart.max                         5
 stems.<n>.restart.window                      10m
 stems.<n>.restart.backoff.initial             1s

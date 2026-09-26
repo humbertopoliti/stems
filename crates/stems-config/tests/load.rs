@@ -142,6 +142,80 @@ fn local_overlay_overrides_codebase_env_and_scripts_per_key() {
 }
 
 #[test]
+fn local_env_records_keys_set_by_the_local_file() {
+    let ws = Ws::new(&[
+        (
+            "stems.yaml",
+            "env: { SHARED: base, LOG: info }\nstems:\n  api:\n    type: process\n    env: { OWN: committed, KEEP: yes }\n  db:\n    type: process\n",
+        ),
+        (
+            "stems.local.yaml",
+            "env: { LOG: debug }\nstems:\n  api:\n    env: { OWN: mine, NEW: '${var.x}' }\nvars: { x: local-var }\n",
+        ),
+    ]);
+    let w = ws.load().workspace;
+    let api = w.stem("api").unwrap();
+    let local: Vec<(&str, &str)> = api
+        .local_env
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    assert_eq!(
+        local,
+        [("LOG", "debug"), ("NEW", "local-var"), ("OWN", "mine")]
+    );
+    assert_eq!(api.env["KEEP"], "yes");
+    assert_eq!(api.env["SHARED"], "base");
+    let db = w.stem("db").unwrap();
+    assert_eq!(db.local_env.len(), 1);
+    assert_eq!(db.local_env["LOG"], "debug");
+}
+
+#[test]
+fn local_env_is_empty_without_a_local_file() {
+    let w = Ws::new(&[("stems.yaml", BASIC)]).load().workspace;
+    assert!(w.stems.values().all(|s| s.local_env.is_empty()));
+}
+
+#[test]
+fn bare_string_scripts_naming_an_existing_file_are_files() {
+    let ws = Ws::new(&[
+        (
+            "stems.yaml",
+            "scripts:\n  bootstrap: scripts/boot.sh\nstems:\n  db:\n    type: process\n    scripts:\n      seed: scripts/db/seed.sh\n      reset: scripts/db/missing.sh\n      start: sh scripts/db/seed.sh\n",
+        ),
+        ("scripts/boot.sh", "#!/bin/sh\n"),
+        ("scripts/db/seed.sh", "#!/bin/sh\n"),
+    ]);
+    let w = ws.load().workspace;
+    assert_eq!(
+        w.scripts["bootstrap"].source,
+        ScriptSource::File(ws.root.join("scripts/boot.sh"))
+    );
+    let db = w.stem("db").unwrap();
+    assert_eq!(
+        db.scripts["seed"].source,
+        ScriptSource::File(ws.root.join("scripts/db/seed.sh"))
+    );
+    assert_eq!(
+        db.scripts["reset"].source,
+        ScriptSource::Command("scripts/db/missing.sh".into())
+    );
+    assert_eq!(
+        db.scripts["start"].source,
+        ScriptSource::Command("sh scripts/db/seed.sh".into())
+    );
+}
+
+#[test]
+fn restart_defaults_to_on_failure_with_five_restarts() {
+    let w = Ws::new(&[("stems.yaml", BASIC)]).load().workspace;
+    let r = &w.stem("api").unwrap().restart;
+    assert_eq!(r.policy, stems_config::RestartPolicy::OnFailure);
+    assert_eq!(r.max, 5);
+}
+
+#[test]
 fn skip_local_ignores_the_overlay() {
     let ws = Ws::new(&[
         ("stems.yaml", BASIC),

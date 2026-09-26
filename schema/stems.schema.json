@@ -37,10 +37,10 @@
       "default": {}
     },
     "requires": {
-      "description": "Tool version requirements, e.g. `node: \">=20\"`.",
+      "description": "Tool version requirements, e.g. `node: \">=20\"`, or\n`mytool: { version: \">=1.2\", command: \"mytool -V\", regex: \"v([0-9.]+)\" }`.",
       "type": "object",
       "additionalProperties": {
-        "type": "string"
+        "$ref": "#/$defs/Requirement"
       },
       "default": {}
     },
@@ -161,6 +161,47 @@
           "description": "A string.",
           "type": "string"
         }
+      ]
+    },
+    "Requirement": {
+      "description": "A `requires:` entry: a version range for a known tool (`node: \">=20\"`), or\na range plus the command that prints the version and an optional regex\nwhose first capture group (else whole match) is the version.",
+      "anyOf": [
+        {
+          "description": "`\">=20\"`, `\"^1.2\"`, `\">=1 <2\"`.",
+          "type": "string"
+        },
+        {
+          "description": "`{ version, command, regex }`.",
+          "$ref": "#/$defs/RequirementSpec"
+        }
+      ]
+    },
+    "RequirementSpec": {
+      "description": "Long form of a [`Requirement`].",
+      "type": "object",
+      "properties": {
+        "version": {
+          "description": "Version range, e.g. `\">=1.2 <2\"`.",
+          "type": "string"
+        },
+        "command": {
+          "description": "Shell command printing the version; default `<tool> --version`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "regex": {
+          "description": "Regex extracting the version from the command output (first capture\ngroup, else the whole match); default: the first `N[.N[.N]]` number.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "version"
       ]
     },
     "Profile": {

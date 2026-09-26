@@ -1,7 +1,7 @@
 //! `stems-config`: loads `stems.yaml` (+ `extends`, `include`s and
 //! `stems.local.yaml`), merges, applies defaults, substitutes `${…}`
 //! references and produces a resolved [`Workspace`]. Also generates the JSON
-//! Schema for editors. Validation semantics live in deliverable 06.
+//! Schema for editors. Validation semantics live in `stems_core::validate`.
 //!
 //! Entry point: [`load`]. See the crate README for merge and substitution rules.
 
@@ -75,7 +75,8 @@ pub struct Resolved {
     pub workspace: Workspace,
     /// Files read, in merge order (extends base, includes, main, local).
     pub sources: Vec<PathBuf>,
-    /// Non-fatal problems (e.g. `UNRESOLVED_VARIABLE`); deliverable 06 decides severity.
+    /// Non-fatal problems (e.g. `UNRESOLVED_VARIABLE`); `stems_core::validate`
+    /// reports every one of them as an error.
     pub diagnostics: Vec<Diagnostic>,
     /// Source locations of every config path.
     pub spans: SpanIndex,
@@ -105,6 +106,7 @@ pub fn load(opts: LoadOptions) -> Result<Resolved, ConfigErrors> {
     }
     let Loader { sources, spans, .. } = loader;
     let mut merged = main.unwrap_or_else(|| Value::Mapping(Mapping::new()));
+    let local_keys = local.as_ref().map(LocalEnvKeys::of).unwrap_or_default();
     if let Some(l) = local {
         merge::merge(&mut merged, l, &ConfigPath::root());
     }
@@ -173,10 +175,11 @@ pub fn load(opts: LoadOptions) -> Result<Resolved, ConfigErrors> {
 
     let raw: RawWorkspace = serde_yaml_ng::from_value(merged).map_err(schema_err)?;
     let mut ctx = Ctx::new(&raw, &root, home);
-    let workspace =
+    let mut workspace =
         resolve_workspace(raw, &mut ctx, &config_file, vars).map_err(|errors| ConfigErrors {
             errors: errors.into_iter().map(|d| locate(d, &spans)).collect(),
         })?;
+    local_keys.apply(&mut workspace);
 
     let diagnostics = sub_diags
         .into_iter()
@@ -193,6 +196,45 @@ pub fn load(opts: LoadOptions) -> Result<Resolved, ConfigErrors> {
         spans,
         deferred,
     })
+}
+
+/// Env keys set by `stems.local.yaml`: workspace-level and per stem.
+#[derive(Default)]
+struct LocalEnvKeys {
+    workspace: Vec<String>,
+    stems: HashMap<String, Vec<String>>,
+}
+
+impl LocalEnvKeys {
+    fn of(local: &Value) -> Self {
+        let keys = |v: Option<&Value>| -> Vec<String> {
+            match v {
+                Some(Value::Mapping(m)) => m.keys().map(merge::key_string).collect(),
+                _ => Vec::new(),
+            }
+        };
+        let workspace = keys(local.get("env"));
+        let stems = match local.get("stems") {
+            Some(Value::Mapping(m)) => m
+                .iter()
+                .map(|(k, v)| (merge::key_string(k), keys(v.get("env"))))
+                .collect(),
+            _ => HashMap::new(),
+        };
+        Self { workspace, stems }
+    }
+
+    /// Fill `Stem::local_env` with the effective values of the local keys.
+    fn apply(&self, ws: &mut Workspace) {
+        for (name, stem) in &mut ws.stems {
+            let own = self.stems.get(name).map(Vec::as_slice).unwrap_or_default();
+            for key in self.workspace.iter().chain(own) {
+                if let Some(v) = stem.env.get(key) {
+                    stem.local_env.insert(key.clone(), v.clone());
+                }
+            }
+        }
+    }
 }
 
 fn locate(mut d: Diagnostic, spans: &SpanIndex) -> Diagnostic {

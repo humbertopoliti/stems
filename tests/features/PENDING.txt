@@ -14,3 +14,7 @@ tests/features/harness/smoke.feature
 
 # 05 scenarios drive `stems show`/`validate`, which land in 06/07.
 tests/features/config/
+
+# 06 delivers validation semantics (stems_core::validate); 07 adds the
+# `stems validate` command that these scenarios drive.
+tests/features/validate/
