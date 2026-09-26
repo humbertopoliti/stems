@@ -8,3 +8,21 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+cucumber = "0.23"
+futures = "0.3.34"
+nix = { version = "0.31", features = ["signal", "process", "user"] }
+regex = "1.13.1"
+serde_json.workspace = true
+serde_json_path = "0.7.2"
+serde_yaml_ng.workspace = true
+tempfile.workspace = true
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time", "io-util", "sync"] }
+
+# The cucumber suite. `test = false` keeps it out of `cargo test --workspace`
+# (it needs the `stems` binary built first); run it with `make e2e`, i.e.
+# `cargo build -p stems-cli && cargo test -p stems-e2e --test e2e`.
+[[test]]
+name = "e2e"
+path = "tests/e2e.rs"
+harness = false
+test = false

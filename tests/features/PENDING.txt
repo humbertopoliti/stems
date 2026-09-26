@@ -1,0 +1,16 @@
+# Scenarios that are expected to FAIL today (see tests/stems-e2e/src/pending.rs).
+#
+# This replaces @ignore: listed scenarios are still RUN. A failure is reported
+# as "PENDING (expected)" and does not fail `make e2e`; a PASS fails the run
+# with "remove from PENDING.txt", so this list can only shrink. A LEAK: from
+# the After hook is never excused.
+#
+# Entries: `path` (whole file), `dir/` (every feature under it) or
+# `path:LINE` (one scenario). Paths are relative to the repository root.
+# Always say which deliverable removes the entry.
+
+# 07 makes `stems --version --json` print the JSON envelope.
+tests/features/harness/smoke.feature
+
+# 05 scenarios drive `stems show`/`validate`, which land in 06/07.
+tests/features/config/

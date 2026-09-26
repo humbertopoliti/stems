@@ -26,6 +26,16 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - run: make check
+      - name: Upload e2e failure artefacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-failures-macos
+          # Failing scenarios' temp dirs (workspace copy, STEMS_HOME with
+          # daemon logs/state, harness-report.txt), copied by the harness.
+          path: target/e2e-failures/
+          if-no-files-found: ignore
+          retention-days: 7
 
   check-linux:
     runs-on: ubuntu-latest
@@ -38,6 +48,16 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - run: make check
+      - name: Upload e2e failure artefacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-failures-linux
+          # Failing scenarios' temp dirs (workspace copy, STEMS_HOME with
+          # daemon logs/state, harness-report.txt), copied by the harness.
+          path: target/e2e-failures/
+          if-no-files-found: ignore
+          retention-days: 7
 
   check-linux-docker:
     runs-on: ubuntu-latest
@@ -52,3 +72,13 @@ jobs:
       - name: Docker info
         run: docker version && docker compose version
       - run: make check-docker
+      - name: Upload e2e failure artefacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-failures-linux-docker
+          # Failing scenarios' temp dirs (workspace copy, STEMS_HOME with
+          # daemon logs/state, harness-report.txt), copied by the harness.
+          path: target/e2e-failures/
+          if-no-files-found: ignore
+          retention-days: 7

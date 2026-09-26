@@ -13,7 +13,7 @@ E2E_ENV = STEMS_E2E_FEATURE="$(FEATURE)" STEMS_E2E_TAGS="$(TAGS)"
 .PHONY: check check-docker fmt fmt-check clippy test test-python lint-yaml \
         build e2e e2e-docker e2e-selftest trace docs
 
-check: fmt-check clippy test test-python lint-yaml e2e trace
+check: fmt-check clippy test test-python lint-yaml e2e e2e-selftest trace
 
 check-docker: check e2e-docker
 
@@ -52,20 +52,34 @@ lint-yaml:
 build:
 	$(CARGO) build --workspace --release
 
-# Fast e2e tier (cucumber harness lands in deliverable 04; placeholder for now).
+# E2E tiers (deliverable 04): cucumber-rs harness in tests/stems-e2e driving
+# the real `stems` binary. Build the binary first; the harness locates it at
+# target/<profile>/stems. Scenarios listed in tests/features/PENDING.txt are
+# run and may fail ("PENDING (expected)") but must not pass.
+#   make e2e FEATURE=tests/features/foo.feature   one file or directory
+#   make e2e TAGS='@FR-LC-5 and not @slow'        a tag expression
+E2E_RUN = $(CARGO) test -p stems-e2e --test e2e --
+
+# Fast tier: everything except @docker and @harness-selftest.
 e2e:
-	$(E2E_ENV) $(CARGO) test -p stems-e2e
+	$(CARGO) build -p stems-cli
+	$(E2E_ENV) $(E2E_RUN)
 
-# Docker e2e tier (@docker scenarios; needs a Docker daemon).
+# Docker tier: also @docker scenarios (run serially; needs a Docker daemon).
 e2e-docker:
-	$(E2E_ENV) STEMS_E2E_DOCKER=1 $(CARGO) test -p stems-e2e
+	$(CARGO) build -p stems-cli
+	$(E2E_ENV) STEMS_E2E_DOCKER=1 $(E2E_RUN)
 
-# Harness self-tests (deliverable 04).
+# Harness self-test: runs only @harness-selftest and passes iff the After
+# hook reported LEAK: (it then kills the stray process itself).
 e2e-selftest:
-	$(E2E_ENV) STEMS_E2E_SELFTEST=1 $(CARGO) test -p stems-e2e
+	$(CARGO) build -p stems-cli
+	$(E2E_ENV) STEMS_E2E_SELFTEST=1 $(E2E_RUN)
 
+# Requirement traceability (REQUIREMENTS.md 7.4) plus its unit tests.
 trace:
-	$(PYTHON) scripts/trace.py
+	$(PYTHON) -m unittest discover -s scripts/tests
+	$(PYTHON) scripts/trace.py --quiet
 
 docs:
 	$(CARGO) doc --workspace --no-deps
