@@ -24,8 +24,9 @@ use tokio::sync::Mutex;
 use tokio_util::codec::{Framed, LinesCodec};
 
 use crate::{
-    API_VERSION, DaemonInfo, Event, Method, NOTIFY_EVENT, Notification, Request, RequestMeta,
-    Response, ShutdownResult, SubscribeEventsParams, VERSION, version_mismatch,
+    API_VERSION, DaemonInfo, Event, LogRecord, Method, NOTIFY_EVENT, NOTIFY_LOG, Notification,
+    Request, RequestMeta, Response, ShutdownResult, SubscribeEventsParams, SubscribeLogsParams,
+    VERSION, version_mismatch,
 };
 
 /// Env var overriding the client's reported stems version (tests only).
@@ -90,6 +91,9 @@ type Conn = Framed<UnixStream, LinesCodec>;
 
 /// A stream of events from `subscribe_events`; ends when the daemon closes it.
 pub type EventStream = Pin<Box<dyn Stream<Item = Event> + Send>>;
+
+/// A stream of log records from `subscribe_logs`; ends when the daemon closes it.
+pub type LogStream = Pin<Box<dyn Stream<Item = LogRecord> + Send>>;
 
 /// A connection to a running daemon. Calls on one client are serialised.
 pub struct Client {
@@ -263,25 +267,42 @@ impl Client {
     /// events with a greater seq are replayed first. The stream ends when the
     /// daemon shuts down (after `daemon.stopped`, best effort).
     pub async fn subscribe_events(&self, since_seq: Option<u64>) -> Result<EventStream, Error> {
+        let params = serde_json::to_value(SubscribeEventsParams { since_seq }).unwrap_or_default();
+        self.subscribe(Method::SUBSCRIBE_EVENTS, params, NOTIFY_EVENT)
+            .await
+    }
+
+    /// Subscribe to log records on a separate connection (`subscribe_logs`).
+    /// With `since`, history (ring, then files) is replayed first. The stream
+    /// ends when the daemon shuts down or closes the connection.
+    pub async fn subscribe_logs(&self, params: SubscribeLogsParams) -> Result<LogStream, Error> {
+        let params = serde_json::to_value(params).unwrap_or_default();
+        self.subscribe(Method::SUBSCRIBE_LOGS, params, NOTIFY_LOG)
+            .await
+    }
+
+    /// Open a subscription connection: send `method`, wait for the ack, then
+    /// yield the params of every `notify` notification decoded as `T`.
+    async fn subscribe<T: DeserializeOwned + Send + 'static>(
+        &self,
+        method: Method,
+        params: Value,
+        notify: &'static str,
+    ) -> Result<Pin<Box<dyn Stream<Item = T> + Send>>, Error> {
         let mut conn = open(&self.socket, self.opts.connect_timeout).await?;
-        let req = Request::new(
-            0,
-            Method::SUBSCRIBE_EVENTS,
-            serde_json::to_value(SubscribeEventsParams { since_seq }).unwrap_or_default(),
-            self.opts.meta(),
-        );
+        let req = Request::new(0, method.clone(), params, self.opts.meta());
         match tokio::time::timeout(
             self.opts.call_timeout,
             roundtrip(&mut conn, &self.socket, &req),
         )
         .await
         {
-            Err(_) => return Err(not_running(&self.socket, "`subscribe_events` timed out")),
+            Err(_) => return Err(not_running(&self.socket, format!("`{method}` timed out"))),
             Ok(r) => {
                 r?;
             }
         }
-        let s = futures::stream::unfold(conn, |mut conn| async move {
+        let s = futures::stream::unfold(conn, move |mut conn| async move {
             loop {
                 let line = match conn.next().await {
                     Some(Ok(l)) => l,
@@ -290,11 +311,11 @@ impl Client {
                 let Ok(n) = serde_json::from_str::<Notification>(&line) else {
                     continue;
                 };
-                if n.method != NOTIFY_EVENT {
+                if n.method != notify {
                     continue;
                 }
-                if let Ok(ev) = serde_json::from_value::<Event>(n.params) {
-                    return Some((ev, conn));
+                if let Ok(item) = serde_json::from_value::<T>(n.params) {
+                    return Some((item, conn));
                 }
             }
         });

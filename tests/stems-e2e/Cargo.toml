@@ -19,6 +19,10 @@ serde_yaml_ng.workspace = true
 stems-api = { workspace = true }
 stems-core = { workspace = true }
 tempfile.workspace = true
+# Log steps (12): archive contents and timestamp ordering.
+tar = { workspace = true }
+flate2 = { workspace = true }
+chrono = { workspace = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time", "io-util", "sync", "net", "signal"] }
 
 # The cucumber suite. `test = false` keeps it out of `cargo test --workspace`

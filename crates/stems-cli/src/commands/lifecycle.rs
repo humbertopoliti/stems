@@ -35,6 +35,7 @@ use crate::cli::{AttachArgs, DownArgs, RestartArgs, StartArgs, StopArgs, UpArgs}
 use crate::client::{self, Target, block_on, connect_to};
 use crate::commands::Ctx;
 use crate::commands::daemon::WAIT;
+use crate::commands::orphans;
 use crate::output::{CommandOutput, Mode};
 
 /// RPC timeout when the command has no `--timeout`.
@@ -333,12 +334,28 @@ async fn up_async(
         .collect();
     let t = client::target(ctx)?;
     // Attached: signals from now on tear down; detached keeps default handling.
+    // The orphan prompt reads stdin: watch it for EOF only after the prompt.
+    let may_prompt = mode == Mode::Human
+        && std::io::IsTerminal::is_terminal(&std::io::stdin())
+        && !(args.yes || args.adopt_orphans || args.kill_orphans || args.kill_foreign);
     let mut exit = if args.detach {
         None
     } else {
-        Some(Exit::install(true)?)
+        Some(Exit::install(!may_prompt)?)
     };
     let (c, auto_started) = connect_or_start(ctx, &t).await?;
+    let orphans = match handle_orphans(ctx, args, mode, &t, &c).await {
+        Ok(o) => o,
+        Err(e) => {
+            if auto_started {
+                shutdown_if_idle(&t, &c).await;
+            }
+            return Err(e);
+        }
+    };
+    if may_prompt && exit.is_some() {
+        exit = Some(Exit::install(true)?);
+    }
     let mut events = subscribe_now(&c).await?;
     let params = UpParams {
         stems: args.stems.clone(),
@@ -392,7 +409,12 @@ async fn up_async(
         }
     })
     .await;
-    let out = up_output(&res).compact();
+    let mut out = up_output(&res).compact();
+    if !orphans.is_empty()
+        && let Value::Object(m) = &mut out.data
+    {
+        m.insert("orphans".into(), Value::Array(orphans));
+    }
     if args.detach {
         return Ok(out);
     }
@@ -432,6 +454,65 @@ async fn up_async(
             },
             why = exit.wait() => return Ok(teardown(ctx, &t, &c, why, mode, stdout).await),
         }
+    }
+}
+
+/// The orphan scan of `up` (deliverable 11, FR-CR-4): report, prompt, kill
+/// or adopt per [`crate::commands::orphans`]. `Err(ORPHANS_FOUND)` when
+/// there are orphans and no consent to act (nothing is started then).
+/// Returns the handled orphans (with their `action`) for `data.orphans`.
+async fn handle_orphans(
+    ctx: &Ctx,
+    args: &UpArgs,
+    mode: Mode,
+    t: &Target,
+    c: &Client,
+) -> Result<Vec<Value>, Errors> {
+    let found = match orphans::scan(ctx, t, &[c.info().pid as i32]) {
+        Ok(f) => f,
+        // Config errors are reported by the `up` RPC itself.
+        Err(_) => return Ok(Vec::new()),
+    };
+    if found.is_empty() {
+        return Ok(Vec::new());
+    }
+    let policy = orphans::Policy::new(
+        args.yes,
+        args.adopt_orphans,
+        args.kill_orphans,
+        args.kill_foreign,
+        mode == Mode::Json,
+    );
+    if policy.report_only() {
+        let listed: Vec<Value> = found
+            .iter()
+            .map(|o| {
+                let mut v = serde_json::to_value(o).unwrap_or(Value::Null);
+                if let Value::Object(m) = &mut v {
+                    m.insert("action".into(), json!("none"));
+                }
+                v
+            })
+            .collect();
+        return Err(orphans::found_error(
+            &listed,
+            "nothing was started; inspect them with `stems doctor --orphans`, then rerun with `--kill-orphans`/`--yes` (kill those that look like their stem's start command), `--adopt-orphans` (adopt them) or `--kill-foreign` (also kill the rest)",
+        )
+        .into());
+    }
+    Ok(orphans::resolve(&found, &policy, Some(c)).await)
+}
+
+/// Shut an auto-started daemon down again if it runs nothing (an `up` that
+/// did not start anything must not leave a daemon behind).
+async fn shutdown_if_idle(t: &Target, c: &Client) {
+    let st: Result<stems_api::StatusResult, Error> = c
+        .call(Method::STATUS, stems_api::StatusParams::default())
+        .await;
+    let idle = st.is_ok_and(|s| s.stems.iter().all(|x| !x.state.is_running()));
+    if idle {
+        let _ = c.shutdown().await;
+        wait_daemon_gone(t, WAIT).await;
     }
 }
 
@@ -494,10 +575,20 @@ pub fn down(ctx: &Ctx, args: &DownArgs) -> CommandOutput {
         }
         let timeout = parse_timeout(args.timeout.as_deref())?;
         let t = client::target(ctx)?;
-        let c = connect_to(&t, client::options(ctx)).await?;
+        // No daemon but the state file lists stems (a crashed daemon): start
+        // one, which adopts what is still alive, and tear it all down
+        // (deliverable 11, FR-CR-3).
+        let (c, recovered) = match connect_to(&t, client::options(ctx)).await {
+            Ok(c) => (c, false),
+            Err(e) if e.code == ErrorCode::DaemonNotRunning && has_recorded_stems(&t) => {
+                let (c, _) = connect_or_start(ctx, &t).await?;
+                (c, true)
+            }
+            Err(e) => return Err(e.into()),
+        };
         let params = DownParams {
             stems: args.stems.clone(),
-            all: args.all,
+            all: args.all || (recovered && args.stems.is_empty()),
             timeout_ms: ms(timeout),
         };
         let bound = grace_sum(ctx) + Duration::from_secs(10);
@@ -505,9 +596,23 @@ pub fn down(ctx: &Ctx, args: &DownArgs) -> CommandOutput {
         if res.daemon_stopping {
             wait_daemon_gone(&t, WAIT).await;
         }
-        Ok(down_output(&res))
+        let mut out = down_output(&res);
+        if recovered {
+            if let Value::Object(m) = &mut out.data {
+                m.insert("recovered".into(), json!(true));
+            }
+            if let Some(h) = &mut out.human {
+                h.insert_str(0, "recovered the stems of a crashed daemon\n");
+            }
+        }
+        Ok(out)
     })
     .unwrap_or_else(CommandOutput::failed)
+}
+
+/// The state file lists stems (a previous daemon did not clean up).
+fn has_recorded_stems(t: &Target) -> bool {
+    stems_daemon::state::StateFile::peek(&t.paths.state).is_some_and(|f| !f.stems.is_empty())
 }
 
 /// `stems start`.

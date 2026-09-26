@@ -7,7 +7,10 @@
 //! * [`server`] — the socket server (newline-delimited JSON-RPC 2.0).
 //! * [`Daemon`] — built-in methods, the [`SupervisorHooks`] slot, [`Daemon::run`].
 //! * [`supervisor`] — `up`/`down`/`start`/`stop`/`restart`/`status` (deliverable 10).
+//! * [`state`] — the durable `state.json` (crash recovery, deliverable 11).
+//! * [`orphans`] — the orphan scan (FR-CR-4).
 //! * [`spawn_detached`] / [`wait_for_socket`] — used by the CLI to auto-start.
+//! * [`logs`] — stem log capture, rotation, queries and export (deliverable 12).
 //!
 //! Lifecycle of [`Daemon::run`]: take the lock (reclaiming a stale one), log
 //! to `stemsd.log`, optionally load the workspace, bind the socket (0600),
@@ -21,15 +24,19 @@ pub mod events;
 mod handler;
 pub mod lock;
 pub mod logging;
+pub mod logs;
+pub mod orphans;
 pub mod paths;
 pub mod server;
 mod spawn;
+pub mod state;
 pub mod supervisor;
 
 pub use daemon::{Daemon, NO_WORKSPACE_DIR, RunOptions};
 pub use events::{EventBus, EventDraft};
 pub use handler::{Handler, RequestCtx, SupervisorHooks};
 pub use lock::{Lock, LockGuard, LockState};
+pub use logs::{LogHub, LogSink, ScriptWriter};
 pub use paths::{DaemonPaths, default_home, resolve_home, workspace_hash, workspace_root};
 pub use spawn::{daemon_args, spawn_detached, wait_for_socket};
 pub use supervisor::Supervisor;

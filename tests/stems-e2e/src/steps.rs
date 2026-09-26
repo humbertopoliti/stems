@@ -778,6 +778,199 @@ step!(then_pids_dead(w, m) {
 });
 
 // ----------------------------------------------------------------------------
+// Logs (12)
+// ----------------------------------------------------------------------------
+
+/// Entry names and contents of a `.tar.gz` (path relative to the workspace).
+fn archive_entries(w: &E2eWorld, rel: &str) -> Vec<(String, Vec<u8>)> {
+    use std::io::Read;
+    let p = ws_file(w, rel);
+    let f = std::fs::File::open(&p).unwrap_or_else(|e| panic!("cannot open {}: {e}", p.display()));
+    let mut ar = tar::Archive::new(flate2::read::GzDecoder::new(f));
+    let mut out = Vec::new();
+    for e in ar
+        .entries()
+        .unwrap_or_else(|e| panic!("{} is not a tar.gz: {e}", p.display()))
+    {
+        let mut e = e.unwrap_or_else(|e| panic!("bad entry in {}: {e}", p.display()));
+        let name = e
+            .path()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let mut data = Vec::new();
+        e.read_to_end(&mut data)
+            .unwrap_or_else(|e| panic!("cannot read {name}: {e}"));
+        out.push((name, data));
+    }
+    out
+}
+
+step!(then_archive_contains(w, m) {
+    let want = w.expand(&m[2]);
+    let entries = archive_entries(w, &m[1]);
+    let names: Vec<&str> = entries.iter().map(|(n, _)| n.as_str()).collect();
+    let hit = names.iter().any(|n| *n == want || (want.ends_with('/') && n.starts_with(&want)));
+    assert!(hit, "archive {} has no entry {want:?}; entries: {names:?}", m[1]);
+});
+
+step!(then_archive_entry_contains(w, m) {
+    let (entry, text) = (w.expand(&m[2]), w.expand(&m[3]));
+    let entries = archive_entries(w, &m[1]);
+    let data = entries
+        .iter()
+        .find(|(n, _)| *n == entry)
+        .map(|(_, d)| String::from_utf8_lossy(d).into_owned())
+        .unwrap_or_else(|| panic!("archive {} has no entry {entry:?}", m[1]));
+    assert!(data.contains(&text), "archive entry {entry} does not contain {text:?}:\n{}", util::clip(&data, 3000));
+});
+
+step!(then_archive_entry_not_contains(w, m) {
+    let (entry, text) = (w.expand(&m[2]), w.expand(&m[3]));
+    let entries = archive_entries(w, &m[1]);
+    let data = entries
+        .iter()
+        .find(|(n, _)| *n == entry)
+        .map(|(_, d)| String::from_utf8_lossy(d).into_owned())
+        .unwrap_or_else(|| panic!("archive {} has no entry {entry:?}", m[1]));
+    assert!(!data.contains(&text), "archive entry {entry} contains {text:?}");
+});
+
+/// Files of `<STEMS_HOME>/<hash>/logs/<stem>/`.
+fn stem_log_files(w: &E2eWorld, stem: &str) -> Vec<PathBuf> {
+    find_files(&w.home, &|_| true)
+        .into_iter()
+        .filter(|p| {
+            let dir = p.parent();
+            dir.and_then(|d| d.file_name()).is_some_and(|n| n == stem)
+                && dir
+                    .and_then(|d| d.parent())
+                    .and_then(|d| d.file_name())
+                    .is_some_and(|n| n == "logs")
+        })
+        .collect()
+}
+
+step!(then_stem_log_file_contains(w, m) {
+    let until = bound(w, &m[1]);
+    let (stem, file) = m[2].split_once('/').unwrap_or_else(|| panic!("expected <stem>/<file>, got {:?}", m[2]));
+    let text = w.expand(&m[3]);
+    loop {
+        let files: Vec<PathBuf> = stem_log_files(w, stem)
+            .into_iter()
+            .filter(|p| p.file_name().is_some_and(|n| n == file))
+            .collect();
+        let all: String = files.iter().map(|f| std::fs::read_to_string(f).unwrap_or_default()).collect();
+        if all.contains(&text) {
+            return;
+        }
+        assert!(Instant::now() < until, "log file {stem}/{file} under STEMS_HOME ({files:?}) does not contain {text:?} after {}s:\n{}", m[1], util::clip(&all, 2000));
+        tokio::time::sleep(POLL).await;
+    }
+});
+
+step!(then_stem_log_dir_at_most(w, m) {
+    let max: usize = m[2].parse().expect("count");
+    let files = stem_log_files(w, &m[1]);
+    assert!(!files.is_empty(), "no log files for {} under {}", m[1], w.home.display());
+    assert!(files.len() <= max, "{} log files for {} (at most {max}): {files:?}", files.len(), m[1]);
+});
+
+step!(then_within_output_no_json(w, m) {
+    let until = bound(w, &m[1]);
+    let (line, path) = (m[2].clone(), m[3].clone());
+    loop {
+        let out = w.run(&line, None, &[]).await;
+        // NDJSON always as an array here (a single line too); empty = [].
+        let doc = if out.stdout.trim().is_empty() {
+            Value::Array(Vec::new())
+        } else {
+            let lines: Option<Vec<Value>> = out.stdout.lines().filter(|l| !l.trim().is_empty()).map(|l| serde_json::from_str(l).ok()).collect();
+            lines.map(Value::Array).unwrap_or_else(|| panic!("`{line}` did not print NDJSON\n{}", out.describe()))
+        };
+        let hits = util::query(&doc, &path).unwrap_or_else(|e| panic!("{e}"));
+        if out.code == 0 && hits.is_empty() {
+            return;
+        }
+        assert!(Instant::now() < until, "`{line}` still has JSON at {path} after {}s: {}\n{}", m[1], serde_json::to_string(&hits).unwrap_or_default(), out.describe());
+        tokio::time::sleep(POLL).await;
+    }
+});
+
+step!(then_json_nodes_equal(w, m) {
+    let want = expected(w, &m[2]);
+    let got = Value::Array(nodes(w, &m[1]).into_iter().cloned().collect());
+    assert!(
+        got == want,
+        "JSON nodes at {} are {} (expected {want})\n{}",
+        m[1],
+        got,
+        w.last().describe()
+    );
+});
+
+/// Order key for `is in ascending order`: RFC 3339 strings as instants.
+fn order_key(v: &Value) -> Option<(i64, u32, String)> {
+    match v {
+        Value::String(s) => Some(match chrono::DateTime::parse_from_rfc3339(s) {
+            Ok(t) => (t.timestamp(), t.timestamp_subsec_nanos(), String::new()),
+            Err(_) => (0, 0, s.clone()),
+        }),
+        Value::Number(n) => n.as_f64().map(|f| {
+            (
+                f.floor() as i64,
+                ((f - f.floor()) * 1e9) as u32,
+                String::new(),
+            )
+        }),
+        _ => None,
+    }
+}
+
+step!(then_json_ascending(w, m) {
+    let got = nodes(w, &m[1]);
+    assert!(got.len() >= 2, "JSON at {} has {} nodes (expected at least 2 to compare)\n{}", m[1], got.len(), w.last().describe());
+    let keys: Vec<_> = got.iter().map(|v| order_key(v).unwrap_or_else(|| panic!("cannot order {v}"))).collect();
+    for (i, pair) in keys.windows(2).enumerate() {
+        assert!(pair[0] <= pair[1], "JSON at {} is not ascending at index {}: {} then {}", m[1], i, got[i], got[i + 1]);
+    }
+});
+
+/// Cumulative CPU seconds of `pid` (`ps -o time=`: `[[dd-]hh:]mm:ss.cc`).
+async fn cpu_seconds(pid: i32) -> f64 {
+    let out = tokio::process::Command::new("ps")
+        .args(["-o", "time=", "-p", &pid.to_string()])
+        .output()
+        .await
+        .expect("ps");
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let (days, rest) = match text.split_once('-') {
+        Some((d, r)) => (d.parse::<f64>().unwrap_or(0.0), r.to_string()),
+        None => (0.0, text.clone()),
+    };
+    let secs = rest
+        .split(':')
+        .try_fold(0.0, |acc, part| part.parse::<f64>().map(|v| acc * 60.0 + v))
+        .unwrap_or_else(|_| panic!("ps -o time= -p {pid} printed {text:?}"));
+    days * 86_400.0 + secs
+}
+
+step!(then_background_cpu_below(w, m) {
+    let max: f64 = m[1].parse().expect("percent");
+    let window = Duration::from_secs(2).min(w.remaining());
+    let pid = {
+        let bg = w.background();
+        assert!(bg.poll_exit().is_none(), "the background command has exited\n{}", bg.describe());
+        bg.child.id().and_then(|p| i32::try_from(p).ok()).expect("background pid")
+    };
+    // Measured over a window (not a fixed sleep: this is the sampling period).
+    let t0 = (Instant::now(), cpu_seconds(pid).await);
+    tokio::time::sleep(window).await;
+    let t1 = (Instant::now(), cpu_seconds(pid).await);
+    let pct = 100.0 * (t1.1 - t0.1) / t1.0.duration_since(t0.0).as_secs_f64();
+    assert!(pct < max, "background command (pid {pid}) used {pct:.1}% CPU over {:.1}s (limit {max}%)", window.as_secs_f64());
+});
+
+// ----------------------------------------------------------------------------
 // Then: nothing left behind
 // ----------------------------------------------------------------------------
 
@@ -804,6 +997,144 @@ step!(then_no_container(w, m) {
     let label = w.expand(&m[1]);
     let ids = hooks::labelled_containers(&label);
     assert!(ids.is_empty(), "containers labelled stems.workspace={label} exist: {ids:?}");
+});
+
+// ----------------------------------------------------------------------------
+// Crash recovery (11)
+// ----------------------------------------------------------------------------
+
+/// Every `state.json` under `STEMS_HOME` parses as JSON (a missing file passes).
+fn assert_state_files_parse(w: &E2eWorld, when: &str) {
+    for f in find_files(&w.home, &|n| n == "state.json") {
+        let text = std::fs::read_to_string(&f).unwrap_or_else(|e| panic!("{}: {e}", f.display()));
+        if let Err(e) = serde_json::from_str::<Value>(&text) {
+            panic!(
+                "{} is not valid JSON {when}: {e}\n{}",
+                f.display(),
+                util::clip(&text, 2000)
+            );
+        }
+    }
+}
+
+step!(then_state_valid_json(w, m) {
+    assert_state_files_parse(w, "");
+});
+
+/// The daemon's state file path: `<dir of the lock>/state.json`, from
+/// `stems daemon status --json` (works without a running daemon).
+async fn state_path(w: &mut E2eWorld) -> PathBuf {
+    let out = w
+        .run_quiet("stems daemon status --json", w.remaining())
+        .await
+        .expect("`stems daemon status --json` ran");
+    let lock = out
+        .json
+        .as_ref()
+        .and_then(|j| j.pointer("/data/lock"))
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            panic!(
+                "no $.data.lock in `stems daemon status --json`\n{}",
+                out.describe()
+            )
+        });
+    lock.parent().expect("lock dir").join("state.json")
+}
+
+step!(given_state_records_stray(w, m) {
+    let stem = m[1].clone();
+    let pid = w
+        .strays
+        .first()
+        .and_then(|c| c.id())
+        .and_then(|p| i32::try_from(p).ok())
+        .expect("start a stray process first");
+    let path = state_path(w).await;
+    std::fs::create_dir_all(path.parent().expect("state dir")).expect("create daemon dir");
+    // Same pid and process group as the stray, but a start time it never had:
+    // a recycled pid, as far as stems can tell.
+    let body = serde_json::json!({
+        "version": 1,
+        "run_id": "01J00000000000000000000000",
+        "daemon": { "pid": 1, "start_time": 1 },
+        "stems": { stem: {
+            "pid": pid, "pgid": pid, "start_time": 1, "container_id": null,
+            "ports": [], "overlays": [], "state": "healthy",
+            "started_at": "2026-01-01T00:00:00Z", "log_file": null,
+        }},
+        "stamps": {},
+    });
+    std::fs::write(&path, serde_json::to_string_pretty(&body).expect("json")).expect("write state.json");
+    w.daemon_started = true;
+});
+
+/// Pid of the daemon from the lock file under `STEMS_HOME` (no RPC, so the
+/// kill lands wherever the daemon is).
+fn lock_pid(w: &E2eWorld) -> Option<i32> {
+    find_files(&w.home, &|n| n == "stemsd.lock")
+        .iter()
+        .find_map(|f| {
+            let v: Value = serde_json::from_str(&std::fs::read_to_string(f).ok()?).ok()?;
+            v.get("pid")
+                .and_then(Value::as_i64)
+                .and_then(|p| i32::try_from(p).ok())
+        })
+}
+
+step!(when_daemon_killed_during(w, m) {
+    let (line, marker) = (m[1].clone(), m[2].clone());
+    let times: u32 = m[3].parse().expect("a count");
+    w.daemon_started = true;
+    for i in 0..times {
+        if let Some(mut prev) = w.background.take() {
+            let _ = tokio::time::timeout(Duration::from_secs(5).min(w.remaining()), prev.child.wait()).await;
+            procs::kill_group(prev.pgid);
+        }
+        w.run_background(&line, &[]);
+        // Bounded poll for the marker line (or the command giving up).
+        let until = Instant::now() + Duration::from_secs(20).min(w.remaining());
+        let seen = loop {
+            let bg = w.background();
+            let hit = background_events(&bg.stdout())
+                .iter()
+                .any(|e| e.get("kind").and_then(Value::as_str) == Some(marker.as_str()));
+            if hit {
+                break true;
+            }
+            if bg.poll_exit().is_some() {
+                break false;
+            }
+            assert!(Instant::now() < until, "iteration {i}: no {marker:?} within 20s\n{}", bg.describe());
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        if seen {
+            // A pseudo-random extra 0-400 ms so the kills land at different
+            // points of the startup (the point of the test, not a wait).
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.subsec_nanos());
+            tokio::time::sleep(Duration::from_millis(u64::from(nanos % 400))).await;
+            if let Some(pid) = lock_pid(w) {
+                let _ = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), nix::sys::signal::Signal::SIGKILL);
+                let until = Instant::now() + Duration::from_secs(2).min(w.remaining());
+                while procs::pid_alive(pid) && !procs::is_zombie(pid) {
+                    assert!(Instant::now() < until, "daemon pid {pid} survived SIGKILL for 2s");
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            }
+        }
+        // The client notices the dead daemon and exits.
+        let bound = Duration::from_secs(10).min(w.remaining());
+        let bg = w.background();
+        if tokio::time::timeout(bound, bg.child.wait()).await.is_err() {
+            procs::kill_group(bg.pgid);
+            panic!("iteration {i}: `{line}` did not exit after the daemon was killed\n{}", bg.describe());
+        }
+        bg.poll_exit();
+        assert_state_files_parse(w, &format!("after kill {}", i + 1));
+    }
 });
 
 step!(then_state_no_stems(w, m) {
@@ -957,6 +1288,15 @@ pub const STEPS: &[(&str, Step<E2eWorld>)] = &[
         then_no_container,
     ),
     (r#"^the state file contains no stems$"#, then_state_no_stems),
+    (r#"^the state file is valid JSON$"#, then_state_valid_json),
+    (
+        r#"^the state file records stem "([^"]+)" at the stray process with a wrong start time$"#,
+        given_state_records_stray,
+    ),
+    (
+        r#"^the daemon is killed with SIGKILL during "([^"]*)" once it prints "([^"]+)", (\d+) times$"#,
+        when_daemon_killed_during,
+    ),
     (
         r#"^the lock file and socket do not exist$"#,
         then_no_lock_socket,
@@ -1032,6 +1372,43 @@ pub const STEPS: &[(&str, Step<E2eWorld>)] = &[
     (
         r#"^within (\d+(?:\.\d+)?)s none of the pids (.+) is alive$"#,
         then_pids_dead,
+    ),
+    // Logs (12)
+    (
+        r#"^the archive "([^"]+)" contains "([^"]+)"$"#,
+        then_archive_contains,
+    ),
+    (
+        r#"^the archive "([^"]+)" entry "([^"]+)" contains "(.*)"$"#,
+        then_archive_entry_contains,
+    ),
+    (
+        r#"^the archive "([^"]+)" entry "([^"]+)" does not contain "(.*)"$"#,
+        then_archive_entry_not_contains,
+    ),
+    (
+        r#"^within (\d+(?:\.\d+)?)s the stem log file "([^"/]+/[^"]+)" contains "(.*)"$"#,
+        then_stem_log_file_contains,
+    ),
+    (
+        r#"^the stem log directory "([^"]+)" holds at most (\d+) files$"#,
+        then_stem_log_dir_at_most,
+    ),
+    (
+        r#"^within (\d+(?:\.\d+)?)s the output of "([^"]*)" has no JSON at "([^"]+)"$"#,
+        then_within_output_no_json,
+    ),
+    (
+        r#"^the JSON at "([^"]+)" is in ascending order$"#,
+        then_json_ascending,
+    ),
+    (
+        r#"^the JSON nodes at "([^"]+)" equal (.+)$"#,
+        then_json_nodes_equal,
+    ),
+    (
+        r#"^the background command's CPU is below (\d+(?:\.\d+)?) %$"#,
+        then_background_cpu_below,
     ),
 ];
 
@@ -1112,6 +1489,9 @@ mod tests {
             r#"no process from the workspace's process groups is alive"#,
             r#"no container with label stems.workspace=hello-shop exists"#,
             r#"the state file contains no stems"#,
+            r#"the state file is valid JSON"#,
+            r#"the state file records stem "echo-svc" at the stray process with a wrong start time"#,
+            r#"the daemon is killed with SIGKILL during "stems up --detach --json" once it prints "up.started", 5 times"#,
             r#"the lock file and socket do not exist"#,
             r#"the file "config/local.ini" exists"#,
             r#"the file "config/local.ini" does not exist"#,
@@ -1138,6 +1518,15 @@ mod tests {
             r#"the JSON at "$.data.stems[0].pid" does not equal ${var:pid}"#,
             r#"the events stream contains {"stem": "a", "to": "healthy"} before {"stem": "b", "to": "starting"}"#,
             r#"the stray processes are still running"#,
+            r#"the archive "bundle.tar.gz" contains "logs/echo-svc/""#,
+            r#"the archive "bundle.tar.gz" entry "config.json" contains "<redacted>""#,
+            r#"the archive "bundle.tar.gz" entry "config.json" does not contain "hunter2""#,
+            r#"within 5s the stem log file "echo-svc/current.log" contains "chaos log line 49""#,
+            r#"the stem log directory "echo-svc" holds at most 3 files"#,
+            r#"within 5s the output of "stems logs --json --since 1s" has no JSON at "$[?@.level == 'warn']""#,
+            r#"the JSON at "$[*].ts" is in ascending order"#,
+            r#"the JSON nodes at "$[*].text" equal ["a", "b"]"#,
+            r#"the background command's CPU is below 2 %"#,
         ];
         let regexes: Vec<regex::Regex> = STEPS
             .iter()

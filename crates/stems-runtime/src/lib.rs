@@ -17,8 +17,8 @@ pub use output::{
 };
 pub use process::ProcessRuntime;
 pub use runtime::{
-    AdoptRecord, ExitStatus, Handle, HandleId, ProcessSpec, Runtime, RuntimeError, RuntimeFacts,
-    StartSpec, StopOutcome,
+    AdoptRecord, ExitStatus, Handle, HandleId, Orphan, OrphanKind, OrphanScope, ProcessSpec,
+    Runtime, RuntimeError, RuntimeFacts, StartSpec, StopOutcome,
 };
 
 /// Name of this crate, used to prove the workspace wiring in tests.

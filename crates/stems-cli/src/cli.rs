@@ -206,6 +206,14 @@ pub enum Command {
     /// Show the state of every stem.
     Status(StatusArgs),
     /// Show or follow stem and script logs.
+    ///
+    /// Prints captured lines (at most 10 000, the newest), several stems
+    /// interleaved by time; with -f replays the last 10 lines (or --since /
+    /// --tail) and keeps streaming until Ctrl-C or the daemon stops. With
+    /// --json the output is NDJSON, one record per line
+    /// (`{ts, stem, stream, tag, level, text, fields}`) and no envelope.
+    /// --export writes a .tar.gz bundle (status, events, redacted config,
+    /// log files) instead.
     Logs(LogsArgs),
     /// Show or follow the event stream (NDJSON with --json).
     ///
@@ -356,6 +364,18 @@ pub struct UpArgs {
     /// Back up conflicting overlay destinations and proceed.
     #[arg(long)]
     pub force_overlays: bool,
+    /// Adopt orphaned processes that look like their stem's start command.
+    #[arg(long)]
+    pub adopt_orphans: bool,
+    /// Kill orphaned processes that look like their stem's start command.
+    #[arg(long)]
+    pub kill_orphans: bool,
+    /// Also kill processes stems did not start that hold declared ports.
+    #[arg(long)]
+    pub kill_foreign: bool,
+    /// Answer yes to the orphan prompt (same as --kill-orphans).
+    #[arg(short, long)]
+    pub yes: bool,
 }
 
 /// `stems down`.
@@ -466,10 +486,10 @@ pub struct LogsArgs {
     /// Only lines matching this regex.
     #[arg(long, value_name = "REGEX")]
     pub grep: Option<String>,
-    /// Minimum level (e.g. warn, or warn+).
+    /// Level filter: `error` (exactly that level) or `warn+` (warn and above).
     #[arg(long)]
     pub level: Option<String>,
-    /// Logs of this script run instead of the stem's process.
+    /// Only output of this script (lines tagged with its name).
     #[arg(long, value_name = "NAME")]
     pub script: Option<String>,
     /// Last N lines.

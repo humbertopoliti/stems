@@ -31,6 +31,7 @@ use super::ports::check_free;
 use super::state;
 use super::waiter::{WaitTarget, exited_error};
 use crate::events::EventDraft;
+use crate::state::{PortRecord, StemRecord};
 
 /// What the watch channel carries: enough for waiters to decide.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -231,7 +232,38 @@ impl StemCell {
             state: to,
             generation,
         });
+        self.persist(core);
         true
+    }
+
+    /// Write this stem's record to the state store (deliverable 11): a
+    /// record while a unit is attached, none otherwise. Fields owned by other
+    /// deliverables (overlays, log file) are kept by the store.
+    pub(crate) fn persist(&self, core: &Core) {
+        let Some(store) = &core.state else { return };
+        let rec = {
+            let info = self.info();
+            info.handle.as_ref().map(|h| StemRecord {
+                pid: h.pid(),
+                pgid: h.pgid(),
+                start_time: h.start_time(),
+                container_id: None,
+                ports: info
+                    .ports
+                    .iter()
+                    .map(|(n, p)| PortRecord {
+                        name: n.clone(),
+                        port: *p,
+                        auto: core.ports.allocated(&self.name, n) == Some(*p),
+                    })
+                    .collect(),
+                overlays: Vec::new(),
+                state: info.state,
+                started_at: info.started_at.map_or_else(Utc::now, |(_, t)| t),
+                log_file: None,
+            })
+        };
+        store.set_stem(&self.name, rec);
     }
 
     fn bump_generation(&self) -> u64 {
@@ -373,7 +405,7 @@ async fn start(
 }
 
 /// The start command of a process stem: `command`, else `scripts.start`.
-fn start_script(stem: &Stem) -> Result<(String, String, std::path::PathBuf), Error> {
+pub(crate) fn start_script(stem: &Stem) -> Result<(String, String, std::path::PathBuf), Error> {
     let StemRuntime::Process(p) = &stem.runtime else {
         return Err(Error::internal(format!(
             "`{}` is not a process stem",
@@ -509,6 +541,7 @@ async fn spawn(
         state: StemState::Starting,
         generation,
     });
+    cell.persist(core);
     core.sink.attach(&stem.name, runtime.output_stream(&handle));
 
     // Exit watcher.
@@ -532,6 +565,63 @@ async fn spawn(
     });
     cell.info().ready_task = Some(task.abort_handle());
     Ok(())
+}
+
+/// Install a unit re-attached after a daemon restart, or an adopted orphan
+/// (deliverable 11): `stopped → healthy` (reason `adopted`), event
+/// `stem.adopted {pid, pgid}`, and an exit watcher. The unit has no output
+/// stream (`OutputSink::attach` gets `None`).
+pub(crate) fn adopt(
+    core: &Arc<Core>,
+    cell: &Arc<StemCell>,
+    runtime: Arc<dyn Runtime>,
+    handle: Handle,
+    rec: &StemRecord,
+    grace: Duration,
+    actor: &str,
+) {
+    if cell.state() == StemState::Failed {
+        cell.transition(core, StemState::Stopped, "adopting", actor, json!({}));
+    }
+    let age = (Utc::now() - rec.started_at).to_std().unwrap_or_default();
+    let generation = {
+        let mut info = cell.info();
+        info.generation += 1;
+        info.handle = Some(handle.clone());
+        info.runtime = Some(runtime.clone());
+        info.ports = rec.ports.iter().map(|p| (p.name.clone(), p.port)).collect();
+        info.started_at = Some((
+            Instant::now().checked_sub(age).unwrap_or_else(Instant::now),
+            rec.started_at,
+        ));
+        info.env = BTreeMap::new();
+        info.error = None;
+        info.grace = grace;
+        info.generation
+    };
+    core.events.emit(
+        EventDraft::new(EventKind::STEM_ADOPTED, actor)
+            .stem(&cell.name)
+            .data(json!({
+                "pid": handle.pid(),
+                "pgid": handle.pgid(),
+                "started_at": rec.started_at,
+            })),
+    );
+    cell.transition(
+        core,
+        StemState::Healthy,
+        "adopted",
+        actor,
+        json!({ "adopted": true }),
+    );
+    cell.persist(core);
+    core.sink.attach(&cell.name, runtime.output_stream(&handle));
+    let tx = cell.tx.clone();
+    tokio::spawn(async move {
+        let status = runtime.wait(&handle).await.unwrap_or(ExitStatus::UNKNOWN);
+        let _ = tx.send(Cmd::Exited { generation, status });
+    });
 }
 
 async fn on_ready(core: &Arc<Core>, cell: &Arc<StemCell>, generation: u64, r: Result<(), Error>) {

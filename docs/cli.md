@@ -360,6 +360,18 @@ Options:
       --force-overlays
           Back up conflicting overlay destinations and proceed
 
+      --adopt-orphans
+          Adopt orphaned processes that look like their stem's start command
+
+      --kill-orphans
+          Kill orphaned processes that look like their stem's start command
+
+      --kill-foreign
+          Also kill processes stems did not start that hold declared ports
+
+  -y, --yes
+          Answer yes to the orphan prompt (same as --kill-orphans)
+
   -h, --help
           Print help
 
@@ -707,7 +719,13 @@ Global options:
 ### `stems logs`
 
 ```text
-Show or follow stem and script logs
+Show or follow stem and script logs.
+
+Prints captured lines (at most 10 000, the newest), several stems interleaved by time; with -f
+replays the last 10 lines (or --since / --tail) and keeps streaming until Ctrl-C or the daemon
+stops. With --json the output is NDJSON, one record per line (`{ts, stem, stream, tag, level, text,
+fields}`) and no envelope. --export writes a .tar.gz bundle (status, events, redacted config, log
+files) instead.
 
 Usage: stems logs [OPTIONS] [STEMS]...
 
@@ -729,10 +747,10 @@ Options:
           Only lines matching this regex
 
       --level <LEVEL>
-          Minimum level (e.g. warn, or warn+)
+          Level filter: `error` (exactly that level) or `warn+` (warn and above)
 
       --script <NAME>
-          Logs of this script run instead of the stem's process
+          Only output of this script (lines tagged with its name)
 
       --tail <N>
           Last N lines
@@ -744,7 +762,7 @@ Options:
           Output file for --export
 
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>

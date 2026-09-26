@@ -10,6 +10,7 @@ agent.allowed_tools                           [] (all tools)
 agent.denied_tools                            []
 logs.max_size                                 50MB
 logs.keep                                     3
+logs.ring                                     10000
 metrics.interval                              2s
 metrics.persist                               false
 repos_dir                                     .stems/repos

@@ -10,6 +10,8 @@
 //! Unknown (external stems: monitored, never started)
 //! ```
 //!
+//! `Stopped → Healthy` is adoption after a daemon restart (deliverable 11).
+//!
 //! Deliverable 10 uses `Stopped → Starting → Healthy`, `→ Stopping →
 //! Stopped` and `→ Failed`; `Setup`/`Seeding` (16) and `Unhealthy` (21/22)
 //! are already legal so later deliverables only add behaviour.
@@ -22,7 +24,7 @@ pub fn allowed(from: StemState, to: StemState) -> bool {
     use StemState::*;
     matches!(
         (from, to),
-        (Stopped, Setup | Starting | Failed | Unknown)
+        (Stopped, Setup | Starting | Healthy | Failed | Unknown)
             | (Setup, Starting | Failed | Stopping)
             | (Starting, Healthy | Unhealthy | Failed | Stopping)
             | (Healthy, Seeding | Unhealthy | Failed | Stopping | Stopped)
@@ -44,6 +46,7 @@ mod tests {
     const LEGAL: &[(StemState, StemState)] = &[
         (Stopped, Setup),
         (Stopped, Starting),
+        (Stopped, Healthy),
         (Stopped, Failed),
         (Stopped, Unknown),
         (Setup, Starting),

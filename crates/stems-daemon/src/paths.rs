@@ -64,6 +64,12 @@ impl DaemonPaths {
         }
     }
 
+    /// `<dir>/logs`: one sub-directory per stem holding `current.log` and
+    /// its rotations (deliverable 12, `docs/logs.md`).
+    pub fn logs_dir(&self) -> PathBuf {
+        self.dir.join(crate::logs::LOGS_DIR)
+    }
+
     /// Create `dir` (mode 0700) if missing.
     pub fn ensure_dir(&self) -> std::io::Result<()> {
         use std::os::unix::fs::DirBuilderExt;

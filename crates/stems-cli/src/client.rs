@@ -1,7 +1,8 @@
 //! Talking to the workspace daemon from the CLI: resolve the workspace to its
 //! [`DaemonPaths`], connect with the `cli:<user>` actor, and turn
 //! `DAEMON_NOT_RUNNING` into an actionable message (a stale lock left by a
-//! crashed daemon gets `stale lock: ...` in the hint, FR-CR-6).
+//! crashed daemon gets `stale lock: ...` in the hint, FR-CR-6; stems of a
+//! previous run that are still alive get `run stems down`, deliverable 11).
 //!
 //! Commands are synchronous; [`block_on`] runs the async client on a small
 //! current-thread tokio runtime.
@@ -105,12 +106,40 @@ pub fn not_running_hint(e: Error, paths: &DaemonPaths) -> Error {
             json!({ "state": "free", "path": paths.lock }),
         ),
     };
+    // Stems of a previous (crashed) run still alive: `stems down` recovers them.
+    let alive: Vec<String> = stems_daemon::state::StateFile::peek(&paths.state)
+        .map(|f| {
+            f.stems
+                .iter()
+                .filter(|(_, r)| r.is_alive())
+                .map(|(n, _)| n.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    let hint = if alive.is_empty() {
+        hint
+    } else {
+        let stale = match &state {
+            LockState::Stale { pid } => format!(" (the daemon, pid {pid}, crashed or was killed)"),
+            _ => String::new(),
+        };
+        format!(
+            "stems from a previous run are still alive ({}){stale}; run `stems down` to stop them",
+            alive.join(", ")
+        )
+    };
     let mut details = match e.details.clone() {
         serde_json::Value::Object(m) => m,
         _ => serde_json::Map::new(),
     };
     details.insert("socket".into(), json!(paths.socket));
     details.insert("lock".into(), lock);
+    if !alive.is_empty() {
+        details.insert(
+            "state".into(),
+            json!({ "path": paths.state, "alive": alive }),
+        );
+    }
     e.with_hint(hint)
         .with_details(serde_json::Value::Object(details))
 }

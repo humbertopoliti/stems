@@ -53,4 +53,9 @@ pub trait SupervisorHooks: Send + Sync {
     /// Called once on the orderly shutdown path, after `daemon.stopping` and
     /// before the socket and lock are removed (run `down` here).
     async fn shutdown(&self);
+
+    /// Called once at startup, after the workspace loaded and before the
+    /// socket serves requests, with the previous run's state file (crash
+    /// recovery, deliverable 11).
+    async fn recover(&self, _previous: Option<crate::state::StateFile>) {}
 }

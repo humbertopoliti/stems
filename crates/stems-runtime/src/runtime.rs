@@ -162,6 +162,45 @@ pub struct AdoptRecord {
     pub container_id: Option<String>,
 }
 
+/// What an orphan is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OrphanKind {
+    /// A process listening on a port the workspace declares.
+    Process,
+    /// A container labelled for this workspace (deliverable 14).
+    Container,
+}
+
+/// Something running that belongs to (or squats on) this workspace but is
+/// not recorded in the daemon's state (FR-CR-4). See `docs/recovery.md`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Orphan {
+    pub kind: OrphanKind,
+    /// The declared host port it listens on (processes).
+    pub port: Option<u16>,
+    pub pid: Option<i32>,
+    pub pgid: Option<i32>,
+    /// Full command line (processes) or image/name (containers).
+    pub command: String,
+    pub container_id: Option<String>,
+    /// The stem whose port (or labels) it matches.
+    pub stem: Option<String>,
+    /// Heuristic: it looks like that stem's own start command, i.e. a stem
+    /// started outside stems or by a previous run whose state was lost.
+    /// Only these are killed by `--yes`.
+    pub matches_start_command: bool,
+}
+
+/// What a runtime needs to know to look for its own orphans.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrphanScope {
+    /// Workspace name (container label `stems.workspace`).
+    pub workspace: String,
+    /// Units recorded in state (never orphans).
+    pub known: Vec<AdoptRecord>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeError {
     #[error("failed to spawn `{command}`: {source}")]
@@ -205,4 +244,12 @@ pub trait Runtime: Send + Sync {
 
     /// Forget runtime bookkeeping for a handle whose unit has exited/been stopped.
     fn release(&self, h: &Handle);
+
+    /// Units of this runtime that belong to the workspace but are not in
+    /// `scope.known` (containers labelled for it: deliverable 14). Process
+    /// orphans are found by port in `stems_daemon::orphans`, so the process
+    /// runtime keeps this default.
+    async fn scan_orphans(&self, _scope: &OrphanScope) -> Vec<Orphan> {
+        Vec::new()
+    }
 }

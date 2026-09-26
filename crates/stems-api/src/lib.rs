@@ -22,10 +22,15 @@ use stems_core::{Error, ErrorCode};
 #[cfg(feature = "client")]
 pub mod client;
 pub mod lifecycle;
+pub mod logs;
 
 pub use lifecycle::{
     DownParams, DownResult, PortStatus, RestartParams, StartParams, StatusParams, StatusResult,
     StatusSummary, StemFailure, StemStatus, StopParams, UpParams, UpResult,
+};
+pub use logs::{
+    ExportLogsParams, ExportLogsResult, LogFilter, LogRecord, QUERY_LOGS_CAP, QueryLogsParams,
+    QueryLogsResult, SubscribeLogsAck, SubscribeLogsParams,
 };
 
 /// Version of the wire protocol. Bumped on any incompatible change.
@@ -139,13 +144,21 @@ string_newtype! {
         RESTART = "restart";
         /// Per-stem state ([`StatusParams`] -> [`StatusResult`]).
         STATUS = "status";
-        // --- reserved for later deliverables ---------------------------------
-        /// Reserved (12).
-        LOGS = "logs";
-        /// Reserved (12): streaming, like `subscribe_events`, with `log` notifications.
+        // --- logs (12) ---------------------------------------------------------
+        /// Query captured log records ([`QueryLogsParams`] -> [`QueryLogsResult`]).
+        QUERY_LOGS = "query_logs";
+        /// Stream log records ([`SubscribeLogsParams`]); ack ([`SubscribeLogsAck`])
+        /// then `log` notifications, like `subscribe_events`.
         SUBSCRIBE_LOGS = "subscribe_logs";
+        /// Write a support bundle ([`ExportLogsParams`] -> [`ExportLogsResult`]).
+        EXPORT_LOGS = "export_logs";
+        // --- reserved for later deliverables ---------------------------------
         /// Reserved (13).
         RUN_SCRIPT = "run_script";
+        // --- crash recovery (11) ----------------------------------------------
+        /// Adopt orphaned processes as their stems (`{orphans: [{stem, pid}]}`
+        /// -> `{adopted: [{stem, pid, pgid}], failed: [{stem, pid, error}]}`).
+        ADOPT_ORPHANS = "adopt_orphans";
         // --- debug (only with STEMS_DEBUG_RPC=1) -------------------------------
         /// Start a raw process through the runtime.
         DEBUG_START_RAW = "_debug.start_raw";
@@ -374,14 +387,14 @@ impl Response {
     }
 }
 
-/// A JSON-RPC notification (no id): subscription frames (`event`, later `log`).
+/// A JSON-RPC notification (no id): subscription frames (`event`, `log`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Notification {
     /// Always `"2.0"`.
     pub jsonrpc: String,
-    /// [`NOTIFY_EVENT`] or (later) `log`.
+    /// [`NOTIFY_EVENT`] or [`NOTIFY_LOG`].
     pub method: String,
-    /// Payload ([`Event`] for `event`).
+    /// Payload ([`Event`] for `event`, [`LogRecord`] for `log`).
     pub params: Value,
 }
 

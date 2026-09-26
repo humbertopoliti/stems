@@ -262,6 +262,28 @@ When the chaos endpoint "fork?n=3" is called on "echo-svc"
 When the daemon is killed with SIGKILL
 ```
 
+**`When the daemon is killed with SIGKILL during "stems <args>" once it prints "<kind>", <n> times`**
+— crash-recovery stress (11): `n` times, runs the command in the background
+(replacing the previous background command), polls its NDJSON stdout (≤ 20 s)
+for an event of that `kind`, waits a pseudo-random 0–400 ms (so the kills land
+at different points), SIGKILLs the daemon (pid from the `stemsd.lock` under
+`STEMS_HOME`), waits for the command to exit (≤ 10 s) and asserts that every
+`state.json` still parses. If the command exits before printing the marker
+(e.g. `ORPHANS_FOUND`) that iteration kills nothing.
+```gherkin
+When the daemon is killed with SIGKILL during "stems up --detach --json" once it prints "up.started", 5 times
+```
+
+**`Given the state file records stem "<stem>" at the stray process with a wrong start time`**
+— writes `state.json` (path: the lock's directory from `stems daemon status
+--json`) with one entry for `<stem>` whose `pid`/`pgid` are the first stray
+process's and whose `start_time` is `1`: a recycled pid as far as stems can
+tell (pid-reuse tests, 11). Start the stray first; no daemon may run.
+```gherkin
+Given a stray process "sleep 300" is running in a new process group
+And the state file records stem "echo-svc" at the stray process with a wrong start time
+```
+
 **`Then the stray processes are still running`** — every stray started by
 this scenario is alive (e.g. stems did not kill a foreign process holding a
 port).
@@ -526,6 +548,68 @@ node.
 Then the JSON at "$.result.dropped_lines" is greater than 0
 ```
 
+### Logs (12)
+
+`stems logs --json` prints NDJSON: several records parse as an array
+(`$[0].text`, `$[*].ts`), a single record as one object (`$.text`).
+
+**`Then the JSON nodes at "<jsonpath>" equal <json array>`** — all nodes the
+path selects, in document order, equal the array (e.g. every `text` of a
+result, in order).
+```gherkin
+Then the JSON nodes at "$[*].text" equal ["ERROR chaos log line 0", "ERROR chaos log line 1"]
+```
+
+**`Then the JSON at "<jsonpath>" is in ascending order`** — at least two
+nodes, non-decreasing; RFC 3339 strings compare as instants, numbers
+numerically, other strings lexically.
+```gherkin
+Then the JSON at "$[*].ts" is in ascending order
+```
+
+**`Then within <n>s the output of "stems <args>" has no JSON at "<jsonpath>"`**
+— reruns the command (every 100 ms) until it exits 0 and the path selects
+nothing in its stdout parsed as NDJSON — always an array here, even for one
+line; empty output is `[]`. For time windows (`--since 1s`) without sleeps.
+```gherkin
+Then within 5s the output of "stems logs --json --since 1s" has no JSON at "$[?@.level == 'warn']"
+```
+
+**`Then within <n>s the stem log file "<stem>/<file>" contains "<text>"`** —
+polls `$STEMS_HOME/<hash>/logs/<stem>/<file>` (the daemon flushes after
+100 ms idle).
+```gherkin
+Then within 2s the stem log file "echo-svc/current.log" contains "ERROR chaos log line 49"
+```
+
+**`Then the stem log directory "<stem>" holds at most <n> files`** — at least
+one and at most `n` files in `$STEMS_HOME/<hash>/logs/<stem>/` (rotation).
+```gherkin
+Then the stem log directory "echo-svc" holds at most 3 files
+```
+
+**`Then the archive "<path>" contains "<entry>"`** — a `.tar.gz` (path relative
+to the workspace) has that entry; an entry ending in `/` matches any entry
+under that directory.
+```gherkin
+Then the archive "out/bundle.tar.gz" contains "logs/echo-svc/"
+```
+
+**`Then the archive "<path>" entry "<entry>" contains "<text>"`** /
+**`... does not contain "<text>"`**
+```gherkin
+Then the archive "out/bundle.tar.gz" entry "config.json" contains "<redacted>"
+And the archive "out/bundle.tar.gz" entry "config.json" does not contain "hunter2"
+```
+
+**`Then the background command's CPU is below <n> %`** — CPU time the
+background command used (`ps -o time=`) over a 2 s sampling window, as a
+percentage of wall time (the window is the measurement, not a wait for a
+condition). For "no busy loop" checks; tag such scenarios `@slow`.
+```gherkin
+Then the background command's CPU is below 2 %
+```
+
 ### Then: nothing left behind
 
 **`Then no process from the workspace's process groups is alive`** — every
@@ -545,6 +629,12 @@ Then no container with label stems.workspace=hello-shop exists
 `STEMS_HOME` has no/empty `stems` (a missing file passes).
 ```gherkin
 Then the state file contains no stems
+```
+
+**`Then the state file is valid JSON`** — every `state.json` under
+`STEMS_HOME` parses (a missing file passes; 11's atomic-write check).
+```gherkin
+Then the state file is valid JSON
 ```
 
 **`Then the lock file and socket do not exist`** — no `*.lock`/`*.sock` under

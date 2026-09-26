@@ -34,6 +34,14 @@ impl PortBook {
         self.lock().get(stem).and_then(|m| m.get(name)).copied()
     }
 
+    /// Restore a sticky `auto` allocation (crash recovery, 11).
+    pub fn restore(&self, stem: &str, name: &str, port: u16) {
+        self.lock()
+            .entry(stem.to_string())
+            .or_default()
+            .insert(name.to_string(), port);
+    }
+
     /// Host port of `port` of `stem`: the fixed number, or the sticky
     /// allocation of an `auto` port (allocating a free one on first use).
     pub fn host_port(&self, stem: &str, port: &Port) -> Result<HostPort, Error> {

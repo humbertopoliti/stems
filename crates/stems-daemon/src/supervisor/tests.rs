@@ -29,6 +29,8 @@ struct FakeRuntime {
     /// Stems whose process exits right away with this code.
     crash: HashMap<String, i32>,
     starts: Mutex<Vec<String>>,
+    /// Pids `adopt` accepts (crash recovery, 11).
+    adoptable: HashSet<i32>,
 }
 
 impl FakeRuntime {
@@ -97,8 +99,23 @@ impl Runtime for FakeRuntime {
             .unwrap_or(ExitStatus::UNKNOWN);
         Ok(s)
     }
-    async fn adopt(&self, _r: &AdoptRecord) -> Option<Handle> {
-        None
+    async fn adopt(&self, r: &AdoptRecord) -> Option<Handle> {
+        if !self.adoptable.contains(&r.pid) {
+            return None;
+        }
+        let n = self.next.fetch_add(1, Ordering::SeqCst) + 1;
+        let h = Handle::Adopted {
+            id: HandleId(n as u64),
+            pid: r.pid,
+            pgid: r.pgid,
+            start_time: r.start_time,
+        };
+        let tx = watch::Sender::new(None);
+        self.units
+            .lock()
+            .unwrap()
+            .insert(h.id(), ("adopted".into(), tx));
+        Some(h)
     }
     fn release(&self, _h: &Handle) {}
 }
@@ -643,4 +660,79 @@ async fn unknown_stems_and_profiles_are_refused() {
         .await
         .unwrap_err();
     assert_eq!(e.code, ErrorCode::NotImplemented);
+}
+
+#[tokio::test]
+async fn recover_adopts_live_records_and_drops_dead_ones() {
+    use crate::state::{DaemonRecord, PortRecord, StateFile, StemRecord};
+    let yaml = format!(
+        "{}{}",
+        "  a: { type: process, command: run, ports: [{ name: http, port: auto }] }\n",
+        proc("b", "a")
+    );
+    let rt = FakeRuntime {
+        adoptable: [4242].into_iter().collect(),
+        ..FakeRuntime::default()
+    };
+    let r = rig(&yaml, rt, FakeWaiter::default());
+    let mut prev = StateFile::new("01PREV", DaemonRecord::default());
+    let rec = |pid: i32, ports: Vec<PortRecord>| StemRecord {
+        pid,
+        pgid: pid,
+        start_time: StartTime(7),
+        container_id: None,
+        ports,
+        overlays: Vec::new(),
+        state: StemState::Healthy,
+        started_at: chrono::Utc::now(),
+        log_file: None,
+    };
+    prev.stems.insert(
+        "a".into(),
+        rec(
+            4242,
+            vec![PortRecord {
+                name: "http".into(),
+                port: 45678,
+                auto: true,
+            }],
+        ),
+    );
+    prev.stems.insert("b".into(), rec(4343, Vec::new()));
+    let report = r.sup.recover(Some(prev), "daemon").await;
+    assert_eq!(report.adopted, ["a"]);
+    assert_eq!(report.dead, ["b"]);
+    let a = r.sup.cell("a");
+    assert_eq!(a.state(), StemState::Healthy);
+    assert_eq!(r.sup.core.ports.allocated("a", "http"), Some(45678));
+    let ev = r.events.replay(0);
+    assert!(ev.iter().any(|e| e.kind == EventKind::STEM_ADOPTED
+        && e.stem.as_deref() == Some("a")
+        && e.data["pid"] == 4242));
+    assert!(
+        ev.iter()
+            .any(|e| e.kind == EventKind::STEM_RECOVERED_DEAD && e.stem.as_deref() == Some("b"))
+    );
+    // `up` leaves the adopted stem alone and starts the other.
+    let res = r.sup.up(UpParams::default(), "cli:test").await.unwrap();
+    assert!(res.ok, "{res:?}");
+    assert_eq!(*r.rt.starts.lock().unwrap(), ["b"]);
+    let st = r.sup.status(&StatusParams::default(), "cli:test").unwrap();
+    assert_eq!(st.stems[0].pid, Some(4242));
+    assert_eq!(st.stems[0].reason.as_deref(), Some("adopted"));
+    // Adopted stems stop like any other.
+    let down = r
+        .sup
+        .stop(
+            StopParams {
+                stems: vec!["a".into()],
+                cascade: true,
+                timeout_ms: None,
+            },
+            "cli:test",
+        )
+        .await
+        .unwrap();
+    assert_eq!(down.stopped.len(), 2, "{down:?}");
+    assert_eq!(a.state(), StemState::Stopped);
 }

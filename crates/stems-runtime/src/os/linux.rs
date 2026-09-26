@@ -173,6 +173,16 @@ pub(super) fn listeners_on_port(port: u16) -> Vec<Listener> {
         .collect()
 }
 
+pub(super) fn command_line(pid: i32) -> Option<String> {
+    let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    let args: Vec<String> = raw
+        .split(|b| *b == 0)
+        .filter(|a| !a.is_empty())
+        .map(|a| String::from_utf8_lossy(a).into_owned())
+        .collect();
+    Some(args.join(" "))
+}
+
 pub(super) fn listening_ports(pids: &[i32]) -> Vec<u16> {
     let socks = listen_sockets();
     if socks.is_empty() {

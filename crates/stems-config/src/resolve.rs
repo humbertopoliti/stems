@@ -196,6 +196,7 @@ pub(crate) fn resolve_workspace(
         logs: Logs {
             max_size: logs.max_size.unwrap_or(d::LOGS_MAX_SIZE),
             keep: logs.keep.unwrap_or(d::LOGS_KEEP),
+            ring: logs.ring.unwrap_or(d::LOGS_RING),
         },
         metrics: Metrics {
             interval: metrics.interval.unwrap_or(d::METRICS_INTERVAL),

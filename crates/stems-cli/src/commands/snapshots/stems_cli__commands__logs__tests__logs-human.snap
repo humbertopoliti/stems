@@ -1,0 +1,7 @@
+---
+source: crates/stems-cli/src/commands/logs.rs
+expression: "text.join(\"\\n\")"
+---
+10:00:00.123 shop-api | listening on 127.0.0.1:8080
+10:00:01.123 web | GET / 200
+10:00:02.123 shop-api | [seed] seeded 3 users

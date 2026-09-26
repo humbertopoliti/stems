@@ -11,8 +11,10 @@ use futures::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use stems_api::{
     API_VERSION, JSONRPC_VERSION, Method, Notification, Request, Response, SubscribeAck,
-    SubscribeEventsParams, VERSION, rpc_code, version_mismatch,
+    SubscribeEventsParams, SubscribeLogsAck, SubscribeLogsParams, VERSION, rpc_code,
+    version_mismatch,
 };
+use stems_core::logs::LogQuery;
 use stems_core::{Error, ErrorCode};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{broadcast, watch};
@@ -21,6 +23,7 @@ use tokio_util::codec::{Framed, LinesCodec, LinesCodecError};
 
 use crate::events::EventBus;
 use crate::handler::{Handler, RequestCtx};
+use crate::logs::LogHub;
 
 /// Largest request frame accepted (bytes).
 pub const MAX_FRAME: usize = 4 * 1024 * 1024;
@@ -58,6 +61,8 @@ fn sock_err(path: &Path, what: &str, e: io::Error) -> Error {
 pub(crate) struct Server {
     pub handler: Arc<dyn Handler>,
     pub events: Arc<EventBus>,
+    /// Stem logs (`subscribe_logs`).
+    pub logs: Arc<LogHub>,
     /// Flips to true after `daemon.stopped`: connections flush and close.
     pub closing: watch::Receiver<bool>,
 }
@@ -212,6 +217,23 @@ async fn serve_conn(stream: UnixStream, server: Arc<Server>) {
             stream_events(conn, &server, req.id, p.since_seq).await;
             return;
         }
+        if req.method == Method::SUBSCRIBE_LOGS {
+            let q = serde_json::from_value::<SubscribeLogsParams>(req.params)
+                .map_err(|e| usage(format!("invalid params: {e}")))
+                .and_then(|p| crate::logs::to_query(&p.filter, chrono::Utc::now()));
+            let q = match q {
+                Ok(q) => q,
+                Err(e) => {
+                    if !send(&mut conn, &Response::err(req.id, e)).await {
+                        return;
+                    }
+                    continue;
+                }
+            };
+            tracing::debug!(actor = %ctx.actor, stems = ?q.stems, "subscribe_logs");
+            stream_logs(conn, &server, req.id, q).await;
+            return;
+        }
         tracing::debug!(actor = %ctx.actor, method = %req.method, "request");
         let resp = match server
             .handler
@@ -223,6 +245,71 @@ async fn serve_conn(stream: UnixStream, server: Arc<Server>) {
         };
         if !send(&mut conn, &resp).await {
             return;
+        }
+    }
+}
+
+/// `subscribe_logs`: subscribe live first, then (with `since` or `tail`)
+/// replay history from the ring/files, ack with the replay size, send the
+/// replay and then live records (skipping those the replay already held)
+/// until the client closes or the daemon stops.
+async fn stream_logs(mut conn: Conn, server: &Server, id: Value, q: LogQuery) {
+    let mut rx = server.logs.subscribe();
+    let replay = if q.since.is_some() || q.tail.is_some() {
+        let (hub, rq) = (server.logs.clone(), q.clone());
+        let opts = crate::logs::QueryOptions::default();
+        tokio::task::spawn_blocking(move || hub.query(&rq, opts))
+            .await
+            .unwrap_or_default()
+    } else {
+        crate::logs::QueryOutcome::default()
+    };
+    let ack = SubscribeLogsAck {
+        subscribed: true,
+        replay: replay.records.len(),
+    };
+    if !send(&mut conn, &Response::ok(id, json!(ack))).await {
+        return;
+    }
+    for rec in &replay.records {
+        if !send(&mut conn, &Notification::log(rec)).await {
+            return;
+        }
+    }
+    // Live records: every filter but the time window and `tail`.
+    let live_q = LogQuery {
+        since: None,
+        until: None,
+        tail: None,
+        ..q
+    };
+    let seen = replay.next_seq;
+    let mut closing = server.closing.clone();
+    loop {
+        tokio::select! {
+            biased;
+            r = rx.recv() => match r {
+                Ok(live) => {
+                    if seen.get(&live.record.stem).is_some_and(|n| live.seq < *n)
+                        || !live_q.matches(&live.record)
+                    {
+                        continue;
+                    }
+                    if !send(&mut conn, &Notification::log(&live.record)).await { return; }
+                }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::debug!(skipped = n, "subscribe_logs client lagged");
+                }
+                Err(broadcast::error::RecvError::Closed) => return,
+            },
+            n = conn.next() => match n {
+                Some(Ok(_)) => {}
+                _ => return,
+            },
+            _ = signalled(&mut closing) => {
+                let _ = SinkExt::<String>::close(&mut conn).await;
+                return;
+            }
         }
     }
 }

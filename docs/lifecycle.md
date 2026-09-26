@@ -55,7 +55,12 @@ decides when a started stem satisfies an edge condition:
 
 ## Commands
 
-### `stems up [stems…] [--detach] [--timeout D] [--no-fail-fast] [--max-parallel N] [--pass-env VARS]`
+### `stems up [stems…] [--detach] [--timeout D] [--no-fail-fast] [--max-parallel N] [--pass-env VARS] [--yes|--kill-orphans|--adopt-orphans] [--kill-foreign]`
+
+Before anything starts, `up` scans the workspace's declared ports for
+orphans (processes not started by stems); with orphans and no consent flag
+it exits 3 `ORPHANS_FOUND` and starts nothing. A new daemon first adopts the
+stems a crashed one left running. See [recovery.md](recovery.md).
 
 1. Starts the workspace daemon if none runs (detached, own session) and
    remembers that `up` started it.
@@ -102,8 +107,10 @@ never touched. An in-flight `up` is cancelled first.
 The daemon then shuts down if `--all` was given, or if nothing runs any more
 and the daemon was auto-started by `stems up` (`data.daemon_stopping`); the
 command waits until its socket and lock are gone. With no daemon running,
-`down` exits 4 (`DAEMON_NOT_RUNNING`; recovery of a crashed daemon's stems
-is deliverable 11). `--volumes` is deliverable 14.
+`down` exits 4 (`DAEMON_NOT_RUNNING`) — unless `state.json` lists stems of a
+crashed daemon: then it starts a daemon, which adopts them, stops them all
+and exits (`data.recovered: true`; [recovery.md](recovery.md)).
+`--volumes` is deliverable 14.
 
 ### `stems start <stems…> [--no-deps]`
 

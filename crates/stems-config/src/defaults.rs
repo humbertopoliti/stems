@@ -14,6 +14,8 @@ pub const AGENT_ALLOW_DESTRUCTIVE: bool = false;
 pub const LOGS_MAX_SIZE: ByteSize = ByteSize(50 * 1024 * 1024);
 /// `logs.keep`.
 pub const LOGS_KEEP: u32 = 3;
+/// `logs.ring` (lines per stem held in memory).
+pub const LOGS_RING: u32 = 10_000;
 /// `metrics.interval`.
 pub const METRICS_INTERVAL: Dur = Dur::from_secs(2);
 /// `metrics.persist`.
@@ -130,6 +132,7 @@ pub fn defaults_table() -> Vec<(&'static str, String)> {
         ("agent.denied_tools", "[]".into()),
         ("logs.max_size", LOGS_MAX_SIZE.to_string()),
         ("logs.keep", LOGS_KEEP.to_string()),
+        ("logs.ring", LOGS_RING.to_string()),
         ("metrics.interval", t(METRICS_INTERVAL)),
         ("metrics.persist", METRICS_PERSIST.to_string()),
         ("repos_dir", REPOS_DIR.into()),

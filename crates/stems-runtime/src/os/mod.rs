@@ -113,6 +113,26 @@ pub fn listeners_on_port(port: u16) -> Vec<Listener> {
     v
 }
 
+/// Full command line of `pid` (argv joined by single spaces), best effort:
+/// `None` if the process is gone or unreadable. Used by the orphan scan's
+/// "is this our stem's start command?" heuristic (deliverable 11).
+pub fn command_line(pid: i32) -> Option<String> {
+    if pid <= 0 {
+        return None;
+    }
+    imp::command_line(pid).filter(|s| !s.trim().is_empty())
+}
+
+/// Process group of `pid`, or `None` if there is no such process.
+pub fn process_group(pid: i32) -> Option<i32> {
+    if pid <= 0 {
+        return None;
+    }
+    nix::unistd::getpgid(Some(Pid::from_raw(pid)))
+        .ok()
+        .map(Pid::as_raw)
+}
+
 /// TCP ports that any of `pids` is listening on, sorted and de-duplicated.
 pub fn listening_ports(pids: &[i32]) -> Vec<u16> {
     if pids.is_empty() {
@@ -225,6 +245,22 @@ mod tests {
         let st = process_start_time(pid).unwrap();
         assert!(!is_alive(pid, StartTime(st.0 + 1)));
         assert!(!is_alive(pid, StartTime(0)));
+    }
+
+    #[test]
+    fn command_line_and_group_of_a_child() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("31")
+            .spawn()
+            .expect("spawn sleep");
+        let pid = child.id() as i32;
+        let cmd = command_line(pid).expect("command line");
+        assert!(cmd.contains("sleep") && cmd.contains("31"), "{cmd:?}");
+        assert_eq!(process_group(pid), Some(nix::unistd::getpgrp().as_raw()));
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert_eq!(command_line(pid), None);
+        assert_eq!(command_line(0), None);
     }
 
     #[test]

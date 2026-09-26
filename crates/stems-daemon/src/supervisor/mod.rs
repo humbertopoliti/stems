@@ -10,7 +10,7 @@
 //!
 //! Hooks for later deliverables: [`RuntimeRegistry`] (docker 14, compose
 //! 15), [`OutputSink`] (logs 12), [`Waiter`] (probes 21), the actor's exit
-//! handler (restart policies 22), [`Host`] (state store 11 can wrap it).
+//! handler (restart policies 22), [`Host`] (its `state_store` is 11's state file).
 
 pub mod actor;
 pub mod env;
@@ -43,6 +43,16 @@ pub use waiter::{AliveWaiter, WaitTarget, Waiter};
 use crate::daemon::Daemon;
 use crate::events::{EventBus, EventDraft};
 use crate::handler::{RequestCtx, SupervisorHooks};
+use crate::state::{StateFile, StateStore, StemRecord};
+
+/// What [`Supervisor::recover`] did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RecoverReport {
+    /// Stems adopted (alive, same process).
+    pub adopted: Vec<String>,
+    /// Records dropped (dead or not verifiable).
+    pub dead: Vec<String>,
+}
 
 /// Default `max_parallel` for `up`.
 pub const DEFAULT_MAX_PARALLEL: usize = 4;
@@ -106,6 +116,15 @@ pub trait Host: Send + Sync {
     fn started_by_up(&self) -> bool;
     /// Record that the daemon was auto-started by `up`.
     fn set_started_by_up(&self);
+    /// The state store the supervisor persists running stems to (11).
+    fn state_store(&self) -> Option<Arc<StateStore>> {
+        None
+    }
+    /// Where started units' output goes (12: the daemon's log hub); `None`
+    /// drops it ([`NullSink`]).
+    fn output_sink(&self) -> Option<Arc<dyn OutputSink>> {
+        None
+    }
 }
 
 struct DaemonHost(Weak<Daemon>);
@@ -147,6 +166,14 @@ impl Host for DaemonHost {
             d.set_started_by_up();
         }
     }
+    fn output_sink(&self) -> Option<Arc<dyn OutputSink>> {
+        self.0
+            .upgrade()
+            .map(|d| d.logs().clone() as Arc<dyn OutputSink>)
+    }
+    fn state_store(&self) -> Option<Arc<StateStore>> {
+        self.0.upgrade().map(|d| d.state_store().clone())
+    }
 }
 
 /// Shared by the supervisor and every actor.
@@ -158,6 +185,8 @@ pub struct Core {
     pub(crate) run_id: String,
     pub(crate) base_env: BTreeMap<String, String>,
     pub(crate) sink: Arc<dyn OutputSink>,
+    /// Durable state (deliverable 11); `None` in unit tests.
+    pub(crate) state: Option<Arc<StateStore>>,
 }
 
 /// The supervisor. Installed into the daemon by [`Daemon::run`].
@@ -171,16 +200,9 @@ pub struct Supervisor {
     cancel: Mutex<CancellationToken>,
 }
 
-/// A fresh run id (time-ordered, unique per daemon run; 11 may switch to ULIDs).
+/// A fresh run id (a ULID, unique per daemon run).
 fn new_run_id() -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    format!(
-        "{:012x}{:06x}",
-        now.as_millis(),
-        std::process::id() & 0xff_ffff
-    )
+    crate::state::new_run_id()
 }
 
 fn params<T: DeserializeOwned>(method: &str, v: &Value) -> Result<T, Error> {
@@ -215,9 +237,10 @@ impl Supervisor {
                 runtimes,
                 waiter,
                 ports: PortBook::default(),
-                run_id: new_run_id(),
+                run_id: host.state_store().map_or_else(new_run_id, |s| s.run_id()),
                 base_env: std::env::vars().collect(),
-                sink: Arc::new(NullSink),
+                sink: host.output_sink().unwrap_or_else(|| Arc::new(NullSink)),
+                state: host.state_store(),
             }),
             host,
             cells: Mutex::new(IndexMap::new()),
@@ -597,6 +620,162 @@ impl Supervisor {
         Ok(StatusResult { stems, summary })
     }
 
+    /// Crash recovery (deliverable 11): adopt every stem the previous run
+    /// recorded that is still alive (same pid *and* start time) as
+    /// `healthy` (`stem.adopted`), drop the others (`stem.recovered_dead`),
+    /// restore sticky `auto` ports, carry the stamps over, and rewrite the
+    /// state file. Runs before the daemon serves requests.
+    pub async fn recover(&self, previous: Option<StateFile>, actor: &str) -> RecoverReport {
+        let _ops = self.ops.lock().await;
+        let mut report = RecoverReport::default();
+        let ws = self.host.resolved();
+        let previous = previous.unwrap_or_else(|| StateFile::new("", Default::default()));
+        if let Some(store) = &self.core.state {
+            let stamps = previous.stamps.clone();
+            store.update(|f| f.stamps = stamps);
+        }
+        for (name, rec) in previous.stems {
+            let stem = ws.as_ref().and_then(|w| w.workspace.stem(&name).cloned());
+            let kind = match (&stem, &rec.container_id) {
+                (Some(s), _) => s.kind(),
+                (None, Some(_)) => StemType::Docker,
+                (None, None) => StemType::Process,
+            };
+            let grace = stem
+                .as_ref()
+                .map_or(Duration::from_secs(10), |s| s.stop_grace.as_duration());
+            let adopted = match self.core.runtimes.get(kind) {
+                Ok(rt) => rt.adopt(&rec.adopt_record()).await.map(|h| (rt, h)),
+                Err(_) => None,
+            };
+            match adopted {
+                Some((rt, h)) => {
+                    for p in rec.ports.iter().filter(|p| p.auto) {
+                        self.core.ports.restore(&name, &p.name, p.port);
+                    }
+                    actor::adopt(&self.core, &self.cell(&name), rt, h, &rec, grace, actor);
+                    report.adopted.push(name);
+                }
+                None => {
+                    self.emit(
+                        EventDraft::new(EventKind::STEM_RECOVERED_DEAD, actor)
+                            .stem(&name)
+                            .reason("not alive (or a different process) any more; record cleared")
+                            .data(json!({
+                                "pid": rec.pid,
+                                "pgid": rec.pgid,
+                                "start_time": rec.start_time,
+                                "container_id": rec.container_id,
+                            })),
+                    );
+                    report.dead.push(name);
+                }
+            }
+        }
+        if let Some(store) = &self.core.state {
+            store.flush();
+        }
+        tracing::info!(adopted = ?report.adopted, dead = ?report.dead, "crash recovery done");
+        report
+    }
+
+    /// `adopt_orphans` (deliverable 11): register running processes found by
+    /// the orphan scan as their stems. Params `{ orphans: [{stem, pid}] }`;
+    /// result `{ adopted: [{stem, pid, pgid}], failed: [{stem, pid, error}] }`.
+    pub async fn adopt_orphans(&self, p: &Value, actor: &str) -> Result<Value, Error> {
+        #[derive(serde::Deserialize)]
+        struct Item {
+            stem: String,
+            pid: i32,
+        }
+        #[derive(serde::Deserialize)]
+        struct Params {
+            orphans: Vec<Item>,
+        }
+        let p: Params = params("adopt_orphans", p)?;
+        let ws = self.workspace(false, actor)?;
+        let _ops = self.ops.lock().await;
+        let mut adopted = Vec::new();
+        let mut failed = Vec::new();
+        for it in p.orphans {
+            let r: Result<(i32, i32), Error> = async {
+                let stem = ws.workspace.stem(&it.stem).ok_or_else(|| {
+                    Error::new(
+                        ErrorCode::UnknownStem,
+                        format!("stem `{}` does not exist", it.stem),
+                    )
+                })?;
+                let cell = self.cell(&it.stem);
+                if cell.state().is_running() {
+                    return Err(Error::usage(
+                        format!("`{}` is already running under stems", it.stem),
+                        "stop it first, or kill the orphan instead",
+                    ));
+                }
+                let orphan = crate::orphans::Orphan {
+                    kind: crate::orphans::OrphanKind::Process,
+                    port: None,
+                    pid: Some(it.pid),
+                    pgid: None,
+                    command: String::new(),
+                    container_id: None,
+                    stem: Some(it.stem.clone()),
+                    matches_start_command: false,
+                };
+                let ar = crate::orphans::adopt_record(&orphan)
+                    .ok_or_else(|| Error::internal(format!("process {} is gone", it.pid)))?;
+                let rt = self.core.runtimes.get(stem.kind())?;
+                let h = rt.adopt(&ar).await.ok_or_else(|| {
+                    Error::internal(format!("process {} cannot be adopted", it.pid))
+                })?;
+                let started_at = ar
+                    .start_time
+                    .approx_system_time()
+                    .map_or_else(chrono::Utc::now, chrono::DateTime::<chrono::Utc>::from);
+                let rec = StemRecord {
+                    pid: ar.pid,
+                    pgid: ar.pgid,
+                    start_time: ar.start_time,
+                    container_id: None,
+                    ports: stem
+                        .ports
+                        .iter()
+                        .filter_map(|pt| match pt.port {
+                            stems_config::PortRef::Fixed(n) => Some(crate::state::PortRecord {
+                                name: pt.name.clone(),
+                                port: n,
+                                auto: false,
+                            }),
+                            stems_config::PortRef::Auto => None,
+                        })
+                        .collect(),
+                    overlays: Vec::new(),
+                    state: stems_core::StemState::Healthy,
+                    started_at,
+                    log_file: None,
+                };
+                actor::adopt(
+                    &self.core,
+                    &cell,
+                    rt,
+                    h,
+                    &rec,
+                    stem.stop_grace.as_duration(),
+                    actor,
+                );
+                Ok((ar.pid, ar.pgid))
+            }
+            .await;
+            match r {
+                Ok((pid, pgid)) => {
+                    adopted.push(json!({ "stem": it.stem, "pid": pid, "pgid": pgid }))
+                }
+                Err(e) => failed.push(json!({ "stem": it.stem, "pid": it.pid, "error": e })),
+            }
+        }
+        Ok(json!({ "adopted": adopted, "failed": failed }))
+    }
+
     /// Stop everything that runs, in reverse dependency order (daemon exit path).
     pub async fn stop_all(&self, actor: &str, reason: &str) {
         self.cancel_running();
@@ -660,6 +839,7 @@ impl SupervisorHooks for Supervisor {
                 Ok(p) => self.status(&p, actor).and_then(to_value),
                 Err(e) => Err(e),
             },
+            m if m == Method::ADOPT_ORPHANS => self.adopt_orphans(p, actor).await,
             _ => return None,
         };
         Some(r)
@@ -668,6 +848,10 @@ impl SupervisorHooks for Supervisor {
     async fn shutdown(&self) {
         self.stop_all(stems_api::DAEMON_ACTOR, "daemon shutdown")
             .await;
+    }
+
+    async fn recover(&self, previous: Option<StateFile>) {
+        Supervisor::recover(self, previous, stems_api::DAEMON_ACTOR).await;
     }
 }
 

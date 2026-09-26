@@ -57,8 +57,8 @@ handle is reported `AlreadyDead` without sending anything.
 
 ## Adoption after a daemon restart
 
-The state file (deliverable 11) stores `AdoptRecord { pid, pgid, start_time,
-container_id }`. `Runtime::adopt(record)` returns `Handle::Adopted` only if the
+The state file (deliverable 11, [recovery.md](recovery.md)) stores
+`AdoptRecord { pid, pgid, start_time, container_id }`. `Runtime::adopt(record)` returns `Handle::Adopted` only if the
 pid is alive, its start time matches, and `getpgid(pid) == pgid`. An adopted
 process is not our child, so:
 

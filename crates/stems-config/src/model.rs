@@ -125,6 +125,8 @@ pub struct Logs {
     pub max_size: ByteSize,
     /// Rotated files kept.
     pub keep: u32,
+    /// Lines kept per stem in the in-memory ring buffer.
+    pub ring: u32,
 }
 
 /// `metrics:` settings.

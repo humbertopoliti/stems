@@ -1259,6 +1259,7 @@ mod tests {
         let cfg = stems_config::Logs {
             max_size: ByteSize(200 * 1024),
             keep: 2,
+            ring: 10_000,
         };
         assert_eq!(
             RotationPolicy::from_config(&cfg),

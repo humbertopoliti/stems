@@ -143,6 +143,8 @@ pub struct RawLogs {
     pub max_size: Option<ByteSize>,
     /// Rotated files to keep.
     pub keep: Option<u32>,
+    /// Lines kept per stem in the daemon's in-memory ring buffer.
+    pub ring: Option<u32>,
 }
 
 /// `metrics:` block.

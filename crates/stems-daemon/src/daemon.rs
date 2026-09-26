@@ -21,8 +21,10 @@ use crate::debug::{DebugRpc, ENV_DEBUG_RPC};
 use crate::events::{EventBus, EventDraft};
 use crate::handler::{Handler, RequestCtx, SupervisorHooks};
 use crate::lock;
+use crate::logs::LogHub;
 use crate::paths::{DaemonPaths, workspace_root};
 use crate::server::{self, Server};
+use crate::state::{DaemonRecord, StateFile, StateStore};
 
 /// Directory name under the home for a daemon started without a workspace.
 pub const NO_WORKSPACE_DIR: &str = "no-workspace";
@@ -90,6 +92,8 @@ pub struct Daemon {
     shutdown_tx: watch::Sender<bool>,
     shutdown_by: Mutex<Option<(String, String)>>,
     started_by_up: AtomicBool,
+    logs: Arc<LogHub>,
+    state: Arc<StateStore>,
 }
 
 fn read<T>(l: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
@@ -119,12 +123,20 @@ impl Daemon {
     pub fn new(paths: DaemonPaths, workspace: Option<PathBuf>, debug_rpc: bool) -> Arc<Self> {
         let pid = std::process::id();
         let events = Arc::new(EventBus::default());
+        let start_time = stems_runtime::os::process_start_time(pid as i32).map_or(0, |s| s.0);
+        let state = Arc::new(StateStore::new(
+            paths.state.clone(),
+            crate::state::new_run_id(),
+            DaemonRecord { pid, start_time },
+        ));
+        let logs = Arc::new(LogHub::new(paths.logs_dir()));
         Arc::new(Self {
+            logs,
             paths,
             started_at: Utc::now(),
             started: Instant::now(),
             pid,
-            start_time: stems_runtime::os::process_start_time(pid as i32).map_or(0, |s| s.0),
+            start_time,
             workspace: RwLock::new(Loaded {
                 root: workspace.unwrap_or_default(),
                 resolved: None,
@@ -135,6 +147,7 @@ impl Daemon {
             shutdown_tx: watch::Sender::new(false),
             shutdown_by: Mutex::new(None),
             started_by_up: AtomicBool::new(false),
+            state,
         })
     }
 
@@ -146,6 +159,16 @@ impl Daemon {
     /// This daemon's paths.
     pub fn paths(&self) -> &DaemonPaths {
         &self.paths
+    }
+
+    /// The stem log hub (the supervisor's output sink, deliverable 12).
+    pub fn logs(&self) -> &Arc<LogHub> {
+        &self.logs
+    }
+
+    /// The durable state store (`state.json`, deliverable 11).
+    pub fn state_store(&self) -> &Arc<StateStore> {
+        &self.state
     }
 
     /// The loaded workspace, if `load_workspace` (or startup) succeeded.
@@ -241,6 +264,8 @@ impl Daemon {
             stems: ws.stems.keys().cloned().collect(),
             sources: resolved.sources.clone(),
         };
+        self.logs
+            .configure(crate::logs::LogSettings::from_config(&ws.logs));
         {
             let mut w = write(&self.workspace);
             w.root = ws.root.clone();
@@ -292,6 +317,7 @@ impl Daemon {
         })?;
 
         let daemon = Daemon::new(paths.clone(), workspace.clone(), opts.debug_rpc);
+        daemon.logs.watch_events(&daemon.events);
         setup(&daemon);
         tracing::info!(
             pid = daemon.pid,
@@ -302,14 +328,11 @@ impl Daemon {
             "daemon starting"
         );
 
-        let (closing_tx, closing_rx) = watch::channel(false);
-        let (stop_tx, stop_rx) = watch::channel(false);
-        let srv = Arc::new(Server {
-            handler: daemon.clone(),
-            events: daemon.events.clone(),
-            closing: closing_rx,
-        });
-        let accept = tokio::spawn(server::accept_loop(listener, srv, stop_rx));
+        // The previous run's state, read only now that we hold the lock.
+        let previous = StateFile::load(&paths.state);
+        if let Some((moved, err)) = &previous.corrupt {
+            tracing::warn!(moved_to = %moved.display(), error = %err, "corrupt state file ignored");
+        }
 
         daemon.events.emit(
             EventDraft::new(EventKind::DAEMON_STARTED, DAEMON_ACTOR).data(json!({
@@ -326,6 +349,20 @@ impl Daemon {
         {
             tracing::warn!(code = %e.code, "workspace did not load: {}", e.message);
         }
+        // Crash recovery before serving: a request never races adoption.
+        if let Some(sup) = daemon.supervisor() {
+            sup.recover(previous.file).await;
+        }
+
+        let (closing_tx, closing_rx) = watch::channel(false);
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let srv = Arc::new(Server {
+            handler: daemon.clone(),
+            events: daemon.events.clone(),
+            logs: daemon.logs.clone(),
+            closing: closing_rx,
+        });
+        let accept = tokio::spawn(server::accept_loop(listener, srv, stop_rx));
         tracing::info!("daemon listening");
 
         tokio::select! {
@@ -357,6 +394,7 @@ impl Daemon {
         if let Some(d) = &daemon.debug {
             d.stop_all().await;
         }
+        daemon.logs.flush_all().await;
         stop_tx.send_replace(true);
         let mut conns = accept.await.unwrap_or_default();
         match std::fs::remove_file(&paths.socket) {
@@ -426,10 +464,32 @@ impl Handler for Daemon {
                 self.request_shutdown(&ctx.actor, "shutdown requested");
                 to_value(ShutdownResult { stopping: true })
             }
-            m if m == Method::SUBSCRIBE_EVENTS => Err(Error::usage(
-                "`subscribe_events` is a streaming method handled by the server",
+            m if m == Method::SUBSCRIBE_EVENTS || m == Method::SUBSCRIBE_LOGS => Err(Error::usage(
+                format!("`{m}` is a streaming method handled by the server"),
                 "send it as a request on its own connection",
             )),
+            m if m == Method::QUERY_LOGS => {
+                let p: stems_api::QueryLogsParams = params(m, p)?;
+                to_value(crate::logs::rpc_query(&self.logs, self.resolved(), p).await?)
+            }
+            m if m == Method::EXPORT_LOGS => {
+                let p: stems_api::ExportLogsParams = params(m, p)?;
+                let status = match self.supervisor() {
+                    Some(sup) => {
+                        match sup.handle(&ctx, Method::STATUS.as_str(), &json!({})).await {
+                            Some(Ok(v)) => v,
+                            Some(Err(e)) => json!({ "error": e }),
+                            None => json!({ "error": "no status available" }),
+                        }
+                    }
+                    None => json!({ "error": "no supervisor" }),
+                };
+                let events = self.events.replay(0);
+                to_value(
+                    crate::logs::export::rpc_export(&self.logs, self.resolved(), status, events, p)
+                        .await?,
+                )
+            }
             _ => {
                 if method.starts_with("_debug.")
                     && let Some(d) = &self.debug

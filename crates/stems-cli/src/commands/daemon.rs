@@ -8,8 +8,10 @@
 //! * `status`: `data: { running, pid, version, api_version, workspace,
 //!   workspace_name, uptime_s, started_at, socket, lock, lock_state, log,
 //!   stem_count, last_seq, subscribers, debug_rpc, client_version,
-//!   compatible }`; not running: `data: { running: false, workspace, socket,
-//!   lock, lock_state, log }` plus `DAEMON_NOT_RUNNING` (exit 4).
+//!   compatible, state }`; not running: `data: { running: false, workspace,
+//!   socket, lock, lock_state, log, state }` plus `DAEMON_NOT_RUNNING` (exit
+//!   4). `state` is `{ run_id, stems, alive, path }` read from `state.json`
+//!   (`null` without one; deliverable 11).
 //! * `stop`: `data: { stopped: true, pid }`; a stale lock (crashed daemon)
 //!   is cleaned up with `data: { stopped: false, stale_lock_removed: true,
 //!   pid }` (exit 0); nothing at all: `DAEMON_NOT_RUNNING` (exit 4).
@@ -94,6 +96,20 @@ fn paths_json(t: &Target) -> serde_json::Map<String, Value> {
     m
 }
 
+/// `data.state` of `daemon status`: `{run_id, stems, alive, path}` from
+/// `state.json` (`null` when there is none) — deliverable 11.
+fn state_json(t: &Target) -> Value {
+    match stems_daemon::state::StateSummary::of(&t.paths.state) {
+        Some(s) => json!({
+            "run_id": s.run_id,
+            "stems": s.stems,
+            "alive": s.alive,
+            "path": t.paths.state,
+        }),
+        None => Value::Null,
+    }
+}
+
 fn info_json(info: &DaemonInfo, t: &Target) -> serde_json::Map<String, Value> {
     let mut m = paths_json(t);
     m.insert("pid".into(), json!(info.pid));
@@ -168,6 +184,7 @@ fn status(ctx: &Ctx) -> CommandOutput {
             let mut data = paths_json(&t);
             data.insert("running".into(), json!(true));
             data.insert("lock_state".into(), json!("held"));
+            data.insert("state".into(), state_json(&t));
             if let Value::Object(m) = st {
                 for (k, v) in m {
                     data.entry(k).or_insert(v);
@@ -195,6 +212,7 @@ fn status(ctx: &Ctx) -> CommandOutput {
             let mut data = paths_json(&t);
             data.insert("running".into(), json!(false));
             data.insert("lock_state".into(), lock_state_json(&lock::probe(&t.paths)));
+            data.insert("state".into(), state_json(&t));
             CommandOutput::data(Value::Object(data)).with_errors(e)
         }
     }

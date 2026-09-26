@@ -277,6 +277,15 @@
           ],
           "format": "uint32",
           "minimum": 0
+        },
+        "ring": {
+          "description": "Lines kept per stem in the daemon's in-memory ring buffer.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
         }
       },
       "additionalProperties": false

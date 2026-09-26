@@ -45,6 +45,7 @@ workspace:
   logs:
     max_size: 50MB
     keep: 3
+    ring: 10000
   metrics:
     interval: 2s
     persist: false

@@ -167,6 +167,19 @@ pub(super) fn listeners_on_port(port: u16) -> Vec<Listener> {
     v
 }
 
+pub(super) fn command_line(pid: i32) -> Option<String> {
+    let out = Command::new("/bin/ps")
+        .args(["-ww", "-o", "command=", "-p", &pid.to_string()])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
 pub(super) fn listening_ports(pids: &[i32]) -> Vec<u16> {
     let list = pids
         .iter()

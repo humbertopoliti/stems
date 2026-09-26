@@ -3,9 +3,12 @@
 
 pub mod completions;
 pub mod daemon;
+pub mod doctor;
 pub mod events;
 pub mod init;
 pub mod lifecycle;
+pub mod logs;
+pub mod orphans;
 pub mod show;
 pub mod status;
 pub mod stubs;
@@ -70,11 +73,13 @@ pub fn dispatch(cmd: Command, ctx: &Ctx, mode: Mode, stdout: &mut dyn Write) -> 
         Command::Init(a) => init::run(ctx, &a),
         Command::Up(a) => lifecycle::up(ctx, &a, mode, stdout),
         Command::Down(a) => lifecycle::down(ctx, &a),
+        Command::Doctor(a) => doctor::run(ctx, a, mode),
         Command::Start(a) => lifecycle::start(ctx, &a),
         Command::Stop(a) => lifecycle::stop(ctx, &a),
         Command::Restart(a) => lifecycle::restart(ctx, &a),
         Command::Attach(a) => lifecycle::attach(ctx, &a, mode, stdout),
         Command::Status(a) => status::run(ctx, &a),
+        Command::Logs(a) => logs::run(ctx, &a, mode, stdout),
         Command::Validate(a) => validate::run(ctx, &a),
         Command::Show(a) => show::run(ctx, &a),
         Command::Completions(a) => completions::run(&a),

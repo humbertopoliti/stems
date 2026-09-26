@@ -47,6 +47,18 @@ Options:
       --force-overlays
           Back up conflicting overlay destinations and proceed
 
+      --adopt-orphans
+          Adopt orphaned processes that look like their stem's start command
+
+      --kill-orphans
+          Kill orphaned processes that look like their stem's start command
+
+      --kill-foreign
+          Also kill processes stems did not start that hold declared ports
+
+  -y, --yes
+          Answer yes to the orphan prompt (same as --kill-orphans)
+
   -h, --help
           Print help
 

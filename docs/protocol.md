@@ -11,7 +11,7 @@ $STEMS_HOME/<ws-hash>/
   stemsd.sock   Unix socket, mode 0600 (directory 0700)
   stemsd.lock   {"pid", "start_time", "version", "created_at"}
   stemsd.log    daemon log (STEMS_DAEMON_LOG overrides the path)
-  state.json    state store (deliverable 11)
+  state.json    running stems + stamps, written atomically (recovery.md)
 ```
 
 * `$STEMS_HOME` defaults to `~/Library/Application Support/stems` (macOS) or
@@ -73,9 +73,11 @@ stems daemon start --json        # again: same data with "already_running": true
 stems daemon status --json       # `daemon_status` + paths
 # data: {running: true, pid, version, api_version, workspace, workspace_name, uptime_s,
 #        started_at, start_time, socket, lock, lock_state: "held", log, stem_count,
-#        last_seq, subscribers, debug_rpc, client_version, compatible}
+#        last_seq, subscribers, debug_rpc, client_version, compatible, state}
 # not running: exit 4 DAEMON_NOT_RUNNING, data: {running: false, lock_state: "free"|"stale",
-#        workspace, socket, lock, log}; a stale lock puts "stale lock: …" in the hint
+#        workspace, socket, lock, log, state}; a stale lock puts "stale lock: …" in the hint,
+#        live stems of a crashed run "stems from a previous run are still alive; run `stems down`"
+# state: {run_id, stems, alive, path} from state.json, or null (recovery.md)
 
 stems events --json --since 0    # NDJSON: one Event per line, no envelope
 # {"ts":"…","seq":1,"kind":"daemon.started","stem":null,"from":null,"to":null,"reason":null,"actor":"daemon","data":{…}}
@@ -129,6 +131,10 @@ the connection stays usable. For a stream:
 | `stop` | `StopParams {stems, cascade?, timeout_ms?}` | `DownResult`; running dependants without `cascade`: `HAS_DEPENDANTS` (`details.dependants`) |
 | `restart` | `RestartParams {stems, no_deps?, build?, timeout_ms?}` | `UpResult` (ports kept); `build: true` is `NOT_IMPLEMENTED` until 16 |
 | `status` | `StatusParams {stems?, verbose?}` | `StatusResult {stems: [StemStatus], summary: {healthy, degraded, failed, stopped, unknown, starting}}` |
+| `query_logs` | `{stems?, since?, until?, grep?, level?, script?, tail?, from_files?}` | `{records: [LogRecord], truncated}` — oldest first, interleaved by `ts`, at most 10 000 (the newest; `truncated` says more matched). Times: `10m`, `1.5s` (before the daemon's clock) or RFC 3339; `level`: `error` (exact) or `warn+` (and above). Unknown stem: `UNKNOWN_STEM`; bad filter: `USAGE` (see [logs.md](logs.md)) |
+| `subscribe_logs` | `{stems?, since?, grep?, level?, script?, tail?}` | ack `{subscribed: true, replay: n}`, then `log` notifications (see below) |
+| `export_logs` | `{path, since?}` (`path` absolute) | `{path, entries: [name], bytes}` — writes the `.tar.gz` bundle ([logs.md](logs.md#export-bundle)) |
+| `adopt_orphans` | `{orphans: [{stem, pid}]}` | `{adopted: [{stem, pid, pgid}], failed: [{stem, pid, error}]}` — registers running processes found by the orphan scan as their stems (`stem.adopted`); see [recovery.md](recovery.md) |
 | `_debug.start_raw` | `{spec: ProcessSpec}` | runtime `Handle` (only with `STEMS_DEBUG_RPC=1`) |
 | `_debug.stop_raw` | `{handle, grace_ms?}` | `"graceful" \| "killed" \| "already_dead"` |
 | `_debug.describe` | `{handle}` | `RuntimeFacts` |
@@ -138,8 +144,8 @@ port, auto}], uptime_s, started_at, restarts, health, error}` plus `env` (what
 stems set for the process) with `verbose`. Semantics of the lifecycle methods:
 [lifecycle.md](lifecycle.md).
 
-Reserved for later deliverables (answer `NOT_IMPLEMENTED` until then): `logs`,
-`subscribe_logs` (12), `run_script` (13). `Method` is an open string type: new methods never change
+Reserved for later deliverables (answer `NOT_IMPLEMENTED` until then):
+`run_script` (13). `Method` is an open string type: new methods never change
 the frame format.
 
 `_debug.*` `handle` is either the `Handle` object returned by `start_raw` or its
@@ -157,6 +163,15 @@ stream ends when the client closes the connection or after the daemon's
 `daemon.stopped` event. Use a dedicated connection for each subscription. The
 daemon buffers the last 10 000 events; a subscriber that falls behind the live
 channel is caught up from that buffer.
+
+`subscribe_logs` works the same way with `log` notifications whose `params`
+is one `LogRecord` (`{ts, stem, stream, tag, level, text, fields}`, see
+[logs.md](logs.md)). With `since` or `tail` the matching history (ring, then
+rotated files) is replayed first — the ack's `replay` says how many — then live
+records follow with no duplicate; without either only live records are sent.
+The filters apply to live records too (except the time window). A subscriber
+that falls behind the live channel (4096 records) skips records rather than
+slowing the daemon down.
 
 ## Events
 
@@ -180,6 +195,11 @@ consumers must ignore unknown kinds): `daemon.started`, `daemon.stopping`,
 `down.started`, `down.finished`, `script.queued`, `script.started`,
 `script.finished`, `watch.triggered`, `watch.paused`, `watch.reconfigured`,
 `config.changed`, `config.invalid`.
+
+Recovery payloads (deliverable 11): `stem.adopted` `data: {pid, pgid,
+started_at}` (followed by `stem.state` `stopped → healthy`, reason
+`adopted`); `stem.recovered_dead` `data: {pid, pgid, start_time,
+container_id}` (the state entry was cleared). See [recovery.md](recovery.md).
 
 Lifecycle payloads (deliverable 10): `stem.state` has `from`/`to`/`reason`
 and `data: {pid, error?, outcome?, exit_code?, signal?}`;
