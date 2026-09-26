@@ -1,0 +1,19 @@
+[package]
+name = "stems-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Local environment management toolkit for multi-process systems"
+
+[[bin]]
+name = "stems"
+path = "src/main.rs"
+
+[dependencies]
+clap = { workspace = true }
+stems-config = { workspace = true }
+stems-api = { workspace = true }
+stems-daemon = { workspace = true }

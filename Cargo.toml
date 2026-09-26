@@ -1,0 +1,33 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/stems-config",
+    "crates/stems-core",
+    "crates/stems-runtime",
+    "crates/stems-api",
+    "crates/stems-daemon",
+    "crates/stems-cli",
+    "tests/stems-e2e",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96.1"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/humbertopoliti/stems"
+
+[workspace.dependencies]
+# Internal crates
+stems-config = { path = "crates/stems-config", version = "0.1.0" }
+stems-core = { path = "crates/stems-core", version = "0.1.0" }
+stems-runtime = { path = "crates/stems-runtime", version = "0.1.0" }
+stems-api = { path = "crates/stems-api", version = "0.1.0" }
+stems-daemon = { path = "crates/stems-daemon", version = "0.1.0" }
+
+# External crates
+clap = { version = "4.6.7", features = ["derive"] }
+
+[profile.release]
+lto = "thin"
+strip = true
