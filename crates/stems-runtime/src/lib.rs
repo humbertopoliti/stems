@@ -1,4 +1,25 @@
-//! `Runtime` trait and process/docker/compose/external implementations; OS traits.
+//! Runtimes that start, stop and observe stems.
+//!
+//! * [`Runtime`] — the async trait every runtime implements.
+//! * [`ProcessRuntime`] — native processes in their own session/process group
+//!   (see `docs/process-model.md`).
+//! * [`os`] — per-OS process facts (start time, process tree, listeners).
+
+pub mod os;
+pub mod output;
+mod process;
+mod runtime;
+
+pub use os::{Listener, ProcInfo, StartTime};
+pub use output::{
+    LineSplitter, MAX_LINE_BYTES, OUTPUT_CHANNEL_CAPACITY, OutputEvent, OutputLine, OutputStream,
+    OutputStreamKind,
+};
+pub use process::ProcessRuntime;
+pub use runtime::{
+    AdoptRecord, ExitStatus, Handle, HandleId, ProcessSpec, Runtime, RuntimeError, RuntimeFacts,
+    StartSpec, StopOutcome,
+};
 
 /// Name of this crate, used to prove the workspace wiring in tests.
 pub const CRATE_NAME: &str = env!("CARGO_PKG_NAME");
