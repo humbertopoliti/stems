@@ -58,7 +58,7 @@ build:
 # run and may fail ("PENDING (expected)") but must not pass.
 #   make e2e FEATURE=tests/features/foo.feature   one file or directory
 #   make e2e TAGS='@FR-LC-5 and not @slow'        a tag expression
-E2E_RUN = $(CARGO) test -p stems-e2e --test e2e --
+E2E_RUN = scripts/with_lock.sh $(CARGO) test -p stems-e2e --test e2e --
 
 # Fast tier: everything except @docker and @harness-selftest.
 e2e:
