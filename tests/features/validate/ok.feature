@@ -1,4 +1,4 @@
-@FR-WS-6 @FR-GR-2
+@FR-WS-6 @FR-GR-1 @FR-GR-2
 Feature: Valid workspaces pass validation and report their start order
   `stems validate --json` on a valid workspace exits 0 with `ok: true` and
   the start layers: every stem's hard dependencies are in an earlier layer,

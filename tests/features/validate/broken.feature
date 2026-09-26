@@ -1,4 +1,4 @@
-@FR-WS-6 @error
+@FR-WS-6 @FR-GR-3 @FR-ST-5 @error
 Feature: The broken example workspaces fail validation as documented
   Every examples/workspaces/broken/<name>/ directory holds an EXPECTED.json
   naming the first error `stems validate --json` reports (errors are sorted
