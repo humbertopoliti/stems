@@ -1,0 +1,16 @@
+# scripts-timeout — fixture for scripts/timeout.feature: `pre_start` sleeps
+# longer than its `timeout:`, so the script's process group is killed and the
+# stem fails with SCRIPT_FAILED (`reason: timeout`).
+schema_version: 1
+name: scripts-timeout
+
+stems:
+  echo-svc:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    ports: [{ name: http, port: 18581 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts:
+      start: python3 app.py
+      pre_start: { command: 'echo waiting; sleep 5 & wait', timeout: 1s }

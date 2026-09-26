@@ -1,0 +1,16 @@
+# script-files — fixture for scripts/script-not-found.feature (FR-WS-2):
+# script files must exist inside the integration repo.
+schema_version: 1
+name: script-files
+
+stems:
+  echo-svc:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    ports: [{ name: http, port: 18541 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts:
+      start: python3 app.py
+      setup: { file: scripts/nope.sh }
+      seed: { file: ../../outside/seed.sh }

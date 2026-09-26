@@ -113,6 +113,31 @@ pub struct StateFile {
     /// Script stamps (deliverable 16); carried over from run to run.
     #[serde(default)]
     pub stamps: StampStore,
+    /// The last [`SCRIPT_RUNS_KEPT`] script runs, oldest first (deliverable 16).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub script_runs: Vec<ScriptRun>,
+}
+
+/// Script runs kept in [`StateFile::script_runs`].
+pub const SCRIPT_RUNS_KEPT: usize = 100;
+
+/// One finished script run (deliverable 16).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScriptRun {
+    /// Stem (`None`: a workspace script such as `bootstrap`).
+    #[serde(default)]
+    pub stem: Option<String>,
+    /// Script name.
+    pub script: String,
+    /// Start.
+    pub started: DateTime<Utc>,
+    /// End.
+    pub ended: DateTime<Utc>,
+    /// Exit code (`None`: killed by a signal, e.g. a timeout).
+    pub exit: Option<i32>,
+    /// Killed because it exceeded its `timeout`.
+    #[serde(default)]
+    pub timed_out: bool,
 }
 
 /// Outcome of [`StateFile::load`].
@@ -138,6 +163,7 @@ impl StateFile {
             daemon,
             stems: BTreeMap::new(),
             stamps: StampStore::default(),
+            script_runs: Vec::new(),
         }
     }
 
@@ -365,6 +391,20 @@ impl StateStore {
     pub fn stamps(&self) -> StampStore {
         self.lock().stamps.clone()
     }
+
+    /// Change the stamps in place (and write).
+    pub fn update_stamps<R>(&self, f: impl FnOnce(&mut StampStore) -> R) -> R {
+        self.update(|file| f(&mut file.stamps))
+    }
+
+    /// Append a script run, keeping the last [`SCRIPT_RUNS_KEPT`].
+    pub fn record_script_run(&self, run: ScriptRun) {
+        self.update(|f| {
+            f.script_runs.push(run);
+            let extra = f.script_runs.len().saturating_sub(SCRIPT_RUNS_KEPT);
+            f.script_runs.drain(..extra);
+        });
+    }
 }
 
 #[cfg(test)]
@@ -431,6 +471,30 @@ mod tests {
         let text = serde_json::to_string(&f).unwrap();
         let back: StateFile = serde_json::from_str(&text).unwrap();
         assert_eq!(back, f);
+    }
+
+    #[test]
+    fn script_runs_are_a_ring() {
+        let s = StateStore::in_memory(new_run_id());
+        let at = Utc.with_ymd_and_hms(2026, 9, 26, 12, 0, 0).unwrap();
+        for i in 0..(SCRIPT_RUNS_KEPT + 5) {
+            s.record_script_run(ScriptRun {
+                stem: Some("a".into()),
+                script: format!("s{i}"),
+                started: at,
+                ended: at,
+                exit: Some(0),
+                timed_out: false,
+            });
+        }
+        let runs = s.snapshot().script_runs;
+        assert_eq!(runs.len(), SCRIPT_RUNS_KEPT);
+        assert_eq!(runs[0].script, "s5");
+        // Old files without the field still load.
+        let f: StateFile =
+            serde_json::from_str(r#"{"version":1,"run_id":"x","daemon":{"pid":1,"start_time":1}}"#)
+                .unwrap();
+        assert!(f.script_runs.is_empty());
     }
 
     #[test]

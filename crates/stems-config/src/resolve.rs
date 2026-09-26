@@ -257,10 +257,12 @@ fn resolve_script(s: &RawScript, default_cwd: &Path, p: &ConfigPath, ctx: &mut C
         retries: spec.retries.unwrap_or(d::SCRIPT_RETRIES),
         concurrent: spec.concurrent.unwrap_or(d::SCRIPT_CONCURRENT),
         stamp_env: spec.stamp_env.unwrap_or_default(),
-        cwd: spec
-            .cwd
-            .as_deref()
-            .map_or_else(|| default_cwd.to_path_buf(), |c| ctx.path(default_cwd, c)),
+        cwd: match spec.cwd.as_deref() {
+            None => default_cwd.to_path_buf(),
+            Some("workspace") => ctx.root.to_path_buf(),
+            Some(c) => ctx.path(default_cwd, c),
+        },
+        cwd_set: spec.cwd.is_some(),
     }
 }
 

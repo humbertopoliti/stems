@@ -31,11 +31,20 @@ struct FakeRuntime {
     starts: Mutex<Vec<String>>,
     /// Pids `adopt` accepts (crash recovery, 11).
     adoptable: HashSet<i32>,
+    /// Every start/stop and script run, in order: `start db`, `stop db`,
+    /// `script db:setup`, `script ws:bootstrap` (16).
+    actions: Mutex<Vec<String>>,
+    /// Exit code of `<stem>:<script>` scripts (default 0).
+    script_exit: HashMap<String, i32>,
+    /// `<stem>:<script>` scripts that run until stopped.
+    script_hang: HashSet<String>,
 }
 
 impl FakeRuntime {
     fn stem_of(spec: &StartSpec) -> String {
-        let StartSpec::Process(p) = spec;
+        let StartSpec::Process(p) = spec else {
+            return String::new();
+        };
         p.env.get("STEMS_STEM").cloned().unwrap_or_default()
     }
     fn exit_rx(&self, h: &Handle) -> Option<watch::Receiver<Option<ExitStatus>>> {
@@ -50,11 +59,34 @@ impl FakeRuntime {
 #[async_trait::async_trait]
 impl Runtime for FakeRuntime {
     async fn start(&self, spec: &StartSpec) -> Result<Handle, RuntimeError> {
+        if let StartSpec::Process(p) = spec
+            && let Some(script) = p.env.get("STEMS_SCRIPT")
+        {
+            // A script: exits right away (code from `script_exit`).
+            let who = p.env.get("STEMS_STEM").map_or("ws", String::as_str);
+            let key = format!("{who}:{script}");
+            self.actions.lock().unwrap().push(format!("script {key}"));
+            let n = self.next.fetch_add(1, Ordering::SeqCst) + 1;
+            let h = Handle::Process {
+                id: HandleId(n as u64),
+                pid: 800_000 + n,
+                pgid: 800_000 + n,
+                start_time: StartTime(1),
+            };
+            let code = self.script_exit.get(&key).copied().unwrap_or(0);
+            let tx = watch::Sender::new((!self.script_hang.contains(&key)).then_some(ExitStatus {
+                code: Some(code),
+                signal: None,
+            }));
+            self.units.lock().unwrap().insert(h.id(), (key, tx));
+            return Ok(h);
+        }
         let stem = Self::stem_of(spec);
         if self.fail_spawn.contains(&stem) {
             return Err(RuntimeError::Io(std::io::Error::other("no such binary")));
         }
         self.starts.lock().unwrap().push(stem.clone());
+        self.actions.lock().unwrap().push(format!("start {stem}"));
         let n = self.next.fetch_add(1, Ordering::SeqCst) + 1;
         let h = Handle::Process {
             id: HandleId(n as u64),
@@ -73,7 +105,10 @@ impl Runtime for FakeRuntime {
         Ok(h)
     }
     async fn stop(&self, h: &Handle, _grace: Duration) -> Result<StopOutcome, RuntimeError> {
-        if let Some((_, tx)) = self.units.lock().unwrap().get(&h.id()) {
+        if let Some((name, tx)) = self.units.lock().unwrap().get(&h.id()) {
+            if !name.contains(':') {
+                self.actions.lock().unwrap().push(format!("stop {name}"));
+            }
             tx.send_replace(Some(ExitStatus {
                 code: None,
                 signal: Some(15),
@@ -175,15 +210,20 @@ impl Host for FakeHost {
     fn set_started_by_up(&self) {
         self.by_up.store(true, Ordering::SeqCst);
     }
+    fn data_dir(&self) -> Option<std::path::PathBuf> {
+        Some(self._dir.path().join("data"))
+    }
 }
 
 fn host(yaml: &str) -> Arc<FakeHost> {
+    host_doc(&format!("schema_version: 1\nname: t\nstems:\n{yaml}"))
+}
+
+/// A host for a whole `stems.yaml` document.
+fn host_doc(doc: &str) -> Arc<FakeHost> {
+    let yaml = doc;
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(
-        dir.path().join("stems.yaml"),
-        format!("schema_version: 1\nname: t\nstems:\n{yaml}"),
-    )
-    .unwrap();
+    std::fs::write(dir.path().join("stems.yaml"), doc).unwrap();
     let ws = stems_config::load(stems_config::LoadOptions {
         workspace: Some(dir.path().to_path_buf()),
         cwd: dir.path().to_path_buf(),
@@ -208,7 +248,10 @@ struct Rig {
 }
 
 fn rig(yaml: &str, rt: FakeRuntime, waiter: FakeWaiter) -> Rig {
-    let host = host(yaml);
+    rig_host(host(yaml), rt, waiter)
+}
+
+fn rig_host(host: Arc<FakeHost>, rt: FakeRuntime, waiter: FakeWaiter) -> Rig {
     let events = Arc::new(EventBus::default());
     let rt = Arc::new(rt);
     let waiter = Arc::new(waiter);
@@ -735,4 +778,284 @@ async fn recover_adopts_live_records_and_drops_dead_ones() {
         .unwrap();
     assert_eq!(down.stopped.len(), 2, "{down:?}");
     assert_eq!(a.state(), StemState::Stopped);
+}
+
+/// Deliverable 16: a workspace exercising every lifecycle script.
+const SCRIPTED: &str = r#"schema_version: 1
+name: t
+scripts:
+  bootstrap: echo boot
+  teardown: echo bye
+stems:
+  db:
+    type: process
+    command: run
+    scripts:
+      setup: echo setup
+      pre_start: echo pre
+      post_start: echo post
+      seed: echo seed
+      pre_stop: echo pre-stop
+      post_stop: echo post-stop
+      reset: echo reset
+  api:
+    type: process
+    command: run
+    depends_on: [{ stem: db, condition: seeded }]
+    scripts:
+      setup: echo api-setup
+  web:
+    type: process
+    command: run
+    depends_on: [{ stem: db, condition: healthy }]
+"#;
+
+fn take_actions(r: &Rig) -> String {
+    std::mem::take(&mut *r.rt.actions.lock().unwrap()).join("\n")
+}
+
+/// The sequence golden (plan 16): the exact ordered actions of `up` without
+/// stamps, `down --all`, `up` with current stamps, and `up --fresh`.
+#[tokio::test]
+async fn script_sequence_golden() {
+    let r = rig_host(
+        host_doc(SCRIPTED),
+        FakeRuntime::default(),
+        FakeWaiter::default(),
+    );
+    let up = |fresh: bool| UpParams {
+        fresh,
+        max_parallel: Some(1),
+        ..UpParams::default()
+    };
+    let res = r.sup.up(up(false), "cli:t").await.unwrap();
+    assert!(res.ok, "{res:?}");
+    // `web` (condition: healthy) may start before db's seed finished, so
+    // only the seeded chain is compared exactly.
+    let first = take_actions(&r);
+    let chain: Vec<&str> = first.lines().filter(|l| !l.contains("web")).collect();
+    insta::assert_snapshot!(chain.join("\n"), @r"
+    script ws:bootstrap
+    script db:setup
+    script db:pre_start
+    start db
+    script db:post_start
+    script db:seed
+    script api:setup
+    start api
+    ");
+    assert!(first.contains("start web"));
+    let st = r.sup.status(&StatusParams::default(), "t").unwrap();
+    assert!(st.stems.iter().find(|s| s.name == "db").unwrap().seeded);
+    assert!(!st.stems.iter().find(|s| s.name == "api").unwrap().seeded);
+
+    r.sup
+        .down(
+            DownParams {
+                all: true,
+                ..DownParams::default()
+            },
+            "cli:t",
+        )
+        .await
+        .unwrap();
+    let down = take_actions(&r);
+    let down: Vec<&str> = down
+        .lines()
+        .filter(|l| !l.contains("web") && !l.contains("api"))
+        .collect();
+    insta::assert_snapshot!(down.join("\n"), @r"
+    script db:pre_stop
+    stop db
+    script db:post_stop
+    script ws:teardown
+    ");
+
+    // Stamps are current: no setup, no seed.
+    let res = r.sup.up(up(false), "cli:t").await.unwrap();
+    assert!(res.ok, "{res:?}");
+    let again = take_actions(&r);
+    let again: Vec<&str> = again.lines().filter(|l| !l.contains("web")).collect();
+    insta::assert_snapshot!(again.join("\n"), @r"
+    script ws:bootstrap
+    script db:pre_start
+    start db
+    script db:post_start
+    start api
+    ");
+    assert!(
+        r.sup.cell("db").info().seeded,
+        "a current seed stamp counts as seeded"
+    );
+
+    // --fresh: stop, reset, clear stamps, then the full sequence again.
+    let res = r.sup.up(up(true), "cli:t").await.unwrap();
+    assert!(res.ok, "{res:?}");
+    let fresh = take_actions(&r);
+    let fresh: Vec<&str> = fresh.lines().filter(|l| !l.contains("web")).collect();
+    insta::assert_snapshot!(fresh.join("\n"), @r"
+    script ws:bootstrap
+    stop api
+    script db:pre_stop
+    stop db
+    script db:post_stop
+    script db:reset
+    script db:setup
+    script db:pre_start
+    start db
+    script db:post_start
+    script db:seed
+    script api:setup
+    start api
+    ");
+    let ev = r.events.replay(0);
+    let seeding = ev
+        .iter()
+        .rev()
+        .find(|e| e.kind == EventKind::STEM_STATE && e.to.as_deref() == Some("seeding"))
+        .unwrap()
+        .seq;
+    let api_start = ev
+        .iter()
+        .rev()
+        .find(|e| {
+            e.kind == EventKind::STEM_STATE
+                && e.stem.as_deref() == Some("api")
+                && e.to.as_deref() == Some("setup")
+        })
+        .unwrap()
+        .seq;
+    assert!(seeding < api_start, "condition: seeded waits for the seed");
+    r.sup.stop_all("t", "test").await;
+}
+
+#[tokio::test]
+async fn setup_failure_fails_the_stem_with_setup_failed() {
+    let mut rt = FakeRuntime::default();
+    rt.script_exit.insert("db:setup".into(), 7);
+    let r = rig_host(host_doc(SCRIPTED), rt, FakeWaiter::default());
+    let res = r
+        .sup
+        .up(
+            UpParams {
+                stems: vec!["db".into()],
+                ..UpParams::default()
+            },
+            "cli:t",
+        )
+        .await
+        .unwrap();
+    assert!(!res.ok);
+    assert_eq!(res.failed[0].error.code, ErrorCode::SetupFailed);
+    assert_eq!(res.failed[0].error.details["exit"], 7);
+    assert_eq!(r.sup.cell("db").state(), StemState::Failed);
+    assert!(!r.rt.starts.lock().unwrap().contains(&"db".to_string()));
+    // No stamp was recorded: the next up runs setup again.
+    let st = r
+        .sup
+        .stamps(stems_api::StampsParams::default(), "t")
+        .unwrap();
+    assert!(st.stamps.is_empty());
+}
+
+#[tokio::test]
+async fn seed_failure_stops_the_process() {
+    let mut rt = FakeRuntime::default();
+    rt.script_exit.insert("db:seed".into(), 1);
+    let r = rig_host(host_doc(SCRIPTED), rt, FakeWaiter::default());
+    let res = r.sup.up(UpParams::default(), "cli:t").await.unwrap();
+    assert!(!res.ok);
+    assert_eq!(res.failed[0].stem, "db");
+    assert_eq!(res.failed[0].error.code, ErrorCode::ScriptFailed);
+    assert_eq!(r.sup.cell("db").state(), StemState::Failed);
+    assert!(res.skipped.contains(&"api".to_string()));
+    assert!(
+        r.rt.actions
+            .lock()
+            .unwrap()
+            .contains(&"stop db".to_string())
+    );
+    r.sup.stop_all("t", "test").await;
+}
+
+#[tokio::test]
+async fn bootstrap_failure_starts_nothing() {
+    let mut rt = FakeRuntime::default();
+    rt.script_exit.insert("ws:bootstrap".into(), 2);
+    let r = rig_host(host_doc(SCRIPTED), rt, FakeWaiter::default());
+    let e = r.sup.up(UpParams::default(), "cli:t").await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::SetupFailed);
+    assert!(r.rt.starts.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn custom_stop_script_replaces_sigterm_and_kills_after_grace() {
+    let doc = r#"schema_version: 1
+name: t
+stems:
+  svc:
+    type: process
+    command: run
+    stop_grace: 200ms
+    scripts:
+      stop: echo please-stop
+"#;
+    let r = rig_host(host_doc(doc), FakeRuntime::default(), FakeWaiter::default());
+    assert!(r.sup.up(UpParams::default(), "cli:t").await.unwrap().ok);
+    take_actions(&r);
+    let t0 = std::time::Instant::now();
+    let res = r
+        .sup
+        .stop(
+            StopParams {
+                stems: vec!["svc".into()],
+                ..StopParams::default()
+            },
+            "cli:t",
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.stopped, ["svc"]);
+    // The fake process ignores the stop script: after the grace it is killed.
+    assert!(t0.elapsed() >= Duration::from_millis(200));
+    insta::assert_snapshot!(take_actions(&r), @r"
+    script svc:stop
+    stop svc
+    ");
+    assert_eq!(r.sup.cell("svc").state(), StemState::Stopped);
+}
+
+#[tokio::test]
+async fn down_during_setup_kills_the_script_at_once() {
+    let mut rt = FakeRuntime::default();
+    rt.script_hang.insert("db:setup".into());
+    let r = rig_host(host_doc(SCRIPTED), rt, FakeWaiter::default());
+    let sup = r.sup.clone();
+    let up = tokio::spawn(async move {
+        sup.up(
+            UpParams {
+                stems: vec!["db".into()],
+                ..UpParams::default()
+            },
+            "cli:t",
+        )
+        .await
+    });
+    let mut ph = r.sup.cell("db").watch();
+    ph.wait_for(|p| p.state == StemState::Setup).await.unwrap();
+    let t0 = std::time::Instant::now();
+    r.sup.down(DownParams::default(), "cli:t").await.unwrap();
+    assert!(t0.elapsed() < Duration::from_secs(2));
+    let res = up.await.unwrap().unwrap();
+    assert_eq!(res.skipped, ["db"]);
+    let cell = r.sup.cell("db");
+    let mut ph = cell.watch();
+    ph.wait_for(|p| p.state == StemState::Stopped)
+        .await
+        .unwrap();
+    assert!(!r.rt.starts.lock().unwrap().contains(&"db".to_string()));
+    let ev = r.events.replay(0);
+    assert!(ev.iter().any(|e| e.kind == EventKind::SCRIPT_FINISHED
+        && e.data["script"] == "setup"
+        && e.data["cancelled"] == true));
 }

@@ -19,9 +19,6 @@ pub fn target(cmd: &Command) -> (String, &'static str) {
         Command::Scripts(_) => ("scripts", "17"),
         Command::Exec(_) => ("exec", "unscheduled"),
         Command::Shell(_) => ("shell", "unscheduled"),
-        Command::Reset(_) => ("reset", "16"),
-        Command::Build(_) => ("build", "16"),
-        Command::Stamps(_) => ("stamps", "16"),
         Command::Overlays(_) => ("overlays", "18"),
         Command::Doctor(_) => ("doctor", "19"),
         Command::Repos(ReposCommand::Sync(_)) => ("repos sync", "20"),
@@ -46,6 +43,9 @@ pub fn target(cmd: &Command) -> (String, &'static str) {
         | Command::Start(_)
         | Command::Stop(_)
         | Command::Restart(_)
+        | Command::Reset(_)
+        | Command::Build(_)
+        | Command::Stamps(_)
         | Command::Attach(_)
         | Command::Status(_)
         | Command::Logs(_)

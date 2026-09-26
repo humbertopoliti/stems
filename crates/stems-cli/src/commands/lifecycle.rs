@@ -73,7 +73,7 @@ fn to_value<T: Serialize>(v: &T) -> Value {
 }
 
 /// Connect, starting the daemon (detached) if none runs. `true` = started here.
-async fn connect_or_start(ctx: &Ctx, t: &Target) -> Result<(Client, bool), Error> {
+pub(crate) async fn connect_or_start(ctx: &Ctx, t: &Target) -> Result<(Client, bool), Error> {
     match connect_to(t, client::options(ctx)).await {
         Ok(c) => return Ok((c, false)),
         Err(e) if e.code != ErrorCode::DaemonNotRunning => return Err(e),
@@ -314,10 +314,8 @@ async fn up_async(
     stdout: &mut dyn Write,
 ) -> Result<CommandOutput, Errors> {
     let timeout = parse_timeout(args.timeout.as_deref())?;
-    if args.fresh || args.sync || args.force_overlays {
-        let (flag, nn) = if args.fresh {
-            ("--fresh", "16")
-        } else if args.sync {
+    if args.sync || args.force_overlays {
+        let (flag, nn) = if args.sync {
             ("--sync", "20")
         } else {
             ("--force-overlays", "18")
@@ -366,6 +364,7 @@ async fn up_async(
         max_parallel: Some(args.max_parallel),
         pass_env,
         daemon_auto_started: auto_started,
+        fresh: args.fresh,
     };
     let rpc_timeout = timeout.map_or(LONG, |d| d + Duration::from_secs(10));
     let call = c.call_with_timeout::<UpResult>(Method::UP, &params, rpc_timeout);
@@ -505,7 +504,7 @@ async fn handle_orphans(
 
 /// Shut an auto-started daemon down again if it runs nothing (an `up` that
 /// did not start anything must not leave a daemon behind).
-async fn shutdown_if_idle(t: &Target, c: &Client) {
+pub(crate) async fn shutdown_if_idle(t: &Target, c: &Client) {
     let st: Result<stems_api::StatusResult, Error> = c
         .call(Method::STATUS, stems_api::StatusParams::default())
         .await;
@@ -687,7 +686,8 @@ pub fn attach(ctx: &Ctx, args: &AttachArgs, mode: Mode, stdout: &mut dyn Write) 
             let st: stems_api::StatusResult = c
                 .call(Method::STATUS, stems_api::StatusParams::default())
                 .await?;
-            let _ = write!(stdout, "{}", crate::commands::status::table(&st));
+            let style = crate::commands::status::Style::detect(ctx, mode);
+            let _ = write!(stdout, "{}", crate::commands::status::table(&st, &style));
             let _ = writeln!(stdout, "attached (Ctrl-C detaches; stems keep running)");
             let _ = stdout.flush();
         }

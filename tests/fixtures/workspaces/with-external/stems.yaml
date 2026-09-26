@@ -1,6 +1,7 @@
-# with-external — fixture for lifecycle/external.feature: one process stem
-# and one external stem. stems never starts or stops `hosted`; without a
-# health probe (21) its state is `unknown`. Deliverable 13 extends this.
+# with-external — fixture for external/not-managed.feature (FR-ST-3): one
+# process stem that depends on an external stem. stems never starts or
+# stops `hosted`; without a health probe (21) its state is `unknown` and the
+# edge to it (even `condition: healthy`) is satisfied immediately.
 schema_version: 1
 name: with-external
 
@@ -8,6 +9,7 @@ stems:
   api:
     type: process
     codebase: ../../../../examples/repos/shop-api
+    depends_on: [{ stem: hosted, condition: healthy }]
     ports: [{ name: http, port: 18601 }]
     health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
     stop_grace: 1s

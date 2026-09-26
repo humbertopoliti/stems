@@ -204,6 +204,13 @@ pub enum Command {
     /// Follow the workspace daemon (plain event stream until the TUI lands).
     Attach(AttachArgs),
     /// Show the state of every stem.
+    ///
+    /// Prints the table STEM TYPE STATUS REASON PID PORTS UPTIME RESTARTS
+    /// (STATUS is a glyph and the state: ✓ healthy, ! degraded, ✗ failed,
+    /// · stopped, ? unknown, ↻ transitioning; ASCII OK/WARN/FAIL/-/?/.. with
+    /// --no-color, STEMS_ASCII=1 or a non-UTF-8 locale) and a summary line.
+    /// --json gives `{stems, summary}`. --watch redraws every INTERVAL until
+    /// Ctrl-C (NDJSON frames with --json).
     Status(StatusArgs),
     /// Show or follow stem and script logs.
     ///
@@ -464,7 +471,8 @@ pub struct AttachArgs {
 pub struct StatusArgs {
     /// Only these stems.
     pub stems: Vec<String>,
-    /// Refresh continuously (default interval 1s).
+    /// Redraw until Ctrl-C, every INTERVAL (seconds or a duration such as
+    /// `500ms`; default 1s).
     #[arg(long, value_name = "INTERVAL", num_args = 0..=1, default_missing_value = "1s")]
     pub watch: Option<String>,
 }
@@ -614,8 +622,9 @@ pub struct ShellArgs {
 /// `stems reset`.
 #[derive(Debug, Args)]
 pub struct ResetArgs {
-    /// Only this stem (default: every stem with a reset script).
-    pub stem: Option<String>,
+    /// Only these stems (default: every enabled stem). Each is stopped, its
+    /// `reset` script runs and its stamps are cleared.
+    pub stems: Vec<String>,
     /// Confirm (reset is destructive).
     #[arg(short, long)]
     pub yes: bool,
@@ -624,7 +633,7 @@ pub struct ResetArgs {
 /// `stems build`.
 #[derive(Debug, Args)]
 pub struct BuildArgs {
-    /// Only these stems.
+    /// Only these stems (default: every enabled stem with a `build` script).
     pub stems: Vec<String>,
 }
 

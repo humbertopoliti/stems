@@ -319,8 +319,17 @@ pub struct Script {
     pub concurrent: bool,
     /// Env var names hashed into stamps.
     pub stamp_env: Vec<String>,
-    /// Working directory (absolute).
+    /// Working directory (absolute). `cwd: workspace` resolves to the
+    /// integration repo root.
     pub cwd: PathBuf,
+    /// `cwd:` was given explicitly (`cwd: workspace` included). Scripts of a
+    /// stem without a codebase run in its state directory unless this is set.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub cwd_set: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// A resolved script argument.

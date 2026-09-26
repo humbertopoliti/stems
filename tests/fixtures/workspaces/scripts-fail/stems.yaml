@@ -1,0 +1,22 @@
+# scripts-fail — fixture for scripts/setup-failed.feature: `bad-svc`'s
+# setup exits 7 (SETUP_FAILED, never started); `ok-svc` comes up.
+schema_version: 1
+name: scripts-fail
+
+stems:
+  ok-svc:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    ports: [{ name: http, port: 18531 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts: { start: python3 app.py }
+  bad-svc:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    ports: [{ name: http, port: 18532 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts:
+      start: python3 app.py
+      setup: 'echo preparing; echo "fatal: cannot prepare" >&2; exit 7'

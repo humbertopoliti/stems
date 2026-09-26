@@ -78,6 +78,18 @@ impl Glyph {
         }
     }
 
+    /// The glyph as one table cell: [`Glyph::symbol`] (ASCII when `ascii`),
+    /// wrapped in its ANSI colour when `color`. Shared by `status`, `graph`
+    /// and the TUI.
+    pub fn cell(&self, ascii: bool, color: bool) -> String {
+        let sym = self.symbol(!ascii);
+        if color {
+            format!("\x1b[{}m{sym}\x1b[0m", self.ansi())
+        } else {
+            sym.to_string()
+        }
+    }
+
     /// Colour name: `green`, `red`, `yellow`, `gray`, `magenta`, `cyan`.
     pub fn color(self) -> &'static str {
         match self {
@@ -127,6 +139,28 @@ impl Glyph {
 impl fmt::Display for Glyph {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.unicode())
+    }
+}
+
+/// Whether glyphs should use the ASCII fallback: `STEMS_ASCII` is truthy,
+/// or the effective locale (`LC_ALL`, then `LC_CTYPE`, then `LANG`, the
+/// first that is set and non-empty) does not name UTF-8 (no locale at all is
+/// the POSIX locale: ASCII). `env` looks a variable up.
+pub fn prefers_ascii(env: impl Fn(&str) -> Option<String>) -> bool {
+    if env("STEMS_ASCII")
+        .is_some_and(|v| !matches!(v.trim(), "" | "0" | "false" | "no" | "off" | "n" | "f"))
+    {
+        return true;
+    }
+    let locale = ["LC_ALL", "LC_CTYPE", "LANG"]
+        .iter()
+        .find_map(|k| env(k).filter(|v| !v.is_empty()));
+    match locale {
+        Some(l) => {
+            let l = l.to_ascii_lowercase();
+            !(l.contains("utf-8") || l.contains("utf8"))
+        }
+        None => true,
     }
 }
 
@@ -254,6 +288,48 @@ mod tests {
             Glyph::legend(true),
             "✓ healthy  ! degraded  ✗ failed  · stopped  ? unknown  ↻ transitioning"
         );
+    }
+
+    #[test]
+    fn glyph_cells_fall_back_to_ascii_and_plain() {
+        let cells: Vec<String> = Glyph::ALL.iter().map(|g| g.cell(true, false)).collect();
+        assert_eq!(cells, ["OK", "WARN", "FAIL", "-", "?", ".."]);
+        let cells: Vec<String> = Glyph::ALL.iter().map(|g| g.cell(false, false)).collect();
+        assert_eq!(cells, ["✓", "!", "✗", "·", "?", "↻"]);
+        assert_eq!(Glyph::Healthy.cell(false, true), "\x1b[32m✓\x1b[0m");
+        assert_eq!(Glyph::Stopped.cell(true, true), "\x1b[90m-\x1b[0m");
+    }
+
+    #[test]
+    fn ascii_follows_locale_and_override() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| {
+                pairs
+                    .iter()
+                    .find(|(n, _)| *n == k)
+                    .map(|(_, v)| (*v).to_string())
+            }
+        };
+        assert!(!prefers_ascii(env(&[("LANG", "en_GB.UTF-8")])));
+        assert!(!prefers_ascii(env(&[("LC_ALL", "C.utf8"), ("LANG", "C")])));
+        assert!(prefers_ascii(env(&[
+            ("LC_ALL", "C"),
+            ("LANG", "en_GB.UTF-8")
+        ])));
+        assert!(!prefers_ascii(env(&[
+            ("LC_ALL", ""),
+            ("LANG", "en_GB.UTF-8")
+        ])));
+        assert!(prefers_ascii(env(&[("LANG", "POSIX")])));
+        assert!(prefers_ascii(env(&[])));
+        assert!(prefers_ascii(env(&[
+            ("LANG", "en_GB.UTF-8"),
+            ("STEMS_ASCII", "1")
+        ])));
+        assert!(!prefers_ascii(env(&[
+            ("LANG", "en_GB.UTF-8"),
+            ("STEMS_ASCII", "0")
+        ])));
     }
 
     #[test]

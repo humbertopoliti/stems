@@ -1,0 +1,16 @@
+# scripts-bootstrap-fail — fixture for scripts/bootstrap-teardown.feature:
+# a failing workspace `bootstrap` aborts `up` before any stem starts.
+schema_version: 1
+name: scripts-bootstrap-fail
+
+scripts:
+  bootstrap: 'echo "bootstrap: docker missing" >&2; exit 4'
+
+stems:
+  echo-svc:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    ports: [{ name: http, port: 18571 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts: { start: python3 app.py }

@@ -3,13 +3,17 @@
 //! * [`Runtime`] — the async trait every runtime implements.
 //! * [`ProcessRuntime`] — native processes in their own session/process group
 //!   (see `docs/process-model.md`).
+//! * [`ExternalRuntime`] — monitor-only (`type: external`) stems: nothing
+//!   is started or stopped.
 //! * [`os`] — per-OS process facts (start time, process tree, listeners).
 
+mod external;
 pub mod os;
 pub mod output;
 mod process;
 mod runtime;
 
+pub use external::ExternalRuntime;
 pub use os::{Listener, ProcInfo, StartTime};
 pub use output::{
     LineSplitter, MAX_LINE_BYTES, OUTPUT_CHANNEL_CAPACITY, OutputEvent, OutputLine, OutputStream,

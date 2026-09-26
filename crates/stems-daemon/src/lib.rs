@@ -11,6 +11,7 @@
 //! * [`orphans`] — the orphan scan (FR-CR-4).
 //! * [`spawn_detached`] / [`wait_for_socket`] — used by the CLI to auto-start.
 //! * [`logs`] — stem log capture, rotation, queries and export (deliverable 12).
+//! * [`scripts`] — the lifecycle/workspace script runner (deliverable 16).
 //!
 //! Lifecycle of [`Daemon::run`]: take the lock (reclaiming a stale one), log
 //! to `stemsd.log`, optionally load the workspace, bind the socket (0600),
@@ -27,6 +28,7 @@ pub mod logging;
 pub mod logs;
 pub mod orphans;
 pub mod paths;
+pub mod scripts;
 pub mod server;
 mod spawn;
 pub mod state;

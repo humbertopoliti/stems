@@ -672,7 +672,12 @@ Global options:
 ### `stems status`
 
 ```text
-Show the state of every stem
+Show the state of every stem.
+
+Prints the table STEM TYPE STATUS REASON PID PORTS UPTIME RESTARTS (STATUS is a glyph and the state:
+✓ healthy, ! degraded, ✗ failed, · stopped, ? unknown, ↻ transitioning; ASCII OK/WARN/FAIL/-/?/..
+with --no-color, STEMS_ASCII=1 or a non-UTF-8 locale) and a summary line. --json gives `{stems,
+summary}`. --watch redraws every INTERVAL until Ctrl-C (NDJSON frames with --json).
 
 Usage: stems status [OPTIONS] [STEMS]...
 
@@ -682,10 +687,10 @@ Arguments:
 
 Options:
       --watch [<INTERVAL>]
-          Refresh continuously (default interval 1s)
+          Redraw until Ctrl-C, every INTERVAL (seconds or a duration such as `500ms`; default 1s)
 
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -1213,11 +1218,12 @@ Global options:
 ```text
 Run a stem's `reset` script and clear its stamps
 
-Usage: stems reset [OPTIONS] [STEM]
+Usage: stems reset [OPTIONS] [STEMS]...
 
 Arguments:
-  [STEM]
-          Only this stem (default: every stem with a reset script)
+  [STEMS]...
+          Only these stems (default: every enabled stem). Each is stopped, its `reset` script runs
+          and its stamps are cleared
 
 Options:
   -y, --yes
@@ -1264,7 +1270,7 @@ Usage: stems build [OPTIONS] [STEMS]...
 
 Arguments:
   [STEMS]...
-          Only these stems
+          Only these stems (default: every enabled stem with a `build` script)
 
 Options:
   -h, --help

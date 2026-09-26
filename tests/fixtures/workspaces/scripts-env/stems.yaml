@@ -1,0 +1,26 @@
+# scripts-env — fixture for scripts/env-contract.feature (FR-SC-3) and
+# scripts/log-tagging.feature (FR-SC-4): `api`'s setup prints its
+# environment; `postgres` is a stand-in dependency (a shop-api process) so
+# STEMS_POSTGRES_PORT is set without Docker.
+schema_version: 1
+name: scripts-env
+
+stems:
+  postgres:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    ports: [{ name: pg, port: 18551 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts: { start: python3 app.py }
+  api:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    depends_on: [postgres]
+    env: { API_MODE: contract }
+    ports: [{ name: http, port: 18552 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts:
+      start: python3 app.py
+      setup: 'env | sort; echo "cwd=$(pwd -P)"'

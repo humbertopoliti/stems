@@ -150,8 +150,12 @@ any `*_env`, `environment`), values whose key matches
 later secrets work). Log lines themselves are not redacted: review a bundle
 before sharing it.
 
-## Scripts (for deliverables 16/17)
+## Scripts (deliverable 16; 17 for custom scripts)
 
 `LogHub::script_writer(stem, script)` returns a `ScriptWriter` whose lines are
 recorded with `stream: script, tag: <script>` in the stem's log (FR-SC-4),
-so `stems logs <stem> --script seed` shows a script run's output.
+so `stems logs <stem> --script seed` shows a script run's output. The
+script runner (`stems_daemon::scripts::ScriptRunner`, [scripts.md](scripts.md))
+forwards stdout and stderr of every lifecycle script this way. Workspace
+scripts (`bootstrap`, `teardown`) log under the pseudo-stem `_workspace`:
+`stems logs _workspace --script bootstrap`.

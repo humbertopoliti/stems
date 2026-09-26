@@ -40,6 +40,9 @@ pub struct Phase {
     pub state: StemState,
     /// Start generation (bumped by every start and stop).
     pub generation: u64,
+    /// `healthy`, but `post_start`/`seed` still to run (deliverable 16): the
+    /// start sequence is not finished and `condition: seeded` does not hold.
+    pub pending: bool,
 }
 
 /// Messages to a stem's actor.
@@ -93,6 +96,14 @@ pub(crate) struct StemInfo {
     pub generation: u64,
     pub grace: Duration,
     ready_task: Option<AbortHandle>,
+    /// What the running start sequence needs for its scripts (16).
+    pub launch: Option<super::hooks::Launch>,
+    /// `seed` ran (or its stamp was current) since the last start (16).
+    pub seeded: bool,
+    /// `post_start`/`seed` still to run (mirrored into [`Phase::pending`]).
+    pub pending: bool,
+    /// Cancels the script currently running for this stem (a stop kills it).
+    pub script_cancel: Option<tokio_util::sync::CancellationToken>,
 }
 
 /// A stem as seen by the supervisor: shared snapshot + actor mailbox.
@@ -123,10 +134,15 @@ impl StemCell {
                 generation: 0,
                 grace: Duration::from_secs(10),
                 ready_task: None,
+                launch: None,
+                seeded: false,
+                pending: false,
+                script_cancel: None,
             }),
             phase: watch::Sender::new(Phase {
                 state: StemState::Stopped,
                 generation: 0,
+                pending: false,
             }),
             tx,
         });
@@ -175,6 +191,11 @@ impl StemCell {
 
     /// Ask the actor to stop the stem.
     pub(crate) async fn stop(&self, grace: Duration, actor: &str, reason: &str) -> StopReply {
+        // A script of the start sequence (setup/seed) would hold the actor:
+        // kill it so the stop is handled now (16).
+        if let Some(t) = self.info().script_cancel.take() {
+            t.cancel();
+        }
         let (reply, rx) = oneshot::channel();
         self.send(Cmd::Stop {
             grace,
@@ -192,7 +213,7 @@ impl StemCell {
 
     /// Move to `to`, emitting `stem.state`. Illegal transitions (a bug) are
     /// logged and refused.
-    fn transition(
+    pub(crate) fn transition(
         &self,
         core: &Core,
         to: StemState,
@@ -201,7 +222,7 @@ impl StemCell {
         data: Value,
     ) -> bool {
         let reason = reason.into();
-        let (from, generation, pid) = {
+        let (from, generation, pid, pending) = {
             let mut info = self.info();
             let from = info.state;
             if from == to {
@@ -214,7 +235,12 @@ impl StemCell {
             }
             info.state = to;
             info.reason = Some(reason.clone());
-            (from, info.generation, info.handle.as_ref().map(Handle::pid))
+            (
+                from,
+                info.generation,
+                info.handle.as_ref().map(Handle::pid),
+                info.pending,
+            )
         };
         let mut data = match data {
             Value::Object(m) => m,
@@ -231,6 +257,7 @@ impl StemCell {
         self.phase.send_replace(Phase {
             state: to,
             generation,
+            pending,
         });
         self.persist(core);
         true
@@ -266,7 +293,19 @@ impl StemCell {
         store.set_stem(&self.name, rec);
     }
 
-    fn bump_generation(&self) -> u64 {
+    /// Re-publish the phase (e.g. `pending` cleared without a state change).
+    pub(crate) fn notify(&self) {
+        let info = self.info();
+        let phase = Phase {
+            state: info.state,
+            generation: info.generation,
+            pending: info.pending,
+        };
+        drop(info);
+        self.phase.send_replace(phase);
+    }
+
+    pub(crate) fn bump_generation(&self) -> u64 {
         let mut info = self.info();
         info.generation += 1;
         if let Some(t) = info.ready_task.take() {
@@ -275,13 +314,17 @@ impl StemCell {
         info.generation
     }
 
-    fn fail(&self, core: &Core, e: Error, actor: &str) {
-        self.info().error = Some(e.clone());
+    pub(crate) fn fail(&self, core: &Core, e: Error, actor: &str) {
+        {
+            let mut info = self.info();
+            info.error = Some(e.clone());
+            info.pending = false;
+        }
         let data = json!({ "error": e });
         self.transition(core, StemState::Failed, e.message.clone(), actor, data);
     }
 
-    fn clear_process(&self) -> Option<(Handle, Arc<dyn Runtime>)> {
+    pub(crate) fn clear_process(&self) -> Option<(Handle, Arc<dyn Runtime>)> {
         let mut info = self.info();
         info.started_at = None;
         match (info.handle.take(), info.runtime.take()) {
@@ -327,6 +370,7 @@ impl StemCell {
             uptime_s: info.started_at.map(|(i, _)| i.elapsed().as_secs()),
             started_at: info.started_at.map(|(_, t)| t),
             restarts: info.restarts,
+            seeded: info.seeded,
             health: None,
             error: info.error.clone(),
             env: (verbose && running).then(|| info.env.clone()),
@@ -380,6 +424,16 @@ async fn start(
     let current = cell.state();
     if stem.kind() == StemType::External {
         if current == StemState::Stopped {
+            // The external runtime spawns nothing; its handle is not kept
+            // (nothing to stop, persist or adopt). Hook for 21: once a probe
+            // exists, wait on it here and move to `healthy`/`unhealthy`.
+            core.runtimes
+                .get(StemType::External)?
+                .start(&StartSpec::External {
+                    stem: stem.name.clone(),
+                })
+                .await
+                .map_err(|e| Error::internal(e.to_string()))?;
             cell.transition(
                 core,
                 StemState::Unknown,
@@ -394,6 +448,8 @@ async fn start(
         return Ok(());
     }
     cell.info().grace = stem.stop_grace.as_duration();
+    // setup (when its stamp changed) and pre_start (16).
+    super::hooks::before_start(core, cell, ws, stem, actor, pass_env).await?;
     cell.transition(core, StemState::Starting, reason, actor, json!({}));
     match spawn(core, cell, ws, stem, pass_env).await {
         Ok(()) => Ok(()),
@@ -540,6 +596,7 @@ async fn spawn(
     cell.phase.send_replace(Phase {
         state: StemState::Starting,
         generation,
+        pending: false,
     });
     cell.persist(core);
     core.sink.attach(&stem.name, runtime.output_stream(&handle));
@@ -597,6 +654,8 @@ pub(crate) fn adopt(
         info.env = BTreeMap::new();
         info.error = None;
         info.grace = grace;
+        info.launch = None;
+        info.pending = false;
         info.generation
     };
     core.events.emit(
@@ -634,6 +693,10 @@ async fn on_ready(core: &Arc<Core>, cell: &Arc<StemCell>, generation: u64, r: Re
     cell.info().ready_task = None;
     match r {
         Ok(()) => {
+            // post_start and seed follow `healthy` (16); `pending` keeps the
+            // scheduler (and `condition: seeded`) waiting for them.
+            let more = super::hooks::has_after_ready(cell);
+            cell.info().pending = more;
             cell.transition(
                 core,
                 StemState::Healthy,
@@ -641,6 +704,9 @@ async fn on_ready(core: &Arc<Core>, cell: &Arc<StemCell>, generation: u64, r: Re
                 stems_api::DAEMON_ACTOR,
                 json!({}),
             );
+            if more {
+                super::hooks::after_ready(core, cell, generation).await;
+            }
         }
         Err(e) => {
             cell.bump_generation();
@@ -717,8 +783,11 @@ async fn stop(
         return StopReply::Stopped;
     };
     let pid = h.pid();
-    let outcome = rt.stop(&h, grace).await;
+    // pre_stop, the custom `stop` script (else SIGTERM), post_stop (16).
+    super::hooks::pre_stop(core, cell, actor).await;
+    let outcome = super::hooks::stop_unit(core, cell, &h, &rt, grace, actor).await;
     rt.release(&h);
+    super::hooks::post_stop(core, cell, actor).await;
     match outcome {
         Ok(o) => {
             cell.transition(

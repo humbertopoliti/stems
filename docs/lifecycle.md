@@ -11,6 +11,10 @@ built, and the attached/detached rules. Wire shapes: [protocol.md](protocol.md).
                   ┌──────────────────── stop / down ─────────────────────┐
                   │                                                      ▼
 Stopped ──start──▶ Starting ──ready──▶ Healthy ──stop──▶ Stopping ──▶ Stopped
+   │                  ▲                  │  ▲
+   └──▶ Setup ────────┘                  ▼  │ seeded
+        (setup script,                 Seeding (seed script,
+         stamp changed)                          stamp changed)
    │  ▲               │                  │  ▲                │
    │  │               │ exit / timeout   │  │ (probes, 21)   │ stop failed
    │  │               ▼                  ▼  │                ▼
@@ -30,7 +34,15 @@ Unknown   (external stems: monitored, never started)
 | `stopping` | SIGTERM sent, waiting for the group to exit | `↻` |
 | `failed` | could not start, exited, or failed to become ready | `✗` |
 | `unknown` | external stem (no probe until 21) | `?` |
-| `setup`, `seeding` | scripts (deliverable 16) | `↻` |
+| `setup` | the `setup` script runs (its stamp was missing or changed), before `starting` | `↻` |
+| `seeding` | the `seed` script runs, after `healthy` (stamp missing or changed) | `↻` |
+
+A stem whose start sequence is complete — including a `seed` that ran or
+whose stamp was current — is `healthy` with `seeded: true` in `status`;
+there is no separate "ready" state. The full order, hooks and stamps are in
+[scripts.md](scripts.md). A failed `setup` is `failed` with `SETUP_FAILED`,
+a failed `seed`/`pre_start`/`post_start` `failed` with `SCRIPT_FAILED` (the
+process is stopped first).
 
 The legal transitions are the table in
 `crates/stems-daemon/src/supervisor/state.rs` (unit-tested exhaustively).
@@ -51,11 +63,33 @@ decides when a started stem satisfies an edge condition:
 * `healthy` — the process stayed alive for `health.start_period` and, for
   `tcp`/`http`/`grpc` checks, its port accepts TCP connections; bounded by
   `health.start_timeout` (`HEALTH_TIMEOUT`, the process is then stopped);
-* `seeded` — same as `healthy` (seed scripts arrive with 16).
+* `seeded` — `healthy`, then the stem's `seed` script finished (or its
+  stamp was current): the stem actor runs `post_start` and `seed` after
+  `healthy`, and the scheduler releases `condition: seeded` dependants (and
+  counts the stem ready) only then. `condition: healthy` dependants start as
+  soon as the stem is `healthy`.
+
+### External stems (FR-ST-3)
+
+A `type: external` stem is monitored, never started or stopped. Its runtime
+is the no-op `ExternalRuntime` (`crates/stems-runtime/src/external.rs`,
+always registered in the `RuntimeRegistry`): `start` spawns nothing and the
+stem moves to `unknown`; `stop` does nothing; there is no pid, process
+group, output or adoption.
+
+* `up` and `down` never fail because of an external stem: `up` reports it
+  in `ready` (state `unknown`), `down` in `skipped`.
+* `start`, `stop` and `restart` of an external stem fail with `NOT_MANAGED`
+  (exit 1, hint "start it yourself; stems only monitors it").
+* Edges to an external stem: `condition: started` is satisfied immediately.
+  Until deliverable 21 gives externals a health probe, `condition: healthy`
+  (and `seeded`) is **also satisfied immediately** — stems cannot tell
+  whether the service is up. With 21 the edge waits for the probe and the
+  stem moves to `healthy`/`unhealthy` instead of staying `unknown`.
 
 ## Commands
 
-### `stems up [stems…] [--detach] [--timeout D] [--no-fail-fast] [--max-parallel N] [--pass-env VARS] [--yes|--kill-orphans|--adopt-orphans] [--kill-foreign]`
+### `stems up [stems…] [--detach] [--fresh] [--timeout D] [--no-fail-fast] [--max-parallel N] [--pass-env VARS] [--yes|--kill-orphans|--adopt-orphans] [--kill-foreign]`
 
 Before anything starts, `up` scans the workspace's declared ports for
 orphans (processes not started by stems); with orphans and no consent flag
@@ -68,10 +102,16 @@ stems a crashed one left running. See [recovery.md](recovery.md).
 3. Plans the **closure**: the requested stems (all enabled stems if none)
    plus their hard dependencies, transitively. Unknown or disabled names are
    `UNKNOWN_STEM` (exit 2). `--profile` is deliverable 26 (`NOT_IMPLEMENTED`).
+3a. Runs the workspace `bootstrap` script, if any (a failure aborts `up`
+   with `SETUP_FAILED`, exit 1, before any stem starts). With `--fresh`,
+   stops the planned stems that run, runs their `reset` scripts and clears
+   their stamps, so `setup` and `seed` run again ([scripts.md](scripts.md)).
 4. Starts the closure layer by layer (`start_order`). Each stem waits for
    each hard dependency's edge condition (`started`, `healthy`, `seeded`),
    then takes one of `--max-parallel` (default 4) slots, starts, and holds
    the slot until it is ready or failed. Independent stems start in parallel.
+   A stem's start is its whole script sequence: `setup` (stamped),
+   `pre_start`, the process, readiness, `post_start`, `seed` (stamped).
 5. A stem whose dependency failed is **skipped**. With fail-fast (the
    default) the first failure also skips every stem that has not started
    yet; stems already running stay up. `--no-fail-fast` only skips the failed
@@ -93,8 +133,8 @@ Each failure's error is also in the envelope's `errors`.
 Progress: human mode prints one line per `stem.state` (and port allocation);
 `--json` prints every event as an NDJSON line while `up` runs and then the
 result envelope as the **last line** (compact). Events: `up.started {requested,
-stems, layers, detach}`, `stem.state…`, `up.finished {requested, started,
-failed, skipped, ok}`.
+stems, layers, detach, fresh}`, `stem.state…`, `script.started` /
+`script.finished`, `up.finished {requested, started, failed, skipped, ok}`.
 
 ### `stems down [stems…] [--all] [--timeout D]`
 
@@ -110,7 +150,10 @@ command waits until its socket and lock are gone. With no daemon running,
 `down` exits 4 (`DAEMON_NOT_RUNNING`) — unless `state.json` lists stems of a
 crashed daemon: then it starts a daemon, which adopts them, stops them all
 and exits (`data.recovered: true`; [recovery.md](recovery.md)).
-`--volumes` is deliverable 14.
+`--volumes` is deliverable 14. Stems with `pre_stop`/`post_stop` hooks or a
+custom `stop` script run them around the stop ([scripts.md](scripts.md)).
+`--all` ends with the workspace `teardown` script; a failing teardown is
+reported in `failed` as stem `_workspace` and the daemon still stops.
 
 ### `stems start <stems…> [--no-deps]`
 
@@ -129,18 +172,51 @@ unless `--cascade`, which stops those dependants first. External stems:
 
 Stop, then start (starting missing dependencies unless `--no-deps`); the
 stem gets a new process on the same ports. The workspace is re-read first,
-so config changes apply. `--build` is deliverable 16 (`NOT_IMPLEMENTED`).
+so config changes apply. `--build` runs each stem's `build` script between
+the stop and the start (a failed build is `SCRIPT_FAILED` and nothing is
+started); stems without one just restart. See [scripts.md](scripts.md).
 
-### `stems status [stems…] [-v]`
+### `stems status [stems…] [--watch [INTERVAL]] [-v]`
 
 `data: { stems: [ { name, type, state, glyph, reason, pid, pgid, ports:
-[{name, port, auto}], uptime_s, started_at, restarts, health, error } ],
+[{name, port, auto}], uptime_s, started_at, restarts, seeded, health, error } ],
 summary: { healthy, degraded, failed, stopped, unknown, starting } }` —
-enabled stems in declaration order. `health` is `null` until 21; `restarts`
-is 0 until 22. With `-v`/`--verbose` every running stem also has `env`: the
-variables stems set for its process (config env, env files, local
-overrides, `--pass-env`, `PORT`, `STEMS_*`), never the inherited daemon
-environment. The human table is minimal (13 finishes it; `--watch` too).
+enabled stems in declaration order (only the named ones when given;
+`UNKNOWN_STEM` otherwise). `summary` counts stems per glyph; `starting`
+counts every transitional state (`setup`, `starting`, `seeding`,
+`stopping`). `health` is `null` until 21; `restarts` is 0 until 22. With
+`-v`/`--verbose` every running stem also has `env`: the variables stems set
+for its process (config env, env files, local overrides, `--pass-env`,
+`PORT`, `STEMS_*`), never the inherited daemon environment.
+
+Human output is a table and a summary line:
+
+```
+STEM      TYPE      STATUS     REASON                                    PID    PORTS       UPTIME  RESTARTS
+api       process   ✓ healthy  ready (process alive for start_period; …  41234  http:18601  2m05s   0
+hosted    external  ? unknown  external: not managed by stems (no heal…  -      -           -       0
+
+1 healthy, 0 degraded, 0 failed, 0 starting, 0 stopped, 1 unknown
+```
+
+* `STATUS` is the glyph and the state. Glyphs (`stems_core::Glyph`, shared
+  with `graph` and the TUI): `✓` healthy (green), `!` degraded (yellow), `✗`
+  failed/unhealthy (red), `·` stopped (grey), `?` unknown (magenta), `↻`
+  setup/starting/seeding/stopping (cyan). The ASCII fallback — `OK`, `WARN`,
+  `FAIL`, `-`, `?`, `..` — is used with `--no-color` (or `STEMS_NO_COLOR`),
+  `STEMS_ASCII=1`, or when the locale (`LC_ALL`, `LC_CTYPE`, `LANG`) is not
+  UTF-8. Colour is only used on a terminal.
+* `PORTS` is `name:port` (`name:auto` for an `auto` port not allocated yet).
+* Width-aware: stem names are cut at 24 characters and reasons at 40 (with
+  `…`, `...` in ASCII); with `COLUMNS` set or on a terminal, `REASON`, then
+  `STEM`, then `PORTS` shrink further so a row fits.
+* `--watch [INTERVAL]` (default `1s`; a bare number is seconds, e.g.
+  `--watch 0.5`; minimum 100 ms) redraws until Ctrl-C/SIGTERM (exit 0). On
+  a terminal the screen is cleared before each frame; on a pipe frames are
+  separated by a blank line. In JSON mode each frame is one NDJSON line
+  holding `data` (no envelope). If a refresh fails (the daemon stopped), the
+  error is shown in that frame and the next refresh reconnects; only a
+  failing first refresh ends the command (e.g. exit 4).
 
 ## A stem's environment (FR-ST-4)
 

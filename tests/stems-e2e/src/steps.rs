@@ -316,7 +316,35 @@ step!(then_stdout_not_json(w, m) {
 step!(then_golden(w, m) {
     let ignore: Vec<String> = m[2].split(',').map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()).collect();
     let dir = world::repo_root().join("tests/features/goldens");
-    golden::check(&dir, &m[1], &w.last().stdout, &ignore).unwrap_or_else(|e| panic!("{e}"));
+    // Goldens hold the ports the workspace declares, not the remapped ones.
+    let back: std::collections::HashMap<String, String> =
+        w.port_map.iter().map(|(from, to)| (to.to_string(), from.to_string())).collect();
+    let actual = regex::Regex::new(r"\b\d{2,5}\b")
+        .expect("regex")
+        .replace_all(&w.last().stdout, |c: &regex::Captures<'_>| {
+            back.get(&c[0]).cloned().unwrap_or_else(|| c[0].to_owned())
+        })
+        .into_owned();
+    golden::check(&dir, &m[1], &actual, &ignore).unwrap_or_else(|e| panic!("{e}"));
+});
+
+step!(then_background_stdout_contains(w, m) {
+    let until = bound(w, &m[1]);
+    let want = w.expand(&m[2]);
+    loop {
+        let bg = w.background();
+        bg.poll_exit();
+        if bg.stdout().contains(&want) {
+            return;
+        }
+        assert!(
+            Instant::now() < until,
+            "the background command's stdout does not contain {want:?} within {}s\n{}",
+            m[1],
+            bg.describe()
+        );
+        tokio::time::sleep(POLL).await;
+    }
 });
 
 // ----------------------------------------------------------------------------
@@ -1170,6 +1198,41 @@ step!(then_file_not_exists(w, m) {
     assert!(!p.exists(), "{} exists", p.display());
 });
 
+// ----------------------------------------------------------------------------
+// Scripts (16)
+// ----------------------------------------------------------------------------
+
+step!(when_file_written(w, m) {
+    let p = ws_file(w, &m[1]);
+    if let Some(dir) = p.parent() {
+        std::fs::create_dir_all(dir).unwrap_or_else(|e| panic!("creating {}: {e}", dir.display()));
+    }
+    let text = w.expand(&m[2]);
+    std::fs::write(&p, format!("{text}\n")).unwrap_or_else(|e| panic!("writing {}: {e}", p.display()));
+});
+
+step!(then_file_contains(w, m) {
+    let p = ws_file(w, &m[1]);
+    let want = w.expand(&m[2]);
+    let text = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("reading {}: {e}", p.display()));
+    assert!(text.contains(&want), "{} does not contain {want:?}:\n{text}", p.display());
+});
+
+step!(then_events_not_contain(w, m) {
+    let unwanted = expected(w, &m[1]);
+    let out = w.run("stems events --json --since 0", None, &[]).await;
+    out.guard_implemented("08");
+    let events = out.json.as_ref().map(events_of).unwrap_or_default();
+    assert!(out.code == 0, "cannot read the events stream\n{}", out.describe());
+    if let Some(e) = events.iter().find(|e| util::is_subset(&unwanted, e)) {
+        panic!("unexpected event matching {unwanted}: {e}\n{}", out.describe());
+    }
+});
+
+step!(when_run_shell(w, m) {
+    w.run_shell(&m[1]).await;
+});
+
 /// Every step: (regex, function). Registered for Given, When and Then.
 pub const STEPS: &[(&str, Step<E2eWorld>)] = &[
     // Given
@@ -1345,6 +1408,10 @@ pub const STEPS: &[(&str, Step<E2eWorld>)] = &[
         then_port_listening,
     ),
     (
+        r#"^within (\d+(?:\.\d+)?)s the background command's stdout contains "(.*)"$"#,
+        then_background_stdout_contains,
+    ),
+    (
         r#"^the daemon RSS is below (\d+(?:\.\d+)?) MB$"#,
         then_daemon_rss_below,
     ),
@@ -1410,6 +1477,20 @@ pub const STEPS: &[(&str, Step<E2eWorld>)] = &[
         r#"^the background command's CPU is below (\d+(?:\.\d+)?) %$"#,
         then_background_cpu_below,
     ),
+    // Scripts (16)
+    (
+        r#"^the file "([^"]+)" is written with "(.*)"$"#,
+        when_file_written,
+    ),
+    (
+        r#"^the file "([^"]+)" contains "(.*)"$"#,
+        then_file_contains,
+    ),
+    (
+        r#"^the events stream does not contain (.+)$"#,
+        then_events_not_contain,
+    ),
+    (r#"^I run the shell command "([^"]*)"$"#, when_run_shell),
 ];
 
 /// The step collection handed to cucumber.
@@ -1507,6 +1588,7 @@ mod tests {
             r#"within 5s the background command exits with code 0"#,
             r#"the chaos endpoint "fork?n=3" is called on port ${port:18090}"#,
             r#"within 5s port ${port:18090} is listening"#,
+            r#"within 1s the background command's stdout contains "- stopped""#,
             r#"the daemon RSS is below 20 MB"#,
             r#"the last command took less than 100 ms"#,
             r#"the socket has mode 0600"#,
@@ -1527,6 +1609,10 @@ mod tests {
             r#"the JSON at "$[*].ts" is in ascending order"#,
             r#"the JSON nodes at "$[*].text" equal ["a", "b"]"#,
             r#"the background command's CPU is below 2 %"#,
+            r#"the file "${tmp}/examples/repos/shop-api/VERSION" is written with "2""#,
+            r#"the file "hooks.log" contains "pre_start""#,
+            r#"the events stream does not contain {"kind": "script.started"}"#,
+            r#"I run the shell command "docker ps""#,
         ];
         let regexes: Vec<regex::Regex> = STEPS
             .iter()

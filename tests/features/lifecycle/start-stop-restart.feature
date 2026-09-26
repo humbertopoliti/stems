@@ -50,11 +50,11 @@ Feature: start, stop and restart single stems
     When I run "stems down --all --json"
     Then the command succeeds
 
-  @error
-  Scenario: restart --build lands with deliverable 16
+  Scenario: restart --build without a build script just restarts
     Given the "minimal" workspace is up
     When I run "stems restart echo-svc --build --json"
-    Then the exit code is 1
-    And the JSON error has code "NOT_IMPLEMENTED"
+    Then the command succeeds
+    And the JSON at "$.data.ready" equals ["echo-svc"]
+    And the events stream does not contain {"kind": "script.started"}
     When I run "stems down --all --json"
     Then the command succeeds

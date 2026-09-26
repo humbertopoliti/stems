@@ -4,11 +4,12 @@ expression: help
 ---
 Run a stem's `reset` script and clear its stamps
 
-Usage: stems reset [OPTIONS] [STEM]
+Usage: stems reset [OPTIONS] [STEMS]...
 
 Arguments:
-  [STEM]
-          Only this stem (default: every stem with a reset script)
+  [STEMS]...
+          Only these stems (default: every enabled stem). Each is stopped, its `reset` script runs
+          and its stamps are cleared
 
 Options:
   -y, --yes

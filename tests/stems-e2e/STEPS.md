@@ -378,8 +378,13 @@ Then stdout is not JSON
 ```
 
 **`Then the output matches golden "<name>"[ ignoring columns <A,B>]`** —
-compares stdout with `tests/features/goldens/<name>.txt` token by token; the
-first line is a header, named columns are masked. A missing golden is
+compares stdout with `tests/features/goldens/<name>.txt` cell by cell; the
+first line is a header, named columns are masked. An aligned table (every
+row has a space before each header column) is cut at the header's column
+positions, so cells may contain spaces (`OK healthy`, a reason); otherwise
+rows are split on whitespace. Lines after the first blank line are compared
+token by token, unmasked. Remapped ports in stdout are mapped back to the
+declared ones first, so goldens hold the workspace's ports. A missing golden is
 written as `<name>.txt.new` and the step fails; `STEMS_E2E_BLESS=1` writes it.
 Prefer `insta` goldens in the crates; this is for whole-binary output.
 ```gherkin
@@ -486,6 +491,13 @@ When the background command is stopped
 JSON subsets) lines in that order (other lines may come between).
 ```gherkin
 Then within 5s the background command's output contains [{"kind": "daemon.started"}, {"kind": "daemon.stopping"}] in order
+```
+
+**`Then within <n>s the background command's stdout contains "<text>"`** —
+polls the background command's raw stdout (human text, e.g. `status
+--watch --human`) until it contains the (expanded) text.
+```gherkin
+Then within 1s the background command's stdout contains "- stopped"
 ```
 
 **`Then within <n>s the background command exits with code <n>`**
@@ -648,4 +660,37 @@ workspace.
 ```gherkin
 Then the file "stems.local.yaml" exists
 And the file ".stems/state.json" does not exist
+```
+
+### Scripts (16)
+
+**`Given the file "<path>" is written with "<text>"`** — writes the
+(expanded) text plus a newline to the file (relative to the workspace, or
+absolute after expansion), creating directories. Use after `Given the
+workspace has a private copy of the repos` to change a codebase file (stamp
+inputs).
+```gherkin
+Given the file "${tmp}/examples/repos/shop-api/VERSION" is written with "1.0.1"
+```
+
+**`Then the file "<path>" contains "<text>"`** — the file exists and
+contains the (expanded) text.
+```gherkin
+Then the file "hooks.log" contains "post_start port=${port:18521}"
+```
+
+**`Then the events stream does not contain <json-subset>`** — one `stems
+events --json --since 0` (must succeed): no event is a superset. Absence
+proofs (a stamp that skipped a script) after the command that would have
+emitted it has returned.
+```gherkin
+Then the events stream does not contain {"kind": "script.started", "data": {"script": "setup"}}
+```
+
+**`When I run the shell command "<command>"`** — `sh -c <command>`
+(placeholders expanded) with the same cwd, environment and process-group
+rules as `I run "stems ..."`; becomes the last command (exit code, stdout).
+For checks stems has no command for (`docker exec … psql`, `curl`).
+```gherkin
+When I run the shell command "curl -fsS http://127.0.0.1:${port:18080}/products"
 ```

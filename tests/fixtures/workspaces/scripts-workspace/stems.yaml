@@ -1,0 +1,18 @@
+# scripts-workspace — fixture for scripts/bootstrap-teardown.feature
+# (FR-SC-6): workspace scripts run in the integration repo and append to
+# workspace.log there.
+schema_version: 1
+name: scripts-workspace
+
+scripts:
+  bootstrap: 'echo "bootstrap $STEMS_RUN_ID" | tee -a workspace.log'
+  teardown: 'echo teardown >> workspace.log'
+
+stems:
+  echo-svc:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    ports: [{ name: http, port: 18561 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts: { start: python3 app.py }

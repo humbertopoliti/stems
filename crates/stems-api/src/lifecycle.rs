@@ -42,6 +42,10 @@ pub struct UpParams {
     /// running stem then also shuts the daemon down.
     #[serde(default)]
     pub daemon_auto_started: bool,
+    /// Ignore stamps: stop the planned stems, run their `reset` scripts and
+    /// clear their stamps first, so `setup`/`seed` run again (deliverable 16).
+    #[serde(default)]
+    pub fresh: bool,
 }
 
 impl Default for UpParams {
@@ -55,6 +59,7 @@ impl Default for UpParams {
             max_parallel: None,
             pass_env: BTreeMap::new(),
             daemon_auto_started: false,
+            fresh: false,
         }
     }
 }
@@ -148,7 +153,7 @@ pub struct RestartParams {
     /// Do not start unstarted hard dependencies.
     #[serde(default)]
     pub no_deps: bool,
-    /// Re-run `build` first (deliverable 16; `NOT_IMPLEMENTED` today).
+    /// Stop, run each stem's `build` script, then start (deliverable 16).
     #[serde(default)]
     pub build: bool,
     /// Overall deadline in milliseconds.
@@ -207,6 +212,10 @@ pub struct StemStatus {
     pub started_at: Option<DateTime<Utc>>,
     /// Restarts so far (22 fills this).
     pub restarts: u32,
+    /// The stem has a `seed` script and it has run (or its stamp was
+    /// current) since the stem last started: `condition: seeded` holds.
+    #[serde(default)]
+    pub seeded: bool,
     /// Health probe detail (deliverable 21; `null` today).
     pub health: Option<Value>,
     /// Last error, if the stem failed.
@@ -293,6 +302,7 @@ mod tests {
             uptime_s: Some(3),
             started_at: None,
             restarts: 0,
+            seeded: false,
             health: None,
             error: None,
             env: None,

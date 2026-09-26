@@ -1,8 +1,10 @@
 ---
 source: crates/stems-cli/src/commands/status.rs
-expression: table(&st)
+expression: "table(&st, &Style::default())"
 ---
-   STEM      TYPE     STATE    PID   PORTS  UPTIME
-✓  echo-svc  process  healthy  4242  18090  1m15s
-·  web       process  stopped  -     auto   -
-1 healthy, 0 degraded, 0 failed, 0 starting, 1 stopped, 0 unknown
+STEM      TYPE      STATUS     REASON                                    PID   PORTS       UPTIME  RESTARTS
+echo-svc  process   ✓ healthy  -                                         4242  http:18090  1m15s   0
+web       process   · stopped  -                                         -     http:auto   -       2
+hosted    external  ? unknown  external: not managed by stems (no heal…  -     -           -       0
+
+1 healthy, 0 degraded, 0 failed, 0 starting, 1 stopped, 1 unknown

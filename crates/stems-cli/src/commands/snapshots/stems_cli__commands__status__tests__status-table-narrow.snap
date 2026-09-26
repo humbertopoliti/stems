@@ -1,0 +1,8 @@
+---
+source: crates/stems-cli/src/commands/status.rs
+expression: out
+---
+STEM         TYPE     STATUS    REASON      PID  PORTS  UPTIME  RESTARTS
+a-really-q…  process  ✗ failed  `a-really…  -    -      -       7
+
+0 healthy, 0 degraded, 1 failed, 0 starting, 0 stopped, 0 unknown

@@ -5,3 +5,4 @@ stems.local.yaml
 __pycache__/
 *.pyc
 .DS_Store
+*.pending-snap

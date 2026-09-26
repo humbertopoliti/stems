@@ -145,6 +145,8 @@ pub struct RunOptions {
 enum Stage {
     Pending,
     Started,
+    /// `healthy`, `post_start`/`seed` still running (16).
+    Healthy,
     Ready,
     Failed,
     Skipped,
@@ -153,8 +155,10 @@ enum Stage {
 impl Stage {
     fn satisfies(self, c: Condition) -> bool {
         match c {
-            Condition::Started => matches!(self, Stage::Started | Stage::Ready),
-            Condition::Healthy | Condition::Seeded => self == Stage::Ready,
+            Condition::Started => matches!(self, Stage::Started | Stage::Healthy | Stage::Ready),
+            Condition::Healthy => matches!(self, Stage::Healthy | Stage::Ready),
+            // Ready = the whole start sequence, seed included (16).
+            Condition::Seeded => self == Stage::Ready,
         }
     }
     fn is_bad(self) -> bool {
@@ -272,15 +276,18 @@ async fn one(
         }
         Outcome::Failed(e)
     };
-    if let Err(e) = cell
-        .start(
+    // The start includes `setup`/`pre_start` (16), which may take long: a
+    // cancellation (`down`) must not wait for it (the stop kills the script).
+    let started = tokio::select! {
+        r = cell.start(
             opts.ws.clone(),
             &opts.actor,
             &opts.reason,
             opts.pass_env.clone(),
-        )
-        .await
-    {
+        ) => r,
+        () = opts.cancel.cancelled() => return Outcome::Skipped,
+    };
+    if let Err(e) = started {
         return fail(e);
     }
     stages[name].send_replace(Stage::Started);
@@ -290,10 +297,27 @@ async fn one(
         .stem(name)
         .is_some_and(|s| s.kind() == StemType::External);
     let mut ph = cell.watch();
-    let end = tokio::select! {
-        r = ph.wait_for(|p| !matches!(p.state, StemState::Starting | StemState::Setup | StemState::Seeding)) => r.map(|p| p.state).unwrap_or(StemState::Failed),
-        () = opts.cancel.cancelled() => return Outcome::Skipped,
-        () = until(opts.deadline) => return fail(timeout_error(name)),
+    // `healthy` with `pending` (post_start/seed to run, 16) already satisfies
+    // `condition: healthy` edges; the stem is ready once nothing is pending.
+    let mut healthy_seen = false;
+    let end = loop {
+        let seen = healthy_seen;
+        let p = tokio::select! {
+            r = ph.wait_for(|p| match p.state {
+                StemState::Starting | StemState::Setup | StemState::Seeding => false,
+                StemState::Healthy if p.pending => !seen,
+                _ => true,
+            }) => r.map(|p| *p).ok(),
+            () = opts.cancel.cancelled() => return Outcome::Skipped,
+            () = until(opts.deadline) => return fail(timeout_error(name)),
+        };
+        let Some(p) = p else { break StemState::Failed };
+        if p.state == StemState::Healthy && p.pending {
+            healthy_seen = true;
+            stages[name].send_replace(Stage::Healthy);
+            continue;
+        }
+        break p.state;
     };
     match end {
         StemState::Healthy => Outcome::Ready,

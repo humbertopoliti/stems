@@ -228,6 +228,9 @@ impl Runtime for ProcessRuntime {
     async fn start(&self, spec: &StartSpec) -> Result<Handle, RuntimeError> {
         match spec {
             StartSpec::Process(p) => self.start_process(p).await,
+            StartSpec::External { stem } => Err(RuntimeError::Unsupported(format!(
+                "`{stem}` is an external stem; the process runtime does not start it"
+            ))),
         }
     }
 
@@ -330,7 +333,9 @@ impl Runtime for ProcessRuntime {
                 }
                 Ok(ExitStatus::UNKNOWN)
             }
-            (None, Handle::Process { id, .. }) => Err(RuntimeError::NotFound(*id)),
+            (None, Handle::Process { id, .. } | Handle::External { id }) => {
+                Err(RuntimeError::NotFound(*id))
+            }
         }
     }
 

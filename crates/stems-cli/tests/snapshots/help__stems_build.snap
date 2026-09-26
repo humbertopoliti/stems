@@ -8,7 +8,7 @@ Usage: stems build [OPTIONS] [STEMS]...
 
 Arguments:
   [STEMS]...
-          Only these stems
+          Only these stems (default: every enabled stem with a `build` script)
 
 Options:
   -h, --help

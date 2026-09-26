@@ -14,6 +14,7 @@
 
 pub mod actor;
 pub mod env;
+pub mod hooks;
 pub mod ports;
 pub mod schedule;
 pub mod state;
@@ -32,7 +33,7 @@ use stems_api::{
 };
 use stems_config::{Resolved, StemType};
 use stems_core::{Error, ErrorCode, WorkspaceGraph};
-use stems_runtime::{OutputStream, ProcessRuntime, Runtime};
+use stems_runtime::{ExternalRuntime, OutputStream, ProcessRuntime, Runtime};
 use tokio_util::sync::CancellationToken;
 
 pub use actor::{Phase, StemCell, StopReply};
@@ -57,14 +58,24 @@ pub struct RecoverReport {
 /// Default `max_parallel` for `up`.
 pub const DEFAULT_MAX_PARALLEL: usize = 4;
 
-/// Runtimes by stem type. Docker (14) and compose (15) register here.
-#[derive(Clone, Default)]
+/// Runtimes by stem type. Docker (14) and compose (15) register here. The
+/// no-op [`ExternalRuntime`] for `type: external` is always registered
+/// (also in [`Default`]), so monitor-only stems never hit `NOT_IMPLEMENTED`.
+#[derive(Clone)]
 pub struct RuntimeRegistry {
     by_type: HashMap<StemType, Arc<dyn Runtime>>,
 }
 
+impl Default for RuntimeRegistry {
+    fn default() -> Self {
+        let mut by_type: HashMap<StemType, Arc<dyn Runtime>> = HashMap::new();
+        by_type.insert(StemType::External, Arc::new(ExternalRuntime::new()));
+        Self { by_type }
+    }
+}
+
 impl RuntimeRegistry {
-    /// Just the process runtime.
+    /// The process runtime (plus the external one).
     pub fn with_process() -> Self {
         let mut r = Self::default();
         r.register(StemType::Process, Arc::new(ProcessRuntime::new()));
@@ -94,6 +105,11 @@ impl RuntimeRegistry {
 pub trait OutputSink: Send + Sync {
     /// Called once per start with the unit's output stream (if any).
     fn attach(&self, stem: &str, stream: Option<OutputStream>);
+    /// A writer for one script run's output (deliverable 16: records tagged
+    /// `stream: script, tag: <script>`); `None` drops it.
+    fn script_writer(&self, _stem: &str, _script: &str) -> Option<crate::logs::ScriptWriter> {
+        None
+    }
 }
 
 /// Drops output (until 12).
@@ -124,6 +140,14 @@ pub trait Host: Send + Sync {
     /// drops it ([`NullSink`]).
     fn output_sink(&self) -> Option<Arc<dyn OutputSink>> {
         None
+    }
+    /// The daemon's `<home>/<ws-hash>` directory; scripts' `STEMS_STATE_DIR`
+    /// live below it (16). Default: the state file's directory.
+    fn data_dir(&self) -> Option<std::path::PathBuf> {
+        self.state_store()?
+            .path()?
+            .parent()
+            .map(std::path::Path::to_path_buf)
     }
 }
 
@@ -187,6 +211,8 @@ pub struct Core {
     pub(crate) sink: Arc<dyn OutputSink>,
     /// Durable state (deliverable 11); `None` in unit tests.
     pub(crate) state: Option<Arc<StateStore>>,
+    /// Runs lifecycle and workspace scripts (deliverable 16).
+    pub(crate) scripts: crate::scripts::ScriptRunner,
 }
 
 /// The supervisor. Installed into the daemon by [`Daemon::run`].
@@ -231,16 +257,37 @@ impl Supervisor {
         runtimes: RuntimeRegistry,
         waiter: Arc<dyn Waiter>,
     ) -> Arc<Self> {
+        let run_id = host.state_store().map_or_else(new_run_id, |s| s.run_id());
+        // Stamps and script runs need a store even without a state file.
+        let state = host
+            .state_store()
+            .unwrap_or_else(|| Arc::new(StateStore::in_memory(run_id.clone())));
+        let sink = host.output_sink().unwrap_or_else(|| Arc::new(NullSink));
+        let script_rt = runtimes
+            .get(StemType::Process)
+            .unwrap_or_else(|_| Arc::new(ProcessRuntime::new()));
+        let data_dir = host
+            .data_dir()
+            .unwrap_or_else(|| std::env::temp_dir().join(format!("stems-{run_id}")));
+        let scripts = crate::scripts::ScriptRunner::new(
+            script_rt,
+            events.clone(),
+            sink.clone(),
+            Some(state.clone()),
+            data_dir,
+            run_id.clone(),
+        );
         Arc::new(Self {
             core: Arc::new(Core {
                 events,
                 runtimes,
                 waiter,
                 ports: PortBook::default(),
-                run_id: host.state_store().map_or_else(new_run_id, |s| s.run_id()),
+                run_id,
                 base_env: std::env::vars().collect(),
-                sink: host.output_sink().unwrap_or_else(|| Arc::new(NullSink)),
-                state: host.state_store(),
+                sink,
+                state: Some(state),
+                scripts,
             }),
             host,
             cells: Mutex::new(IndexMap::new()),
@@ -331,7 +378,30 @@ impl Supervisor {
             "stems": plan.order,
             "layers": plan.layers,
             "detach": p.detach,
+            "fresh": p.fresh,
         })));
+        // Workspace `bootstrap`, then (`--fresh`) reset + clear stamps (16).
+        let pre = async {
+            self.bootstrap(&ws.workspace, actor, &p.pass_env).await?;
+            if p.fresh {
+                let r = self.reset_stems(&ws, &plan.order, actor).await;
+                if let Some(f) = r.failed.into_iter().next() {
+                    return Err(f.error);
+                }
+            }
+            Ok::<(), Error>(())
+        };
+        if let Err(e) = pre.await {
+            self.emit(EventDraft::new(EventKind::UP_FINISHED, actor).data(json!({
+                "requested": p.stems,
+                "started": [],
+                "failed": [],
+                "skipped": plan.order,
+                "ok": false,
+                "error": e,
+            })));
+            return Err(e);
+        }
         let mut res = self.run_plan(&plan, &ws, &p, actor, "up").await;
         res.requested = p.stems.clone();
         self.emit(EventDraft::new(EventKind::UP_FINISHED, actor).data(json!({
@@ -403,10 +473,6 @@ impl Supervisor {
 
     /// `restart`: stop the stems, then start them (and missing deps), keeping ports.
     pub async fn restart(&self, p: RestartParams, actor: &str) -> Result<UpResult, Error> {
-        if p.build {
-            return Err(Error::not_implemented("`restart --build`", "16")
-                .with_details(json!({ "deliverable": "16" })));
-        }
         let ws = self.workspace(true, actor)?;
         schedule::plan(&ws, &p.stems, p.no_deps)?;
         Self::not_managed(&ws, &p.stems, "restart")?;
@@ -415,6 +481,12 @@ impl Supervisor {
         let stop = self.stop_set(&ws, &p.stems, None, actor, "restart").await;
         if let Some(f) = stop.failed.into_iter().next() {
             return Err(f.error);
+        }
+        if p.build {
+            let b = self.build_stems(&ws, &p.stems, actor).await;
+            if let Some(f) = b.failed.into_iter().next() {
+                return Err(f.error);
+            }
         }
         let up = UpParams {
             stems: p.stems.clone(),
@@ -522,6 +594,16 @@ impl Supervisor {
             .stop_set(&ws, &names, ms(p.timeout_ms), actor, "down")
             .await;
         res.skipped.extend(externals);
+        if p.all
+            && let Err(error) = self.teardown(&ws.workspace, actor).await
+        {
+            // Workspace `teardown` (16) failed: report it, still shut down.
+            res.failed.push(StemFailure {
+                stem: crate::scripts::WORKSPACE_LOG_STEM.into(),
+                error,
+            });
+            res.ok = false;
+        }
         let shutdown = p.all || (!self.any_running() && self.host.started_by_up());
         res.daemon_stopping = shutdown;
         self.emit(
@@ -632,7 +714,11 @@ impl Supervisor {
         let previous = previous.unwrap_or_else(|| StateFile::new("", Default::default()));
         if let Some(store) = &self.core.state {
             let stamps = previous.stamps.clone();
-            store.update(|f| f.stamps = stamps);
+            let runs = previous.script_runs.clone();
+            store.update(|f| {
+                f.stamps = stamps;
+                f.script_runs = runs;
+            });
         }
         for (name, rec) in previous.stems {
             let stem = ws.as_ref().and_then(|w| w.workspace.stem(&name).cloned());
@@ -840,6 +926,18 @@ impl SupervisorHooks for Supervisor {
                 Err(e) => Err(e),
             },
             m if m == Method::ADOPT_ORPHANS => self.adopt_orphans(p, actor).await,
+            m if m == Method::BUILD => match params(m, p) {
+                Ok(p) => self.build(p, actor).await.and_then(to_value),
+                Err(e) => Err(e),
+            },
+            m if m == Method::RESET => match params(m, p) {
+                Ok(p) => self.reset(p, actor).await.and_then(to_value),
+                Err(e) => Err(e),
+            },
+            m if m == Method::STAMPS => match params(m, p) {
+                Ok(p) => self.stamps(p, actor).and_then(to_value),
+                Err(e) => Err(e),
+            },
             _ => return None,
         };
         Some(r)

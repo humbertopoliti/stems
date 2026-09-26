@@ -7,7 +7,9 @@
 //! * `healthy` — the process stayed alive for `health.start_period` and, for
 //!   `tcp`/`http` checks, its port accepts TCP connections; bounded by
 //!   `health.start_timeout` (`HEALTH_TIMEOUT`);
-//! * `seeded` — same as `healthy` until 16 runs seed scripts.
+//! * `seeded` — same as `healthy` here: the stem actor runs the `seed`
+//!   script after `healthy` (16) and the scheduler waits for it (the phase's
+//!   `pending` flag), so this waiter never sees `seeded` on its own.
 //!
 //! A process that exits while waited on fails with `START_FAILED` (exit code
 //! and signal in details).

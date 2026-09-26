@@ -536,7 +536,12 @@ impl E2eWorld {
     }
 
     fn command(&self, argv: &[String], cwd: &Path, env: &[(String, String)]) -> Command {
-        let mut cmd = Command::new(stems_bin());
+        // `sh -c <line>` for `I run the shell command` (16), else the binary.
+        let mut cmd = if argv[0] == "sh" {
+            Command::new("/bin/sh")
+        } else {
+            Command::new(stems_bin())
+        };
         cmd.args(&argv[1..]).current_dir(cwd);
         for (k, _) in std::env::vars_os() {
             if k.to_string_lossy().starts_with("STEMS_") {
@@ -674,6 +679,21 @@ impl E2eWorld {
         if let Some(j) = &out.json {
             collect_pgids(j, &mut self.pgids);
         }
+        self.last = Some(out.clone());
+        out
+    }
+
+    /// `sh -c <line>` (placeholders expanded) with the same cwd/env rules as
+    /// [`Self::run`]; becomes the last command. For checks stems has no
+    /// command for (`docker exec … psql`, `curl`).
+    pub async fn run_shell(&mut self, line: &str) -> CmdOutput {
+        let argv = vec!["sh".to_owned(), "-c".to_owned(), self.expand(line)];
+        let cwd = self.default_cwd();
+        let timeout = self.remaining();
+        let out = self
+            .exec(argv, cwd, &[], timeout)
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
         self.last = Some(out.clone());
         out
     }

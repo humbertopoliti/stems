@@ -23,6 +23,7 @@ use stems_core::{Error, ErrorCode};
 pub mod client;
 pub mod lifecycle;
 pub mod logs;
+pub mod scripts;
 
 pub use lifecycle::{
     DownParams, DownResult, PortStatus, RestartParams, StartParams, StatusParams, StatusResult,
@@ -31,6 +32,10 @@ pub use lifecycle::{
 pub use logs::{
     ExportLogsParams, ExportLogsResult, LogFilter, LogRecord, QUERY_LOGS_CAP, QueryLogsParams,
     QueryLogsResult, SubscribeLogsAck, SubscribeLogsParams,
+};
+pub use scripts::{
+    BuildParams, BuildResult, ResetParams, ResetResult, ScriptRunSummary, StampEntry, StampsParams,
+    StampsResult,
 };
 
 /// Version of the wire protocol. Bumped on any incompatible change.
@@ -152,6 +157,13 @@ string_newtype! {
         SUBSCRIBE_LOGS = "subscribe_logs";
         /// Write a support bundle ([`ExportLogsParams`] -> [`ExportLogsResult`]).
         EXPORT_LOGS = "export_logs";
+        // --- lifecycle scripts (16) ---------------------------------------------
+        /// Run `build` scripts ([`BuildParams`] -> [`BuildResult`]).
+        BUILD = "build";
+        /// Stop stems, run `reset`, clear stamps ([`ResetParams`] -> [`ResetResult`]).
+        RESET = "reset";
+        /// List or clear stamps ([`StampsParams`] -> [`StampsResult`]).
+        STAMPS = "stamps";
         // --- reserved for later deliverables ---------------------------------
         /// Reserved (13).
         RUN_SCRIPT = "run_script";

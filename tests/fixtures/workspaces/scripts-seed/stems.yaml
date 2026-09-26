@@ -1,0 +1,24 @@
+# scripts-seed — fixture for scripts/seed-after-healthy.feature (FR-SC-1,
+# FR-GR-1): `db` runs `seed` once healthy; `api` waits for it
+# (`condition: seeded`), `web` only for `db` to be healthy.
+schema_version: 1
+name: scripts-seed
+
+stems:
+  db:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    ports: [{ name: http, port: 18511 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts:
+      start: python3 app.py
+      seed: 'echo seeding; echo "seeded on port $PORT"'
+  api:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    depends_on: [{ stem: db, condition: seeded }]
+    ports: [{ name: http, port: 18512 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts: { start: python3 app.py }

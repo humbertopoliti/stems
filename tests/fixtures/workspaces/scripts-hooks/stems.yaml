@@ -1,0 +1,19 @@
+# scripts-hooks — fixture for scripts/hooks.feature: every hook appends its
+# name to hooks.log in the integration repo (`cwd: workspace`), so the order
+# is visible in the file as well as in the events.
+schema_version: 1
+name: scripts-hooks
+
+stems:
+  echo-svc:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    ports: [{ name: http, port: 18521 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts:
+      start: python3 app.py
+      pre_start: { command: 'echo "pre_start $STEMS_STEM" >> hooks.log', cwd: workspace }
+      post_start: { command: 'echo "post_start port=$PORT" >> hooks.log', cwd: workspace }
+      pre_stop: { command: 'echo pre_stop >> hooks.log', cwd: workspace }
+      post_stop: { command: 'echo post_stop >> hooks.log', cwd: workspace }

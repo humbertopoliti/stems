@@ -1,0 +1,23 @@
+# scripts-stamp — fixture for scripts/setup-stamp.feature (FR-SC-1, FR-SC-5).
+#
+# `setup` is stamped on its text plus the codebase's VERSION file (written
+# by the scenario into a private copy of the repos): it runs on the first
+# `up`, not again while the stamp is current, again once VERSION changes,
+# and after `reset` (`up --fresh`).
+schema_version: 1
+name: scripts-stamp
+
+stems:
+  echo-svc:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    ports: [{ name: http, port: 18501 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts:
+      start: python3 app.py
+      setup:
+        command: 'echo setup-ran; touch "$STEMS_STATE_DIR/marker"'
+        inputs: [VERSION]
+      reset: 'echo reset-ran; rm -f "$STEMS_STATE_DIR/marker"'
+      build: 'echo build-ran'

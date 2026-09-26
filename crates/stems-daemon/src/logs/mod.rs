@@ -499,6 +499,10 @@ impl LogHub {
 }
 
 impl OutputSink for LogHub {
+    fn script_writer(&self, stem: &str, script: &str) -> Option<ScriptWriter> {
+        Some(LogHub::script_writer(self, stem, script))
+    }
+
     fn attach(&self, stem: &str, stream: Option<OutputStream>) {
         // Adopted units have no stream (their pipes died with the old daemon).
         let Some(mut stream) = stream else { return };

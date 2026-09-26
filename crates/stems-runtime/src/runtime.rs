@@ -14,6 +14,11 @@ use crate::output::OutputStream;
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum StartSpec {
     Process(ProcessSpec),
+    /// A monitor-only stem ([`crate::ExternalRuntime`]): nothing is spawned.
+    External {
+        /// Stem name.
+        stem: String,
+    },
 }
 
 /// A native process to run in its own session / process group.
@@ -79,31 +84,44 @@ pub enum Handle {
         pgid: i32,
         start_time: StartTime,
     },
+    /// A monitor-only stem ([`crate::ExternalRuntime`]): there is no
+    /// process, so `pid`/`pgid` are `0` (never signalled: the OS helpers
+    /// refuse pids/groups `<= 1`) and it is never persisted or adopted.
+    External { id: HandleId },
 }
 
 impl Handle {
     pub fn id(&self) -> HandleId {
         match self {
-            Handle::Process { id, .. } | Handle::Adopted { id, .. } => *id,
+            Handle::Process { id, .. } | Handle::Adopted { id, .. } | Handle::External { id } => {
+                *id
+            }
         }
     }
     pub fn pid(&self) -> i32 {
         match self {
             Handle::Process { pid, .. } | Handle::Adopted { pid, .. } => *pid,
+            Handle::External { .. } => 0,
         }
     }
     pub fn pgid(&self) -> i32 {
         match self {
             Handle::Process { pgid, .. } | Handle::Adopted { pgid, .. } => *pgid,
+            Handle::External { .. } => 0,
         }
     }
     pub fn start_time(&self) -> StartTime {
         match self {
             Handle::Process { start_time, .. } | Handle::Adopted { start_time, .. } => *start_time,
+            Handle::External { .. } => StartTime(0),
         }
     }
     pub fn is_adopted(&self) -> bool {
         matches!(self, Handle::Adopted { .. })
+    }
+    /// A monitor-only stem's handle (no process).
+    pub fn is_external(&self) -> bool {
+        matches!(self, Handle::External { .. })
     }
 }
 
@@ -211,6 +229,9 @@ pub enum RuntimeError {
     },
     #[error("unknown runtime handle {0}")]
     NotFound(HandleId),
+    /// The spec or handle belongs to another runtime.
+    #[error("{0}")]
+    Unsupported(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }

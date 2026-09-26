@@ -10,38 +10,85 @@
 
 use std::path::Path;
 
-/// Normalises `text`: trims lines, drops empty ones, masks ignored columns.
+/// Normalises `text`: drops empty lines and masks ignored columns.
+///
+/// The first block of lines (up to the first blank line) is the table. When
+/// it is aligned under its header (every row has a space right before each
+/// header column's start), rows are cut at the header's column positions, so
+/// a cell may contain spaces (`✓ healthy`, a reason); otherwise rows are
+/// split on whitespace. Later lines (a summary) are split on whitespace and
+/// never masked.
 pub fn normalise(text: &str, ignore: &[String]) -> Vec<Vec<String>> {
-    let rows: Vec<Vec<String>> = text
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .map(|l| l.split_whitespace().map(str::to_owned).collect())
-        .collect();
-    let Some(header) = rows.first() else {
-        return rows;
-    };
-    let masked: Vec<usize> = header
+    let lines: Vec<&str> = text.lines().map(str::trim_end).collect();
+    let first = lines
         .iter()
-        .enumerate()
-        .filter(|(_, h)| ignore.iter().any(|i| i.eq_ignore_ascii_case(h)))
-        .map(|(i, _)| i)
+        .position(|l| !l.trim().is_empty())
+        .unwrap_or(lines.len());
+    let table_end = lines[first..]
+        .iter()
+        .position(|l| l.trim().is_empty())
+        .map_or(lines.len(), |i| first + i);
+    let table: Vec<Vec<char>> = lines[first..table_end]
+        .iter()
+        .map(|l| l.chars().collect())
         .collect();
-    rows.iter()
-        .enumerate()
-        .map(|(r, row)| {
-            row.iter()
+    let tokens = |l: &str| l.split_whitespace().map(str::to_owned).collect::<Vec<_>>();
+    let starts: Vec<usize> = table.first().map_or_else(Vec::new, |h| {
+        (0..h.len())
+            .filter(|&i| h[i] != ' ' && (i == 0 || h[i - 1] == ' '))
+            .collect()
+    });
+    let aligned = !starts.is_empty()
+        && table.iter().all(|row| {
+            starts
+                .iter()
+                .skip(1)
+                .all(|&s| row.get(s - 1).is_none_or(|c| *c == ' '))
+        });
+    let mut rows: Vec<Vec<String>> = table
+        .iter()
+        .map(|row| {
+            if !aligned {
+                return tokens(&row.iter().collect::<String>());
+            }
+            starts
+                .iter()
                 .enumerate()
-                .map(|(i, cell)| {
-                    if r > 0 && masked.contains(&i) {
-                        "*".to_owned()
-                    } else {
-                        cell.clone()
-                    }
+                .map(|(i, &s)| {
+                    let e = starts
+                        .get(i + 1)
+                        .copied()
+                        .unwrap_or(row.len())
+                        .min(row.len());
+                    row.get(s.min(e)..e).map_or_else(String::new, |c| {
+                        c.iter().collect::<String>().trim().to_owned()
+                    })
                 })
                 .collect()
         })
-        .collect()
+        .collect();
+    if let Some(header) = rows.first().cloned() {
+        let masked: Vec<usize> = header
+            .iter()
+            .enumerate()
+            .filter(|(_, h)| ignore.iter().any(|i| i.eq_ignore_ascii_case(h)))
+            .map(|(i, _)| i)
+            .collect();
+        for row in rows.iter_mut().skip(1) {
+            for &i in &masked {
+                if let Some(cell) = row.get_mut(i) {
+                    "*".clone_into(cell);
+                }
+            }
+        }
+    }
+    rows.extend(
+        lines[table_end..]
+            .iter()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| tokens(l)),
+    );
+    rows
 }
 
 /// Compares `actual` to the golden `name` under `dir`.
@@ -84,6 +131,19 @@ mod tests {
         let ignore = vec!["PID".to_owned(), "uptime".to_owned()];
         assert_eq!(normalise(a, &ignore), normalise(b, &ignore));
         assert_ne!(normalise(a, &[]), normalise(b, &[]));
+    }
+
+    #[test]
+    fn aligned_tables_keep_cells_with_spaces() {
+        let a = "STEM  STATUS     REASON        PID\napi   ✓ healthy  ready (alive)  123\n\n1 healthy\n";
+        let b = "STEM  STATUS     REASON          PID\napi   ✓ healthy  ready (alive)    98765\n\n1 healthy\n";
+        let ignore = vec!["PID".to_owned()];
+        let n = normalise(a, &ignore);
+        assert_eq!(n[1], ["api", "✓ healthy", "ready (alive)", "*"]);
+        assert_eq!(n[2], ["1", "healthy"]);
+        assert_eq!(n, normalise(b, &ignore));
+        let c = "STEM  STATUS     REASON        PID\napi   ✓ healthy  ready (dead)   123\n\n1 healthy\n";
+        assert_ne!(normalise(a, &ignore), normalise(c, &ignore));
     }
 
     #[test]
