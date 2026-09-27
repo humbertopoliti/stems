@@ -1,8 +1,8 @@
 # yaml-language-server: $schema=../../../schema/stems.schema.json
 #
-# shop-lite: the hello-shop services WITHOUT containers, so it runs anywhere
-# Python 3 is installed. Use this to try stems when you have no Docker.
-# For the full example (postgres in docker, redis via compose) see ../hello-shop.
+# shop-lite: the hello-shop services with a single container (redis). Needs Python 3
+# and Docker; `--profile local` runs the three Python services without Docker.
+# For the full example (postgres in docker, redis via compose, external) see ../hello-shop.
 schema_version: 1
 name: shop-lite
 
@@ -11,6 +11,7 @@ vars:
 
 profiles:
   default: [shop-api, shop-web, shop-worker, redis]
+  local: [shop-api, shop-web, shop-worker]   # no Docker needed
   api-only: [shop-api]
 
 stems:
@@ -55,14 +56,14 @@ stems:
       start: python3 serve.py
 
   redis:
-    # shop-lite does not run redis for you (that is what hello-shop's compose stem does).
-    # It is declared as an EXTERNAL stem so the dependency shows on the graph and in
-    # status: unhealthy until something listens on 16379, e.g.
-    #   docker run --rm -p 16379:6379 redis:7      or      brew services start redis
-    type: external
-    description: Redis on localhost:16379, provided by you (not started by stems)
-    ports: [{ name: redis, port: 16379 }]
-    health: { type: tcp, port: 16379, interval: 1s, timeout: 500ms, retries: 2 }
+    # A real redis in a container (needs Docker). The worker's edge to it is `soft`,
+    # so `stems up --profile local` still works on a machine without Docker.
+    type: docker
+    description: Redis 7 in a container, the worker's queue
+    image: redis:7
+    ports: [{ name: redis, port: 16380, container_port: 6379 }]
+    health: { type: tcp, port: 16380, interval: 500ms, timeout: 400ms, retries: 3, start_period: 1s }
+    stop_grace: 2s
 
   shop-worker:
     type: process
