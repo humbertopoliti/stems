@@ -18,6 +18,7 @@ serde_yaml_ng.workspace = true
 # `When I call the daemon RPC ...` talks to the socket with the real client.
 stems-api = { workspace = true }
 stems-core = { workspace = true }
+stems-runtime = { workspace = true }
 # The MCP test client (31): an rmcp client over the `stems mcp` child's stdio.
 rmcp = { workspace = true, features = ["client", "transport-async-rw"] }
 tempfile.workspace = true

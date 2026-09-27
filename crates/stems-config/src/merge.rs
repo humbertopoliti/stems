@@ -12,6 +12,40 @@ fn replaces_per_key(path: &ConfigPath) -> bool {
         || (segs == 3 && path.key_at(0) == Some("stems") && path.key_at(2) == Some("scripts"))
 }
 
+/// True for `stems.<n>.ports`, whose replacement keeps `container_port`s
+/// by name (see [`inherit_container_ports`]).
+fn is_stem_ports(path: &ConfigPath) -> bool {
+    path.segments().len() == 3 && path.key_at(0) == Some("stems") && path.key_at(2) == Some("ports")
+}
+
+/// A `ports` list replacing `base`: each `{name, …}` entry of `overlay`
+/// without a `container_port` takes the one of the replaced entry with the
+/// same `name`, so remapping a host port (`stems.local.yaml`, a harness)
+/// keeps the container side a variant or base declared. Entries without a
+/// name, renamed ports and the shorthand forms (`5432`, `"15432:5432"`)
+/// inherit nothing.
+fn inherit_container_ports(base: &Value, overlay: &mut Value) {
+    let (Value::Sequence(b), Value::Sequence(o)) = (base, overlay) else {
+        return;
+    };
+    let name_of = |v: &Value| v.get("name").and_then(Value::as_str).map(str::to_owned);
+    for entry in o.iter_mut() {
+        let Some(name) = name_of(entry) else { continue };
+        let Value::Mapping(m) = entry else { continue };
+        if m.contains_key("container_port") {
+            continue;
+        }
+        let inherited = b
+            .iter()
+            .find(|e| name_of(e).as_deref() == Some(name.as_str()))
+            .and_then(|e| e.get("container_port"))
+            .filter(|c| !c.is_null());
+        if let Some(c) = inherited {
+            m.insert(Value::String("container_port".into()), c.clone());
+        }
+    }
+}
+
 fn type_of(m: &Mapping) -> Option<&Value> {
     m.get("type")
 }
@@ -24,8 +58,12 @@ fn type_of(m: &Mapping) -> Option<&Value> {
 /// - two mappings that both carry a `type` key with different values (a stem
 ///   or health check changing kind) are replaced, not merged;
 /// - anything else (lists, scalars, null, mapping vs non-mapping): the overlay
-///   replaces the base.
-pub fn merge(base: &mut Value, overlay: Value, path: &ConfigPath) {
+///   replaces the base; a replaced `stems.<n>.ports` list passes its
+///   `container_port`s on by port name ([`inherit_container_ports`]).
+pub fn merge(base: &mut Value, mut overlay: Value, path: &ConfigPath) {
+    if is_stem_ports(path) {
+        inherit_container_ports(base, &mut overlay);
+    }
     match (base, overlay) {
         (Value::Mapping(b), Value::Mapping(o)) => {
             if let (Some(bt), Some(ot)) = (type_of(b), type_of(&o))
@@ -103,6 +141,36 @@ mod tests {
             "stems: { api: { ports: [3] } }",
         );
         assert_eq!(m, y("stems: { api: { ports: [3], depends_on: [db] } }"));
+    }
+
+    #[test]
+    fn replaced_ports_keep_container_port_by_name() {
+        // A later layer remapping the host port keeps the container side.
+        let m = merged(
+            "stems: { api: { ports: [{ name: http, port: 18080, container_port: 8080 }, { name: admin, port: 9000, container_port: 9001 }] } }",
+            "stems: { api: { ports: [{ name: http, port: 28080 }, { name: debug, port: 9000 }, 5000] } }",
+        );
+        assert_eq!(
+            m,
+            y(
+                "stems: { api: { ports: [{ name: http, port: 28080, container_port: 8080 }, { name: debug, port: 9000 }, 5000] } }"
+            )
+        );
+        // An explicit container_port wins.
+        let m = merged(
+            "stems: { api: { ports: [{ name: http, port: 1, container_port: 8080 }] } }",
+            "stems: { api: { ports: [{ name: http, port: 2, container_port: 9090 }] } }",
+        );
+        assert_eq!(
+            m,
+            y("stems: { api: { ports: [{ name: http, port: 2, container_port: 9090 }] } }")
+        );
+        // Only `stems.<n>.ports` behaves this way.
+        let m = merged(
+            "x: { ports: [{ name: http, container_port: 1 }] }",
+            "x: { ports: [{ name: http }] }",
+        );
+        assert_eq!(m, y("x: { ports: [{ name: http }] }"));
     }
 
     #[test]

@@ -31,6 +31,34 @@ The daemon connects lazily, only when a docker (or compose) stem is
 actually started, adopted, or `down --volumes` needs Docker, so a
 process-only selection never talks to Docker (see "Daemon wiring").
 
+## Finding the docker CLI
+
+The Engine API needs no CLI, but compose stems, `doctor`/`validate`'s
+compose check, `command` health probes of container stems (`docker exec`)
+and scripts such as hello-shop's `seed` do. Docker Desktop does not always
+put `docker` on `PATH` (no `/usr/local/bin` symlinks, or a daemon started
+from a minimal environment), so one helper,
+`stems_runtime::docker::docker_cli_path()`, looks in this order:
+
+1. `$STEMS_DOCKER_CLI` when set and non-empty, used as-is (no search; the
+   e2e suite points it at a missing file to simulate a machine without
+   Docker);
+2. `docker` on `PATH`;
+3. `/Applications/Docker.app/Contents/Resources/bin/docker` (Docker
+   Desktop), `/usr/local/bin/docker`, `/opt/homebrew/bin/docker`,
+   `~/.rd/bin/docker` (Rancher Desktop),
+   `/Applications/OrbStack.app/Contents/MacOS/xbin/docker`.
+
+Users of it: the compose runtime's binary (`ComposeOptions::new`), `stems
+validate`'s `TOOL_VERSION` check, `doctor`'s `compose.version` (its
+`details.cli` shows which CLI ran), and the e2e harness (`docker` steps,
+the leak hook, and the `PATH` of every command it runs). The daemon's base
+environment (inherited by scripts, health commands and process stems)
+gets the CLI's directory prepended to `PATH` when `docker` is not already
+on it (`ensure_docker_on_path`), so `docker exec ...` in a reset/seed
+script works from a daemon started without Docker's bin directory on
+`PATH`. Docker stems themselves never inherit the daemon's environment.
+
 ## Naming and labels
 
 | Thing | Value |
@@ -84,8 +112,9 @@ LABEL_RUN_ID, LABEL_SPEC_HASH}`.
 | pull | `POST /images/create` with repository and tag (`latest` if none; digests supported). Progress is coalesced to one `ImageProgress::Pull { image, layer, status }` per layer status change and sent best-effort (never blocks) to `ContainerSpec.progress` → daemon `docker.pull` events |
 | build | the context directory is tarred (see below) and sent to `POST /build` with `t=stems/<ws>/<stem>:<run_id>`, `rm`, `forcerm`; each output line is sent as `ImageProgress::Build { stem, line }` (`docker.build` events); failure keeps the last 20 lines |
 | `stop(grace)` | not running → `AlreadyDead`; else `docker stop -t ceil(grace)` (SIGTERM, then Docker's own SIGKILL). Still running afterwards → `kill` (SIGKILL) → `Killed`. Exit code 137 after the stop → `Killed`; otherwise `Graceful` |
-| `remove(handle, volumes)` | `DELETE /containers/<id>?force=1&v=<volumes>`; with `volumes` also every named volume mounted by it whose name starts with `<ws>_` (read from the container's `stems.workspace` label; a user's own volumes and bind mounts are never removed). This is `down` / `down --volumes` (FR-LC-2) |
-| `restart(handle, spec)` | recreate (stop, remove keeping volumes, start) when `spec.spec_hash()` differs from the container's `stems.spec_hash` label, else `docker restart -t ceil(grace)`. The old handle is released and a new one returned either way |
+| `remove(handle, volumes)` | `DELETE /containers/<id>?force=1&v=1`: the container's *anonymous* volumes (an image `VOLUME` such as redis's `/data`) always go with it (`v` never touches named volumes); with `volumes` also every named volume mounted by it whose name starts with `<ws>_` (read from the container's `stems.workspace` label; a user's own volumes and bind mounts are never removed). Then each network it was on is removed when stems created it for this workspace (label `stems.workspace=<ws>`) and no container is attached any more (`network_removable`), so the last `down` also removes `<ws>_net`. This is `down` / `down --volumes` (FR-LC-2) |
+| failed start | a pull, build, create or start failure removes the network the attempt created when nothing else uses it (a created-but-never-started container is removed too) |
+| `restart(handle, spec)` | recreate (stop, remove keeping named volumes and the network, start) when `spec.spec_hash()` differs from the container's `stems.spec_hash` label, else `docker restart -t ceil(grace)`. The old handle is released and a new one returned either way |
 | `wait` | `POST /containers/<id>/wait?condition=not-running` → exit code (`signal` is always `None`; 137 means killed) |
 | `is_alive` | inspect `State.Running` |
 | `describe` | container id, `State.Pid` as `pid` (pgid 0, no process tree), host ports as bound (`NetworkSettings.Ports`), `container_health` |
@@ -196,7 +225,10 @@ Every mapped error carries `details.stem`.
   (`stems logs`, log files). `StemRecord.container_id` is persisted for
   every container stem. After a stop, the container is **kept** for
   `stems stop` (and `restart`), and **removed** (volumes kept) for `down`,
-  daemon shutdown and `reset`. `restart` of a docker stem reuses the kept
+  daemon shutdown and `reset`. A container whose start failed (readiness
+  timeout) or whose crash the restart policy gave up on is kept stopped for
+  inspection until `down`, or until the daemon shuts down (then it is
+  removed too). `restart` of a docker stem reuses the kept
   container through `DockerRuntime::restart(handle, spec)`: `docker
   restart` when the spec hash is unchanged, else recreate. `down` also
   removes stopped containers left by `stop` or a crash (only when they carry
@@ -234,9 +266,11 @@ The live test needs a daemon and is ignored by default:
 STEMS_TEST_DOCKER=1 cargo test -p stems-runtime docker_live_roundtrip -- --ignored
 ```
 
-It starts `alpine:3`, reads its first log line, describes, adopts and
-orphan-scans it, stops it (expects `Killed`: `sleep` as pid 1 ignores
-SIGTERM), waits (137) and removes it with its volume.
+It starts `alpine:3`, reads its first log line, describes it, reads its
+named volume's size, adopts and orphan-scans it, stops it (expects
+`Killed`: `sleep` as pid 1 ignores SIGTERM), waits (137), starts it again
+over the stopped leftover, and removes it with its volume, checking that
+neither the volume nor `<ws>_net` is left.
 
 The daemon wiring is unit-tested without Docker in
 `cargo test -p stems-daemon containers` (spec goldens, error table,
@@ -246,72 +280,72 @@ events, status, lazy connect). The end-to-end scenarios are
 unit test `docker_feature_steps_are_all_defined` checks that every step of
 those files exists.
 
-## Verifying with Docker (checklist)
+## Verified against Docker (2026-09-27)
 
-Nothing in this deliverable has run against a real Docker daemon (the
-development machine has none). Someone with Docker Desktop, Colima or a
-Linux Docker Engine plus `docker compose` v2 should run, from the
-repository root:
+Run on macOS 26 (Intel) with Docker Desktop: Engine 29.8.0 (API 1.53),
+compose v5.5.1, socket `~/.docker/run/docker.sock` (found through the
+`/var/run/docker.sock` symlink by the default socket search), the `docker`
+CLI **not** on `PATH` (found by `docker_cli_path` in the app bundle):
 
 ```sh
-docker pull postgres:16 && docker pull redis:7 && docker pull alpine:3 && docker pull python:3-slim
-STEMS_TEST_DOCKER=1 cargo test -p stems-runtime docker_live_roundtrip -- --ignored
-STEMS_TEST_DOCKER=1 cargo test -p stems-runtime compose_live_roundtrip -- --ignored
-make e2e-docker                                   # all @docker scenarios, 300 s each
-make e2e-docker FEATURE=tests/features/docker     # or one directory / file
-make e2e-docker FEATURE=tests/features/scripts/hello-shop-zero-to-ready.feature
+STEMS_TEST_DOCKER=1 cargo test -p stems-runtime docker_live_roundtrip -- --ignored   # ok
+STEMS_TEST_DOCKER=1 cargo test -p stems-runtime compose_live_roundtrip -- --ignored  # ok
+make e2e-docker TAGS=@docker     # 22 scenarios, all pass (twice in a row)
+make e2e-docker                  # the whole suite with Docker
 ```
 
-and check, beyond the scenarios passing:
+The live test now also checks `volume_sizes` (metrics `--disk`), a fresh
+start over a stopped leftover container, and that nothing (container,
+named volume, `<ws>_net`) is left. Checklist results:
 
-1. `stems up` in `tests/fixtures/workspaces/docker-pg` emits `docker.pull`
-   events on a cold image cache (one per layer status change, not one per
-   progress tick) and the container carries `stems.workspace`,
-   `stems.stem`, `stems.run_id`, `stems.spec_hash` and `team=shop`.
-2. `IMAGE_PULL_FAILED`'s `details.message` is the registry's text
-   (`pull access denied for stems-does-not-exist ...`).
-3. `stems logs db` shows postgres's lines with Docker's timestamps, and the
-   log stream ends (no busy loop) when the container stops.
-4. `stems status --json` shows `health.container: "healthy"` once the
-   `pg_isready` healthcheck passes (with 21's `docker` probe).
-5. `stems stop db` leaves an `exited` container; `stems restart db` keeps
-   the same container id (spec unchanged); editing `env` in
-   `stems.local.yaml` and restarting recreates it (new id).
+1. Cold pull: one `docker.pull` event per layer status change (8 for
+   `busybox:1.37`); labels `stems.workspace`, `stems.stem`, `stems.run_id`,
+   `stems.spec_hash` and the user's `team=shop` are on the container. ✓
+2. `IMAGE_PULL_FAILED`'s `details.message` is the registry's text: `pull
+   access denied for stems-does-not-exist, repository does not exist or may
+   require 'docker login': denied: requested access to the resource is
+   denied`. ✓
+3. `stems logs` shows the container's lines with Docker's timestamps; the
+   stream ends when the container stops. ✓
+4. `health.container` / the `docker` probe (`health/docker.feature`). ✓
+5. `stems stop` leaves an `exited` container; `stems restart` of a running
+   stem keeps the container id; a changed `env` recreates it (new id); `stems
+   start` after `stop` replaces the stopped leftover. ✓
 6. `kill -9` of the daemon, then `stems up`: `stem.adopted` with the same
-   `container_id`, logs re-attached from the adoption time, one container.
-7. `stems down` removes the container and keeps `docker-pg_pgdata`;
-   `stems down --volumes --yes` removes it; nothing labelled
-   `stems.workspace=docker-pg` is left (`docker ps -a --filter
-   label=stems.workspace=docker-pg`).
-8. A second `stems up` while a container with the same host port runs
-   outside stems fails with `PORT_IN_USE` (Docker's `port is already
-   allocated`).
-9. `stems up` in `tests/fixtures/workspaces/docker-build` shows
-   `docker.build` events and the image `stems/docker-build/api:<run_id>`;
-   `curl localhost:<port>/healthz` answers.
-10. `DOCKER_HOST=unix:///nonexistent stems up db` in `docker-mixed` still
-    fails fast with `DOCKER_UNAVAILABLE` (19's preflight).
+   `container_id` (`docker/adopt.feature`, `compose/adopt.feature`). ✓
+7. `down` keeps `<ws>_pgdata`, `down --volumes --yes` removes it; no
+   container, anonymous volume or `<ws>_net` is left. ✓
+8. A host port taken by another container: `PORT_IN_USE`, reported by stems'
+   own port preflight (it names `com.docker.backend`, Docker Desktop's port
+   forwarder) before Docker's `port is already allocated` is reached. ✓
+9. `docker-build`: `docker.build` events, image `stems/docker-build/api:
+   <run_id>`, `/healthz` answers (`docker/build.feature`,
+   `watch/docker-rebuild.feature`). ✓
+10. `DOCKER_HOST=unix:///nonexistent`: `DOCKER_UNAVAILABLE` (doctor
+    scenario). ✓
 
-The `@docker` suite is meant for Linux CI (REQUIREMENTS §11 Q6); on macOS
-use Docker Desktop or Colima locally.
+### What failed on first contact, and the fixes
 
+- `metrics --disk` never reported `volumes_bytes`: bollard cannot
+  URL-encode `system/df`'s `type` list (every call failed with "Unable to
+  URLEncode"), and Engine 29 fills `VolumeUsage.Items` only with `verbose`.
+  Now `GET /system/df?verbose=1` without `type` (`df_volume_options`).
+- Removing a container left its **anonymous volumes** (redis's and
+  postgres's image `VOLUME`s) and the workspace network `<ws>_net` (and a
+  compose project's `<project>_default`) behind. Removal now passes `v=1`
+  (compose: `rm -f -s -v`), prunes an unused stems-labelled network, and
+  `down`s an emptied stems-owned compose project; a failed pull/build/start
+  prunes the network it created.
+- A failed or given-up stem's stopped container outlived the daemon; it is
+  now removed on daemon shutdown too.
+- The `docker` CLI was not found when it is not on `PATH` (Docker Desktop
+  without its symlinks): see "Finding the docker CLI".
 
-## Not yet verified against a real daemon
+### Not verified
 
-Docker is not installed on the development machine, so these compile and
-follow the API documentation but have not run (the daemon wiring above
-and every `@docker` scenario included):
-
-- connecting to Docker Desktop / Colima sockets and `DOCKER_HOST=tcp://`;
-- pull (including the exact registry error text surfaced by
-  `IMAGE_PULL_FAILED`) and progress coalescing on a real stream;
-- build through the API with the tarred context (Dockerfile path handling,
-  classic builder only, no BuildKit);
-- create/start/stop/kill/remove, the 137 heuristic for `Killed`, named
-  volume removal with `--volumes`;
-- log following/demultiplexing and timestamp parsing on real frames, the
-  stream ending when the container stops, and `since` on adoption;
-- `wait` behaviour with the per-request timeout on long waits;
-- restart recreate vs `docker restart`;
-- orphan listing with the label filter;
-- health status reporting for images with a `HEALTHCHECK`.
+- `DOCKER_HOST=tcp://` and Colima/OrbStack/Rancher sockets (only Docker
+  Desktop's socket was available).
+- BuildKit (the build uses the classic builder through the API).
+- `wait` on a container that runs longer than the per-request timeout
+  (the retry path) was not exercised deliberately.
+- Linux CI: the suite has run on macOS only.

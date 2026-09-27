@@ -10,7 +10,8 @@
 //! a result from an older generation is ignored, so a stop or restart never
 //! races a stale exit. An exit nobody asked for goes to the restart policy
 //! (22, [`super::restart`]); 24's watchdogs use
-//! [`StemCell::restart_bypassing_policy`].
+//! [`StemCell::restart_bypassing_policy`], cascading restarts (FR-LC-9,
+//! [`super::cascade`]) [`StemCell::restart_in_cascade`].
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -81,10 +82,12 @@ pub(crate) enum Cmd {
     Respawn { generation: u64 },
     /// The stem stayed `unhealthy` for `restart.unhealthy_grace` (22).
     UnhealthyGrace { generation: u64 },
-    /// Restart now, bypassing the policy (watchdogs, 24).
+    /// Restart now, bypassing the policy (watchdogs, 24; cascades, FR-LC-9
+    /// with the cascade's id).
     ForceRestart {
         actor: String,
         reason: String,
+        cascade: Option<String>,
         reply: oneshot::Sender<Result<(), Error>>,
     },
 }
@@ -248,6 +251,27 @@ impl StemCell {
         self.send(Cmd::ForceRestart {
             actor: actor.into(),
             reason: reason.into(),
+            cascade: None,
+            reply,
+        });
+        rx.await
+            .unwrap_or_else(|_| Err(Error::internal("stem actor went away")))
+    }
+
+    /// [`Self::restart_bypassing_policy`] as a dependant of the cascading
+    /// restart `cascade` (FR-LC-9): `stem.restarting` carries `cascade: id`,
+    /// and a crash during it never starts a cascade of its own.
+    pub async fn restart_in_cascade(
+        &self,
+        actor: &str,
+        reason: &str,
+        cascade: &str,
+    ) -> Result<(), Error> {
+        let (reply, rx) = oneshot::channel();
+        self.send(Cmd::ForceRestart {
+            actor: actor.into(),
+            reason: reason.into(),
+            cascade: Some(cascade.into()),
             reply,
         });
         rx.await
@@ -456,6 +480,8 @@ impl StemCell {
             }),
             outputs: super::outputs::shown(core, &stem.name),
             watch: core.watch.summary(stem),
+            variant: stem.variant.clone(),
+            cascade: core.cascade.of(&stem.name),
         }
     }
 }
@@ -499,9 +525,11 @@ async fn run(core: Arc<Core>, cell: Arc<StemCell>, mut rx: mpsc::UnboundedReceiv
             Cmd::ForceRestart {
                 actor,
                 reason,
+                cascade,
                 reply,
             } => {
-                let r = super::restart::bypass(&core, &cell, &actor, &reason).await;
+                let r =
+                    super::restart::bypass(&core, &cell, &actor, &reason, cascade.as_deref()).await;
                 let _ = reply.send(r);
             }
         }

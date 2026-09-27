@@ -16,7 +16,9 @@
 //! and snapshots the text with `insta`. See `docs/tui.md`.
 
 pub mod actions;
+pub mod bar;
 pub mod clipboard;
+pub mod detail;
 pub mod events;
 pub mod form;
 pub mod fuzzy;
@@ -33,13 +35,14 @@ pub mod update;
 pub mod view;
 
 pub use actions::{Action, MenuEntry, Palette, PaletteItem, PaletteTarget, ScriptMenu};
+pub use detail::DetailRow;
 pub use events::EventsState;
 pub use form::{FieldValue, FormAction, FormField, ScriptForm};
 pub use graph::{GraphState, GraphStem, GraphWidget};
 pub use logs::{LevelMode, LogRing, PaneAction, PaneStyle};
 pub use model::{
     AttachMode, Cmd, DetailData, LogPane, LogSubscription, MetricHistory, Modal, Model, Msg,
-    Outcome, RpcResult, ScriptRun, SignalKind, SortKey, ViewKind,
+    Outcome, RpcResult, ScriptActivity, ScriptRun, SignalKind, SortKey, ViewKind,
 };
 pub use prefs::{Clipboard, Prefs, Theme};
 pub use runner::{

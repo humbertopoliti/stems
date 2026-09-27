@@ -1,25 +1,25 @@
 ---
 source: crates/stems-tui/src/tests.rs
+assertion_line: 1257
 expression: text
 ---
  stems · minimal                                                         1 Graph  2 Table  3 [Detail]  4 Logs  5 Events
 ┌ Detail: echo-svc · ✓ healthy ────────────────────────────────────────────────────────────────────────────────────────┐
-│Config                                                      Status                                                    │
-│loading…                                                    ✓ healthy (ready (tcp))                                   │
-│                                                            pid 12345 · up 42s · restarts 0                           │
-│                                                            ports http:18090                                          │
-│                                                            Scripts                                                   │
-│                                                            -                                                         │
-│                                                            Health                                                    │
-│                                                            n/a                                                       │
-│                                                            Metrics                                                   │
-│                                                            n/a (no samples yet)                                      │
-│                                                            Events                                                    │
-│                                                            -                                                         │
+│✓ healthy · ready (tcp)                                                                                               │
+│pid 12345 · up 42s · restarts 0                                                                                       │
+│ports http:18090                                                                                                      │
 │                                                                                                                      │
+│Scripts                                                                                                               │
+│loading…                                                                                                              │
 │                                                                                                                      │
+│Health                                                                                                                │
+│n/a                                                                                                                   │
 │                                                                                                                      │
+│Recent events                                                                                                         │
+│-                                                                                                                     │
 │                                                                                                                      │
+│Config                                                                                                                │
+│loading…                                                                                                              │
 │                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │
@@ -41,4 +41,5 @@ expression: text
 │                                                                                                                      │
 │                                                                                                                      │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
- minimal · profile - · daemon pid 4242 · ✓1 !0 ✗0 ·0 ?0 ↻0                                   Esc back · ? help · q quit
+ ■ x stop  ↻ r restart  : scripts  o editor  ? more
+ minimal · profile - · daemon pid 4242 · ✓1 !0 ✗0 ↯0 ·0 ?0 ↻0 j/k row · Enter act · [ ] stem · Esc back · ? help · q qu…

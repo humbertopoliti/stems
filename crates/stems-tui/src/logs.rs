@@ -246,6 +246,8 @@ pub struct PaneStyle {
     pub ascii: bool,
     /// Accent colour.
     pub accent: Color,
+    /// A right-aligned second title (the Logs view's stem strip).
+    pub strip: Option<Line<'static>>,
 }
 
 /// The log pane: a ring plus follow/pause, search, filters, selection.
@@ -645,6 +647,21 @@ impl LogPane {
         PaneAction::Handled
     }
 
+    /// Move the selected line by `delta` (the mouse wheel): up leaves
+    /// follow mode like `k`; down past the newest line follows again.
+    pub fn scroll(&mut self, delta: isize) {
+        let vis = self.visible();
+        let Some(c) = self.cursor(&vis) else {
+            return;
+        };
+        if delta < 0 {
+            self.select(&vis, c.saturating_sub(delta.unsigned_abs()));
+            self.follow = false;
+        } else {
+            self.select(&vis, c + delta as usize);
+        }
+    }
+
     /// `following`, `paused (+N)` or `scrolled`, then the active filters.
     pub fn status_text(&self) -> String {
         let mut parts = vec![if self.paused {
@@ -771,10 +788,13 @@ impl LogPane {
     /// Draw the pane (bordered, titled) into `area`.
     pub fn render(&self, f: &mut Frame, area: Rect, style: &PaneStyle) {
         let title = format!(" {} · {} ", style.title, self.status_text());
-        let block = Block::default().borders(Borders::ALL).title(Span::styled(
+        let mut block = Block::default().borders(Borders::ALL).title(Span::styled(
             title,
             Style::default().add_modifier(Modifier::BOLD),
         ));
+        if let Some(strip) = &style.strip {
+            block = block.title(strip.clone());
+        }
         let inner = block.inner(area);
         f.render_widget(block, area);
         if inner.height == 0 || inner.width == 0 {
@@ -1001,6 +1021,7 @@ mod tests {
             title: "Logs: echo-svc".into(),
             ascii: false,
             accent: Color::Cyan,
+            strip: None,
         };
         term.draw(|f| p.render(f, f.area(), &style)).unwrap();
         crate::view::buffer_text(term.backend().buffer())

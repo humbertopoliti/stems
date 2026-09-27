@@ -540,7 +540,7 @@ pub fn compose_warning(ws: &Workspace) -> Option<Error> {
     if stems.is_empty() {
         return None;
     }
-    let out = std::process::Command::new("docker")
+    let out = std::process::Command::new(stems_runtime::docker::docker_program())
         .args(["compose", "version", "--format", "json"])
         .stdin(std::process::Stdio::null())
         .output();
@@ -669,6 +669,19 @@ pub(crate) async fn after_stop(core: &Core, stem: &str, h: &Handle, reason: &str
             }
         }
     }
+}
+
+/// Stems whose state is `failed`: on daemon shutdown their stopped
+/// containers are removed through [`after_down`] (non-container stems are
+/// ignored there).
+pub(crate) fn failed_selection(
+    states: impl IntoIterator<Item = (String, stems_core::StemState)>,
+) -> Vec<String> {
+    states
+        .into_iter()
+        .filter(|(_, s)| *s == stems_core::StemState::Failed)
+        .map(|(n, _)| n)
+        .collect()
 }
 
 /// `down`'s container work after the stems were stopped: remove the

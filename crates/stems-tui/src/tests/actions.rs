@@ -125,18 +125,30 @@ fn stem_action_keys_send_their_rpcs() {
             cascade: true
         }]
     );
+    // `r` first loads the graph for b's dependants (d, stopped here).
     assert_eq!(
-        actions(&update(&mut m, ch('r'))),
+        update(&mut m, ch('r')),
+        vec![Cmd::LoadGraph(vec![
+            "a".into(),
+            "b".into(),
+            "c".into(),
+            "d".into()
+        ])]
+    );
+    assert_eq!(
+        actions(&update(&mut m, Msg::Rpc(super::chain_graph()))),
         [Action::Restart {
             stem: b(),
-            build: false
+            build: false,
+            cascade: None,
         }]
     );
     assert_eq!(
         actions(&update(&mut m, ch('R'))),
         [Action::Restart {
             stem: b(),
-            build: true
+            build: true,
+            cascade: None,
         }]
     );
     assert_eq!(
@@ -273,6 +285,7 @@ fn results_become_toasts_and_errors_expand() {
     let r = Action::Restart {
         stem: "b".into(),
         build: false,
+        cascade: None,
     };
     let cmds = update(&mut m, result(r.clone(), Ok(json!({"ok": true}))));
     assert_eq!(cmds, vec![Cmd::RefreshStatus], "a refresh follows");
@@ -506,12 +519,14 @@ fn palette_runs_the_best_match() {
         },
     );
     assert_eq!(top[0].label, "restart b");
-    let cmds = update(&mut m, k(KeyCode::Enter));
+    update(&mut m, k(KeyCode::Enter));
+    let cmds = update(&mut m, Msg::Rpc(super::chain_graph()));
     assert_eq!(
         actions(&cmds),
         [Action::Restart {
             stem: "b".into(),
-            build: false
+            build: false,
+            cascade: None,
         }]
     );
     assert_eq!(m.selected.as_deref(), Some("b"));
@@ -681,4 +696,61 @@ fn frame_paused_marker_in_table_and_graph() {
     m.ascii = true;
     assert!(render_text(&g, 80, 24).contains("||"));
     assert!(render_text(&m, 80, 24).contains("b ||"));
+}
+
+#[test]
+fn r_with_running_dependants_asks_whether_to_cascade() {
+    let mut m = chain();
+    let mut st = m.stems.clone();
+    st[3] = stem("d", "healthy", "healthy", Some(104), 18304, Some(1));
+    update(&mut m, Msg::Status(Box::new(status(st))));
+    update(&mut m, Msg::Rpc(super::chain_graph()));
+    assert_eq!(m.graph.dependants("a"), ["b", "c", "d"]);
+    // a: b, c (starting) and d run.
+    let cmds = update(&mut m, ch('r'));
+    assert!(actions(&cmds).is_empty());
+    assert_eq!(
+        m.modal,
+        Modal::RestartConfirm {
+            stem: "a".into(),
+            dependants: vec!["b".into(), "c".into(), "d".into()],
+        }
+    );
+    let text = render_text(&m, 80, 24);
+    assert!(
+        text.contains("also restart 3 dependants (b, c, d)? [y/N]"),
+        "{text}"
+    );
+    let a = |cascade| Action::Restart {
+        stem: "a".into(),
+        build: false,
+        cascade: Some(cascade),
+    };
+    assert_eq!(actions(&update(&mut m, ch('y'))), [a(true)]);
+    assert_eq!(
+        a(true).params(),
+        json!({"stems": ["a"], "build": false, "cascade": true})
+    );
+    update(&mut m, ch('r'));
+    assert_eq!(actions(&update(&mut m, ch('n'))), [a(false)]);
+    update(&mut m, ch('r'));
+    assert!(actions(&update(&mut m, k(KeyCode::Esc))).is_empty());
+    assert_eq!(m.modal, Modal::None);
+    assert_eq!(
+        a(true).done(&json!({"cascade": {"restarted": [["b", "c"], ["d"]]}})),
+        "restarted a and 3 dependants"
+    );
+    // A leaf restarts at once.
+    update(&mut m, ch('G'));
+    assert_eq!(
+        actions(&update(&mut m, ch('r'))),
+        [Action::Restart {
+            stem: "d".into(),
+            build: false,
+            cascade: None
+        }]
+    );
+    update(&mut m, ch('g'));
+    update(&mut m, ch('r'));
+    frame(&m, "modal-restart-confirm");
 }

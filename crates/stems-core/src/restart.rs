@@ -272,6 +272,7 @@ mod tests {
             },
             on_unhealthy: false,
             unhealthy_grace: Dur::from_secs(1),
+            cascade: false,
         }
     }
 

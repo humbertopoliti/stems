@@ -61,6 +61,21 @@ class TestRoutes(ServiceTest):
         svc.wait_line(r"^WARN .*in-memory products")
         self.assertTrue(svc.alive())
 
+    def test_shop_psql_command_is_used(self):
+        # A fake psql standing in for `docker exec <pg> psql ...` (hello-shop).
+        with tempfile.TemporaryDirectory() as d:
+            fake = os.path.join(d, "fake psql")
+            with open(fake, "w") as f:
+                f.write("#!/bin/sh\n[ \"$1\" = --flag ] && [ \"$2\" = -At ] || exit 9\nprintf '7\\tWidget\\t999\\n'\n")
+            os.chmod(fake, 0o755)
+            svc = self.start({"SHOP_PSQL": "'%s' --flag" % fake})
+            status, body = svc.request("/products")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), [{"id": 7, "name": "Widget", "price_cents": 999}])
+
+    def test_psql_command(self):
+        self.assertEqual(app.psql_command("u", "docker exec 'my pg' psql"), ["docker", "exec", "my pg", "psql"])
+
     def test_chaos_disabled_is_404(self):
         svc = self.start({"SHOP_CHAOS": "0"})
         self.assertEqual(svc.request("/__chaos/crash?code=3")[0], 404)

@@ -206,7 +206,7 @@ the command refuses with `HAS_DEPENDANTS` (exit 1, `details.dependants`)
 unless `--cascade`, which stops those dependants first. External stems:
 `NOT_MANAGED`.
 
-### `stems restart <stems…> [--no-deps]`
+### `stems restart <stems…> [--no-deps] [--build] [--cascade | --no-cascade]`
 
 Stop, then start (starting missing dependencies unless `--no-deps`); the
 stem gets a new process on the same ports. A user restart also resets the
@@ -214,14 +214,20 @@ restart policy's window and backoff (the lifetime `restarts` count stays). The w
 so config changes apply. `--build` runs each stem's `build` script between
 the stop and the start (a failed build is `SCRIPT_FAILED` and nothing is
 started); stems without one just restart. See [scripts.md](scripts.md).
+`--cascade` (or `restart.cascade: true` on the stem, unless
+`--no-cascade`) then restarts the stems' running hard dependants, layer by
+layer, once the stems are healthy again; `data.cascade` lists them per
+layer (FR-LC-9, [restart.md](restart.md#cascading-restarts-fr-lc-9)).
 
 ### `stems status [stems…] [--watch [INTERVAL]] [-v]`
 
 `data: { stems: [ { name, type, state, glyph, reason, pid, pgid, ports:
 [{name, port, auto}], uptime_s, started_at, restarts, restarts_in_window, seeded, degraded, health, error } ],
-summary: { healthy, degraded, failed, stopped, unknown, starting } }` —
+summary: { healthy, degraded, failed, unhealthy, stopped, unknown, starting } }` —
 enabled stems in declaration order (only the named ones when given;
-`UNKNOWN_STEM` otherwise). `summary` counts stems per glyph; `starting`
+`UNKNOWN_STEM` otherwise). `summary` counts stems per glyph, except that
+`unhealthy` stems (running, or external, with a failing probe) are counted
+apart from `failed` although both show `✗`; `starting`
 counts every transitional state (`setup`, `starting`, `seeding`,
 `stopping`). `health` is `{type, last: {ts, ok, outcome, latency_ms,
 detail}, consecutive_failures, transitions_60s}` (`null` without a health
@@ -242,8 +248,11 @@ api     process   ! healthy    dependency hosted unhealthy  41234  http:18601  2
 web     process   ✓ healthy    -                            41240  http:18602  2m03s   0
 hosted  external  ✗ unhealthy  connection refused           -      -           -       0
 
-1 healthy, 1 degraded, 1 failed, 0 starting, 0 stopped, 0 unknown
+1 healthy, 1 degraded, 0 failed, 1 unhealthy, 0 starting, 0 stopped, 0 unknown
 ```
+
+(When the summary line is wider than the terminal only its non-zero
+counts are shown: `1 healthy, 1 degraded, 1 unhealthy`.)
 
 * `STATUS` is the glyph and the state. Glyphs (`stems_core::Glyph`, shared
   with `graph` and the TUI): `✓` healthy (green), `!` degraded (yellow), `✗`

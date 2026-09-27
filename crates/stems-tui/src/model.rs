@@ -4,17 +4,20 @@
 //! Vec<Cmd>`; [`crate::view`] renders a `&Model`; the runners
 //! ([`crate::runner`]) execute the [`Cmd`]s against the daemon and feed the
 //! results back as [`Msg`]s. The one exception to "view only reads":
-//! [`Model::tab_hits`], the header tabs' columns as last drawn, which the
-//! view records for mouse hit-testing.
+//! [`Model::tab_hits`] and [`Model::stem_hits`], the header tabs' and the
+//! stem strip's columns as last drawn, which the view records for mouse
+//! hit-testing.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 
 use crossterm::event::{KeyEvent, MouseEvent};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use stems_api::{DaemonStatus, Event, StatusResult, StatusSummary, StemStatus};
+use stems_api::{
+    DaemonStatus, Event, StatusResult, StatusSummary, StemStatus, StemWatchStatus, VariantChoice,
+};
 use stems_core::logs::LogRecord;
 
 pub use crate::actions::{Action, MenuEntry, Palette, ScriptMenu};
@@ -139,6 +142,36 @@ pub enum Modal {
     /// `v` on the config-changed toast: the `config_diff` plan (`None`
     /// while loading).
     Plan(Option<Result<Vec<String>, String>>),
+    /// `v` on a stem: pick one of its variants ([`Model::variants`];
+    /// `Enter` asks [`Modal::SwitchConfirm`]).
+    VariantPicker {
+        /// The stem.
+        stem: String,
+        /// Selected position among its choices.
+        selected: usize,
+    },
+    /// `r` on a stem with running hard dependants: "also restart N
+    /// dependants (b, c, d)? [y/N]": `y` restarts with `cascade: true`,
+    /// `n`/`Enter` only the stem (`cascade: false`), `Esc` cancels.
+    RestartConfirm {
+        /// The stem.
+        stem: String,
+        /// Its running hard dependants (transitive, nearest first).
+        dependants: Vec<String>,
+    },
+    /// "Restart shop-api as docker? [y/N]": `y` sends `switch_variant`.
+    SwitchConfirm {
+        /// The stem.
+        stem: String,
+        /// Its active choice.
+        from: String,
+        /// The chosen variant (`local`: the base definition).
+        variant: String,
+        /// The stem type with it.
+        kind: Option<String>,
+        /// The stem runs (it restarts in its new form).
+        running: bool,
+    },
 }
 
 impl Modal {
@@ -215,6 +248,26 @@ pub struct DetailData {
     /// Recent probe results from the `health` RPC (oldest first; `None`
     /// while loading, `Err` when the daemon has no such RPC or it failed).
     pub health: Option<Result<Vec<Value>, String>>,
+    /// The stem's watchdogs from `watch_status` (rules, last trigger);
+    /// `None` while loading or for a stem without `watch:` rules.
+    pub watch: Option<Result<StemWatchStatus, String>>,
+}
+
+/// What the dashboard last saw of a script (its `script.*` events, any
+/// actor): shown inline in the Detail view's Scripts section.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ScriptActivity {
+    /// `script.queued`: waiting for another run of the stem.
+    Queued,
+    /// `script.started`.
+    Running,
+    /// `script.finished`: `ok`, and `1.2s` or `exit 3` / `timed out`.
+    Finished {
+        /// Exit 0, in time.
+        ok: bool,
+        /// Duration (ok) or why it failed.
+        text: String,
+    },
 }
 
 /// Per-stem metric history, fed from each `status` result's `metrics`
@@ -301,6 +354,24 @@ pub struct Model {
     pub ascii: bool,
     /// Detail data of the selected stem.
     pub detail: Option<DetailData>,
+    /// Rows the Detail view is scrolled down (`j`/`k`, `PgUp`/`PgDn`,
+    /// `g`/`G`, the wheel); 0 again for another stem. Kept within the
+    /// content by the reducer (and clamped again when drawn).
+    pub detail_scroll: usize,
+    /// The selected row of the Detail view's actionable rows (scripts,
+    /// variants, the watchdog; `crate::detail::rows`); 0 again for
+    /// another stem.
+    pub detail_row: usize,
+    /// Each stem's variant choices (`switch_variant {stem}`), loaded for
+    /// the stems whose `status` has a `variant`.
+    pub variants: BTreeMap<String, Result<Vec<VariantChoice>, String>>,
+    /// Stems whose choices are being loaded.
+    pub variants_pending: BTreeSet<String>,
+    /// `r` waits for the dependency graph (loaded on demand) to know the
+    /// stem's dependants.
+    pub pending_restart: Option<String>,
+    /// The last `script.*` state of each `(stem, script)`.
+    pub script_activity: BTreeMap<(Option<String>, String), ScriptActivity>,
     /// Recent events (ring of [`EVENT_RING`]).
     pub events: VecDeque<Event>,
     /// The Events view (29).
@@ -336,6 +407,26 @@ pub struct Model {
     /// column exclusive)` on row 0. Written by [`crate::view::view`] (the
     /// only render-time state), read by the mouse handler.
     pub tab_hits: RefCell<Vec<(ViewKind, u16, u16)>>,
+    /// The stem strip of the Detail / Logs title as last drawn: `(stem,
+    /// row, first column, end column exclusive)`. Written by the view,
+    /// read by the mouse handler (a click selects that stem).
+    pub stem_hits: RefCell<Vec<StemHit>>,
+    /// The action bar's segments as last drawn: `(key, row, first column,
+    /// end column exclusive)`; a click presses that key.
+    pub bar_hits: RefCell<Vec<(char, u16, u16, u16)>>,
+}
+
+/// A stem's cells in the Detail / Logs stem strip ([`Model::stem_hits`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StemHit {
+    /// The stem.
+    pub stem: String,
+    /// Screen row.
+    pub row: u16,
+    /// First column.
+    pub start: u16,
+    /// End column (exclusive).
+    pub end: u16,
 }
 
 /// A script run started from the dashboard.
@@ -382,6 +473,12 @@ impl Model {
             prefs,
             ascii: false,
             detail: None,
+            detail_scroll: 0,
+            detail_row: 0,
+            variants: BTreeMap::new(),
+            variants_pending: BTreeSet::new(),
+            script_activity: BTreeMap::new(),
+            pending_restart: None,
             events: VecDeque::new(),
             metrics: BTreeMap::new(),
             ticks: 0,
@@ -396,6 +493,8 @@ impl Model {
             script_runs: Vec::new(),
             log_focus: None,
             tab_hits: RefCell::new(Vec::new()),
+            stem_hits: RefCell::new(Vec::new()),
+            bar_hits: RefCell::new(Vec::new()),
         }
     }
 
@@ -437,6 +536,27 @@ impl Model {
             .find(|s| s.name == stem)
             .and_then(|s| s.watch.as_ref())
             .is_some_and(|w| w.paused)
+    }
+
+    /// The custom scripts of `stem` in the catalogue (`None` until it is
+    /// loaded).
+    pub fn custom_scripts(&self, stem: &str) -> Option<usize> {
+        self.catalog.as_ref().map(|c| {
+            c.iter()
+                .filter(|e| {
+                    e.stem.as_deref() == Some(stem)
+                        && e.kind == stems_core::scriptargs::ScriptKind::Custom
+                })
+                .count()
+        })
+    }
+
+    /// `stem`'s variant choices, once loaded.
+    pub fn variant_choices(&self, stem: &str) -> Option<&[VariantChoice]> {
+        self.variants
+            .get(stem)
+            .and_then(|r| r.as_ref().ok())
+            .map(Vec::as_slice)
     }
 
     /// Recent events of `stem`, oldest first, at most `n`.
@@ -516,6 +636,20 @@ pub enum RpcResult {
     },
     /// `config_diff`, as lines for the plan modal.
     Plan(Result<Vec<String>, String>),
+    /// A stem's variant choices (`switch_variant {stem}`).
+    Variants {
+        /// Stem asked for.
+        stem: String,
+        /// Its choices (`local` first) or an error message.
+        result: Result<Vec<VariantChoice>, String>,
+    },
+    /// A stem's watchdogs (`watch_status {stems: [stem]}`).
+    Watch {
+        /// Stem asked for.
+        stem: String,
+        /// Its rules and state or an error message.
+        result: Result<StemWatchStatus, String>,
+    },
     /// A call failed.
     Failed {
         /// What was being done.
@@ -624,6 +758,10 @@ pub enum Cmd {
     LoadCatalog,
     /// Call `config_diff` -> [`RpcResult::Plan`].
     LoadPlan,
+    /// Call `switch_variant {stem}` (list only) -> [`RpcResult::Variants`].
+    LoadVariants(String),
+    /// Call `watch_status {stems: [stem]}` -> [`RpcResult::Watch`].
+    LoadWatch(String),
     /// Open the stem's codebase in the editor (the terminal runner
     /// suspends the dashboard; headless runs it without terminal changes)
     /// -> [`RpcResult::Editor`].

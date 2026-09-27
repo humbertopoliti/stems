@@ -47,11 +47,13 @@ stems.<n>.restart.backoff.max                 30s
 stems.<n>.restart.backoff.factor              2
 stems.<n>.restart.on_unhealthy                false
 stems.<n>.restart.unhealthy_grace             10s
+stems.<n>.restart.cascade                     false
 stems.<n>.watch[].ignore                      ["**/.git/**", "**/node_modules/**", "**/target/**", "**/dist/**", "**/build/**", "**/__pycache__/**"] + user entries
 stems.<n>.watch[].debounce                    500ms
 stems.<n>.watch[].action                      restart
 stems.<n>.watch[].settle                      0s
 stems.<n>.watch[].root                        codebase
+stems.<n>.watch[].cascade                     stems.<n>.restart.cascade
 stems.<n>.overlays[].keep                     false
 stems.<n>.overlays[].mode                     0644
 scripts.<s>.cwd                               <stem codebase, else workspace root>

@@ -31,10 +31,19 @@ for stem in resolved.workspace.stems() { /* enabled stems, declaration order */ 
    including it) is `DUPLICATE_STEM` with both paths in
    `Diagnostic::details.files`; `extends` bases and `stems.local.yaml` may
    redefine stems (they are merged). See `docs/config.md`.
-4. **Local overlay**: `stems.local.yaml` next to `stems.yaml` (unless
-   `skip_local`) is expanded the same way and merged last.
-5. **Substitution** over every string of the merged tree (see below).
-6. **Resolution**: typed parse of the merged tree, defaults applied from
+4. **Variants** (FR-ST-8, `variants.rs`): each stem's active variant
+   (`stems.<n>.variant`, the local file's value winning) is merged over the
+   stem of the committed tree with the merge rules below, except that a
+   variant setting a different `type` first drops the base's type-specific
+   fields (`variants::TYPE_SPECIFIC_FIELDS`). An unknown name is a non-fatal
+   `UNKNOWN_VARIANT` (the base is used). `variant`/`variants` are removed from
+   the merged tree after the local overlay; `Stem::variant` / `variants`
+   record them. See `docs/config.md#variants-fr-st-8`.
+5. **Local overlay**: `stems.local.yaml` next to `stems.yaml` (unless
+   `skip_local`) is expanded the same way and merged last (it still wins
+   over a variant).
+6. **Substitution** over every string of the merged tree (see below).
+7. **Resolution**: typed parse of the merged tree, defaults applied from
    `defaults.rs`, paths made absolute. A stem with no `type` after merging is
    fatal (`SCHEMA_INVALID`); a field that does not apply to the stem's type
    (e.g. `image` on a process stem) is a non-fatal diagnostic.
@@ -54,7 +63,20 @@ has been merged so far, "overlay" the file being merged on top):
 | `scripts` (workspace level or `stems.<n>.scripts`) | mapping | **per key**: an overlay script replaces the base script of that name whole (its `inputs`, `args`, … are not merged); other scripts are kept |
 | mapping with `type: A` | mapping with `type: B` (A ≠ B) | replaced whole (a stem or a health check changing kind) |
 | list | anything | replaced (lists never concatenate: `ports`, `depends_on`, `env_files`, `watch`, profile lists, …) |
+| `stems.<n>.ports` list | list | replaced, except that an overlay entry `{name: p, …}` without `container_port` keeps the `container_port` of the replaced entry named `p` (see below) |
 | anything | scalar / list / `null` | replaced (`null` clears the value, restoring the default) |
+
+`container_port` is kept by port name because the usual reason to
+replace `ports` in a later layer (a variant or `stems.local.yaml`) is to
+move the host port, not the port the service listens on inside its
+container: with a variant declaring `[{name: http, port: 18080,
+container_port: 8080}]`, a local `ports: [{name: http, port: 28080}]`
+resolves to `{name: http, port: 28080, container_port: 8080}`. An overlay
+entry that sets its own `container_port` wins; a renamed entry, one without
+`name` and the shorthand forms (`5432`, `"15432:5432"`) inherit nothing. The
+rule is applied in `merge::merge` at `stems.<n>.ports`, so it covers
+`extends`/`include`, variants (`variants.rs`, which merges at the stem's
+path) and `stems.local.yaml` alike.
 
 Order of precedence, lowest first: `extends` base, `include`s (in order), the
 including file, `stems.local.yaml`. So `stems.local.yaml` with

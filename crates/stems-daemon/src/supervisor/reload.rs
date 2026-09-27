@@ -73,6 +73,9 @@ pub fn field_action(field: &str) -> ReloadAction {
         "restart" => A::RestartPolicyChanged,
         "outputs" => A::OutputsChanged,
         "description" | "tags" | "depends_on" | "stop_grace" => A::MetadataChanged,
+        // The variant's name (FR-ST-8): what it changes (`type`, `env`, ...)
+        // is diffed field by field; a `type` change is `restart_required`.
+        "variant" | "variants" => A::MetadataChanged,
         // env, local_env, env_files, ports, codebase, overlays, type,
         // command, cwd, shell, stdin, image, build, volumes, entrypoint,
         // network, labels, healthcheck, compose fields, and anything new.
@@ -1226,6 +1229,19 @@ stems:
                 A::RestartRequired,
                 "codebase",
                 false,
+            ),
+            // FR-ST-8: switching a process to a docker variant.
+            (
+                "    command: run api\n    variant: docker\n    variants: { docker: { type: docker, image: \"shop:1\" } }\n",
+                A::RestartRequired,
+                "type",
+                false,
+            ),
+            (
+                "    command: run api\n    variants: { docker: { type: docker, image: \"shop:1\" } }\n",
+                A::MetadataChanged,
+                "variants",
+                true,
             ),
             (
                 "    command: run api\n    overlays: [{ template: x, dest: /tmp/stems-reload-x }]\n",

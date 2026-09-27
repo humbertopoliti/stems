@@ -130,7 +130,7 @@ the connection stays usable. For a stream:
 | `start` | `StartParams {stems, no_deps?, timeout_ms?}` | `UpResult`; external stems: `NOT_MANAGED` |
 | `stop` | `StopParams {stems, cascade?, timeout_ms?}` | `DownResult`; running dependants without `cascade`: `HAS_DEPENDANTS` (`details.dependants`) |
 | `restart` | `RestartParams {stems, no_deps?, build?, timeout_ms?}` | `UpResult` (ports kept); `build: true` runs each stem's `build` script between stop and start ([scripts.md](scripts.md)) |
-| `status` | `StatusParams {stems?, verbose?}` | `StatusResult {stems: [StemStatus], summary: {healthy, degraded, failed, stopped, unknown, starting}}`; `StemStatus` has `degraded` and `health {type, last: {ts, ok, outcome, latency_ms, detail}, consecutive_failures, transitions_60s, container?}` ([health.md](health.md)) |
+| `status` | `StatusParams {stems?, verbose?}` | `StatusResult {stems: [StemStatus], summary: {healthy, degraded, failed, unhealthy, stopped, unknown, starting}}` (`unhealthy`, a running or external stem whose probe fails, is counted apart from `failed`); `StemStatus` has `degraded` and `health {type, last: {ts, ok, outcome, latency_ms, detail}, consecutive_failures, transitions_60s, container?}` ([health.md](health.md)) |
 | `health` | `HealthParams {stems?, last? (10, max 50)}` | `HealthResult {stems: [{name, type, state, consecutive_failures, transitions_60s, results: [{ts, ok, outcome: ok\|fail\|unknown, latency_ms, detail}]}]}` — the last probe results per stem, oldest first ([health.md](health.md)) |
 | `metrics` | `MetricsParams {stems?, history_ms?, last?, sort?: cpu\|mem, disk?}` | `MetricsResult {interval_ms, stems: [{name, type, state, latest: Sample \| null, history?: [Sample], open_ports, limits: [{metric, limit, for_s, crossed}], disk?: {codebase_build_bytes, dirs: [{path, bytes}], volumes_bytes, truncated}}], totals: {cpu_pct, rss_bytes, children, disk_bytes?}}`; `Sample = {ts, cpu_pct, rss_bytes, children, uptime_s, restarts}`. `history_ms` returns that window, `last` the last N samples; `sort` orders highest first; `disk` measures build outputs and volumes (cached 60 s). Unknown stem: `UNKNOWN_STEM` ([metrics.md](metrics.md)) |
 | `outputs` | `OutputsParams {stems?, reveal?}` | `OutputsResult {stems: [{name, outputs: [{name, value, secret}]}]}` — evaluated stem outputs (26); `value` `null` until healthy, `"<redacted>"` for secrets unless `reveal` ([config.md](config.md#outputs-fr-st-6)) |
@@ -139,6 +139,7 @@ the connection stays usable. For a stream:
 | `watch_status` | `WatchStatusParams {stems?}` | `WatchStatusResult {stems: [{name, rules: [{paths, ignore, action, debounce_ms, settle_ms, root, dir}], paused, active, last_triggered, pending, busy}], global_paused, disabled}` — stems with `watch:` rules; `disabled` after `up --no-watch` |
 | `config_diff` | `{}` | `ConfigDiffResult {plan: ReloadPlan {stems: [{name, action, changes, fields, hot, running}], workspace, catalog_changed}, pending, loaded_at, detected_at?, sources, last_error?}` — the plan from the applied config to the one on disk, read now; `last_error` when it is invalid (33, [config.md](config.md#reload-on-change-fr-wd-3)) |
 | `config_apply` | `ConfigApplyParams {stems?, yes}` | `ConfigApplyResult {applied: [{stem, action, result}], failed: [{stem, action, error}], skipped: [{stem, action, reason}], workspace, pending, ok}` — stop, install, hot-apply, start; `yes: true` required (`DESTRUCTIVE_NOT_CONFIRMED`); invalid config on disk: its errors; event `config.applied` |
+| `switch_variant` | `SwitchVariantParams {stem, variant?}` | `SwitchVariantResult {stem, from, to, type, variants: [{name, type, active}], path, file, changed, diff, applied}` — without `variant`: the stem's choices (`local` first; nothing written). With one: writes `stems.<stem>.variant` to `stems.local.yaml` (comment-preserving; `local` removes the key), re-validates (the file is restored on errors), then `config_apply {stems: [stem], yes: true}` (`applied`). `stems switch` and the TUI's `v` use it; `UNKNOWN_STEM`, `UNKNOWN_VARIANT` (FR-ST-8, [config.md](config.md#variants-fr-st-8)) |
 | `query_logs` | `{stems?, since?, until?, grep?, level?, script?, tail?, from_files?}` | `{records: [LogRecord], truncated}` — oldest first, interleaved by `ts`, at most 10 000 (the newest; `truncated` says more matched). Times: `10m`, `1.5s` (before the daemon's clock) or RFC 3339; `level`: `error` (exact) or `warn+` (and above). Unknown stem: `UNKNOWN_STEM`; bad filter: `USAGE` (see [logs.md](logs.md)) |
 | `subscribe_logs` | `{stems?, since?, grep?, level?, script?, tail?}` | ack `{subscribed: true, replay: n}`, then `log` notifications (see below) |
 | `export_logs` | `{path, since?}` (`path` absolute) | `{path, entries: [name], bytes}` — writes the `.tar.gz` bundle ([logs.md](logs.md#export-bundle)) |
@@ -210,6 +211,7 @@ Kinds defined so far (`stems_api::EventKind`; later deliverables add more, so
 consumers must ignore unknown kinds): `daemon.started`, `daemon.stopping`,
 `daemon.stopped`, `workspace.loaded`, `stem.state`, `stem.port_allocated`,
 `stem.adopted`, `stem.recovered_dead`, `stem.restarting`, `stem.gave_up`,
+`cascade.started`, `cascade.queued`, `cascade.finished`, `cascade.aborted`,
 `stem.health`, `stem.threshold`, `stem.outputs`, `process.exited`, `process.output`, `profile.expanded`, `up.started`, `up.finished`,
 `down.started`, `down.finished`, `script.queued`, `script.started`,
 `script.finished`, `watch.triggered`, `watch.action_finished`, `watch.paused`,
@@ -249,6 +251,18 @@ signal, duration_ms, timed_out, cancelled, ok, run_id?, attempt?}`;
 `script.queued` `data: {script, run_id, actor, reason}` (a `run_script` waiting
 for another script of the same stem). `run_id` and `attempt` (1-based) are
 set for `run_script` runs. See [scripts.md](scripts.md).
+
+Cascading restart payloads (FR-LC-9, actor = whoever caused the cascade:
+the client, `watchdog`, or `daemon` for a policy restart; `stem` = the
+origin): `cascade.started` `reason` and `data: {id, origin, origins,
+reason, stems}` (`stems` = the dependants' layers, `[["b", "c"], ["d"]]`);
+`cascade.queued` `data: {id, origin, origins, reason, behind}` (the id of
+the running cascade); `cascade.finished` `data: {id, origin, restarted
+(names in restart order), layers, failed, skipped, ok}`; `cascade.aborted`
+`data: {id, origin, stem, error}` (the origin did not become healthy;
+nothing else was restarted). Each dependant's `stem.restarting` has `data:
+{reason: "cascade from <origin>", cascade: <id>, counted: false, attempt:
+0, delay_ms: 0}`. See [restart.md](restart.md#cascading-restarts-fr-lc-9).
 
 Watchdog payloads (deliverable 24, actor `watchdog` unless a client paused/resumed):
 `watch.triggered` `reason` (`watch: app.py changed`) and `data: {paths (≤ 10,

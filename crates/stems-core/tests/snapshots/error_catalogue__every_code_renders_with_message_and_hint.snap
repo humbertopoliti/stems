@@ -113,6 +113,11 @@ PROFILE_MISSING_DEPENDENCY: profile `web-only` omits `shop-api`, a hard dependen
 UNKNOWN_PROFILE: profile `web-onyl` is not defined
   hint: did you mean `web-only`? profiles: default, backend, web-only (see `stems profiles`)
 
+# exit 2 — `stems.<stem>.variant` or `stems switch <stem> <variant>` names a variant the stem does not declare
+UNKNOWN_VARIANT: stem `shop-api` has no variant `dockr`
+  at stems.yaml:4:5 (stems.shop-api.variant)
+  hint: variants of `shop-api`: docker (or `local` for the base definition; see `stems switch shop-api`)
+
 # exit 2 — a destructive operation was requested without `--yes` / `confirm: true`
 DESTRUCTIVE_NOT_CONFIRMED: `down --volumes` deletes data and needs confirmation
   hint: re-run with --yes (CLI) or `confirm: true` (MCP)

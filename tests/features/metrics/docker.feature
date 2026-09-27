@@ -14,6 +14,6 @@ Feature: docker stems are sampled through the Docker stats API
     And the JSON at "$.data.stems[0].latest.children" is greater than 0
     When I run "stems metrics --disk --json"
     Then the JSON at "$.data.stems[0].disk.volumes_bytes" is greater than 0
-    When I run "stems down --volumes --json"
+    When I run "stems down --volumes --yes --json"
     Then the command succeeds
     And no container with label stems.workspace=docker-pg exists

@@ -52,7 +52,146 @@ pub fn render(model: &Model, f: &mut Frame, area: Rect) {
         Modal::Palette(p) => palette(model, f, area, p),
         Modal::ErrorDetails { title, text } => error_details(f, area, title, text),
         Modal::Plan(p) => plan(f, area, p.as_ref()),
+        Modal::RestartConfirm { stem, dependants } => {
+            restart_confirm(model, f, area, stem, dependants)
+        }
+        Modal::VariantPicker { stem, selected } => variant_picker(model, f, area, stem, *selected),
+        Modal::SwitchConfirm {
+            stem,
+            from,
+            variant,
+            kind,
+            running,
+        } => switch_confirm(
+            model,
+            f,
+            area,
+            stem,
+            from,
+            variant,
+            kind.as_deref(),
+            *running,
+        ),
     }
+}
+
+fn restart_confirm(model: &Model, f: &mut Frame, area: Rect, stem: &str, dependants: &[String]) {
+    let w = 56.min(area.width.saturating_sub(4)).max(24);
+    let inner = usize::from(w) - 3;
+    let n = dependants.len();
+    let lines = vec![
+        Line::styled(
+            truncate(
+                &format!(
+                    " also restart {n} dependant{} ({})? [y/N]",
+                    if n == 1 { "" } else { "s" },
+                    dependants.join(", ")
+                ),
+                inner,
+                model.ascii,
+            ),
+            bold(),
+        ),
+        Line::from(""),
+        Line::from(" y    restart them too, in dependency order"),
+        Line::from(truncate(
+            &format!(" n    restart only {stem}"),
+            inner,
+            model.ascii,
+        )),
+        Line::from(" Esc  cancel"),
+    ];
+    boxed(f, centered(area, w, 7), &format!("Restart {stem}"), lines);
+}
+
+fn variant_picker(model: &Model, f: &mut Frame, area: Rect, stem: &str, selected: usize) {
+    let w = 48.min(area.width.saturating_sub(4)).max(24);
+    let inner = usize::from(w) - 3;
+    let mut lines: Vec<Line> = Vec::new();
+    match model.variants.get(stem) {
+        None => lines.push(Line::from(" loading…")),
+        Some(Err(e)) => lines.push(Line::styled(
+            truncate(&format!(" {e}"), inner, model.ascii),
+            Style::default().fg(Color::Red),
+        )),
+        Some(Ok(v)) => {
+            let nw = v
+                .iter()
+                .map(|c| c.name.chars().count())
+                .max()
+                .unwrap_or(5)
+                .clamp(5, 24);
+            for (i, c) in v.iter().enumerate() {
+                let marker = match (i == selected, model.ascii) {
+                    (false, _) => "  ",
+                    (true, false) => "› ",
+                    (true, true) => "> ",
+                };
+                let mark = match (c.active, model.ascii) {
+                    (true, false) => "●",
+                    (false, false) => "○",
+                    (true, true) => "*",
+                    (false, true) => " ",
+                };
+                let mut text = format!(
+                    " {marker}{mark} {:<nw$}  {:<8}",
+                    c.name,
+                    c.kind.as_deref().unwrap_or("-")
+                );
+                if c.active {
+                    text.push_str(" active");
+                }
+                let text = truncate(&text, inner, model.ascii);
+                lines.push(if i == selected {
+                    Line::styled(text, Style::default().add_modifier(Modifier::REVERSED))
+                } else {
+                    Line::from(text)
+                });
+            }
+        }
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::styled(" ↑/↓ move · Enter switch · Esc", dim()));
+    let h = (lines.len() as u16 + 2).min(area.height.saturating_sub(2));
+    boxed(
+        f,
+        centered(area, w, h),
+        &format!("Variant of {stem}"),
+        lines,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn switch_confirm(
+    model: &Model,
+    f: &mut Frame,
+    area: Rect,
+    stem: &str,
+    from: &str,
+    variant: &str,
+    kind: Option<&str>,
+    running: bool,
+) {
+    let w = 52.min(area.width.saturating_sub(4)).max(24);
+    let inner = usize::from(w) - 3;
+    let question = if running {
+        format!(" restart {stem} as {variant}? [y/N]")
+    } else {
+        format!(" switch {stem} to {variant}? [y/N]")
+    };
+    let arrow = if model.ascii { "->" } else { "▸" };
+    let lines = vec![
+        Line::styled(truncate(&question, inner, model.ascii), bold()),
+        Line::from(truncate(
+            &format!(" {from} {arrow} {variant} ({})", kind.unwrap_or("-")),
+            inner,
+            model.ascii,
+        )),
+        Line::from(""),
+        Line::from(" y  write stems.local.yaml and apply"),
+        Line::from(" n  cancel"),
+    ];
+    boxed(f, centered(area, w, 7), "Switch variant", lines);
 }
 
 fn quit(f: &mut Frame, area: Rect) {
@@ -386,13 +525,16 @@ fn plan(f: &mut Frame, area: Rect, p: Option<&Result<Vec<String>, String>>) {
     boxed(f, centered(area, w, h), "Config changes", lines);
 }
 
-/// The toasts, stacked bottom-right above the status bar (newest lowest).
+/// The toasts, stacked bottom-right above the status bar and the action
+/// bar (newest lowest).
 pub fn toasts(model: &Model, f: &mut Frame, area: Rect) {
     if model.toasts.is_empty() || area.height < 4 {
         return;
     }
     let max_w = 60.min(area.width.saturating_sub(2));
-    let mut bottom = area.y + area.height - 1; // the status bar row
+    // Above the status bar and the action bar.
+    let bars = 1 + u16::from(crate::view::has_bar(model));
+    let mut bottom = area.y + area.height - bars;
     for t in model.toasts.items.iter().rev() {
         let lines = t.lines(model.ascii);
         let w = (lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) as u16 + 4)

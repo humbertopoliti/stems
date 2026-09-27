@@ -236,6 +236,15 @@ pub struct RawStem {
     pub tags: Option<Vec<String>>,
     /// Time between SIGTERM and SIGKILL.
     pub stop_grace: Option<Dur>,
+    /// Active variant (FR-ST-8): the name of one of `variants`, or `local`
+    /// (the base definition, same as leaving it unset). Usually set in
+    /// `stems.local.yaml`, e.g. by `stems switch <stem> <variant>`.
+    pub variant: Option<String>,
+    /// Named alternative definitions of this stem (FR-ST-8): partial stem
+    /// definitions deep-merged over the base when active (`variant:`). A
+    /// variant that changes `type` drops the base's type-specific fields.
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub variants: IndexMap<String, RawStem>,
 
     // --- process ----------------------------------------------------------
     /// (process) Working directory, relative to the codebase.
@@ -601,6 +610,9 @@ pub struct RawWatch {
     pub settle: Option<Dur>,
     /// What `paths` are relative to (default `codebase`).
     pub root: Option<WatchRoot>,
+    /// Cascade a `restart`/`rebuild` to the stem's hard dependants
+    /// (default: the stem's `restart.cascade`).
+    pub cascade: Option<bool>,
 }
 
 /// Restart policy.
@@ -620,6 +632,10 @@ pub struct RawRestart {
     pub on_unhealthy: Option<bool>,
     /// How long a stem may stay unhealthy before `on_unhealthy` restarts it.
     pub unhealthy_grace: Option<Dur>,
+    /// Cascading restarts: when this stem is restarted (by you, a watchdog
+    /// or this policy), also restart its running hard dependants,
+    /// transitively, in dependency order (default `false`).
+    pub cascade: Option<bool>,
 }
 
 /// Backoff parameters.

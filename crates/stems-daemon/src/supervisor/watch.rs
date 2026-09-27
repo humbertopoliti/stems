@@ -22,7 +22,10 @@
 //! A stem's watcher starts when its start begins (edits during a slow
 //! start count) and stops when it becomes `stopped` or `failed`. A
 //! watchdog restart goes through [`StemCell::restart_bypassing_policy`]
-//! (22): hooks run, `restart.max` does not count it.
+//! (22): hooks run, `restart.max` does not count it. A rule with `cascade`
+//! (or a stem with `restart.cascade`) also restarts the stem's hard
+//! dependants ([`super::cascade`], FR-LC-9); triggers of stems a cascade is
+//! restarting are dropped (loop guard #4).
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -656,7 +659,14 @@ async fn watch_loop(
         }
         if let Some((k, batch)) = sched.poll(Instant::now()) {
             let (index, rule) = (rules[k].0, rules[k].1.clone());
-            fire(&core, &stem, index, &rule, batch, &flags);
+            if let Some(id) = core.cascade.suppresses(&stem) {
+                // Loop guard #4 (FR-LC-9): a cascading restart restarts this
+                // stem right now; its own trigger is dropped, not queued.
+                tracing::info!(stem, cascade = %id, paths = batch.paths.len(), "watch trigger dropped: the stem is part of a cascading restart");
+                sched.finished();
+            } else {
+                fire(&core, &stem, index, &rule, batch, &flags);
+            }
         }
         flags.pending.store(sched.pending(), Ordering::SeqCst);
     }
@@ -674,6 +684,7 @@ fn fire(
     flags: &Arc<StemFlags>,
 ) {
     let action = rule.action.clone();
+    let cascade = rule.cascade;
     let count = batch.paths.len();
     let shown: Vec<&String> = batch.paths.iter().take(MAX_SHOWN_PATHS).collect();
     let why = match (count, shown.first()) {
@@ -696,7 +707,7 @@ fn fire(
     let (core, stem, flags) = (core.clone(), stem.to_string(), flags.clone());
     tokio::spawn(async move {
         let r = match core.watch.supervisor() {
-            Some(sup) => run_action(&sup, &stem, &action, &why).await,
+            Some(sup) => run_rule_action(&sup, &stem, &action, &why, cascade).await,
             None => Err(Error::internal("the supervisor is gone")),
         };
         let mut data = json!({
@@ -797,6 +808,23 @@ async fn restart(sup: &Supervisor, stem: &str, why: &str) -> Result<(), Error> {
     settled(&cell).await
 }
 
+/// `origin` (the stem's own restart), then, when the rule cascades
+/// (FR-LC-9), its running hard dependants.
+async fn cascading(
+    sup: &Supervisor,
+    ws: &Arc<Resolved>,
+    stem: &str,
+    why: &str,
+    cascade: bool,
+    origin: impl std::future::Future<Output = Result<(), Error>>,
+) -> Result<(), Error> {
+    if !cascade {
+        return origin.await;
+    }
+    sup.watch_cascade(ws, stem, why, WATCHDOG_ACTOR, origin)
+        .await
+}
+
 /// Docker/compose `rebuild`: stop (the container is removed), then start:
 /// a fresh start always builds the image of a `build:` stem.
 async fn recreate(
@@ -821,12 +849,27 @@ async fn recreate(
     settled(&cell).await
 }
 
-/// Run one watchdog action for `stem` (`why` is the restart reason).
+/// Run one watchdog action for `stem` (`why` is the restart reason); a
+/// restart cascades as the stem's `restart.cascade` says.
+#[cfg(test)]
 pub(crate) async fn run_action(
     sup: &Arc<Supervisor>,
     stem: &str,
     action: &WatchAction,
     why: &str,
+) -> Result<(), Error> {
+    run_rule_action(sup, stem, action, why, None).await
+}
+
+/// [`run_action`] for a rule: its `cascade` (else the stem's
+/// `restart.cascade`) decides whether a `restart`/`rebuild` also restarts
+/// the stem's running hard dependants (FR-LC-9).
+pub(crate) async fn run_rule_action(
+    sup: &Arc<Supervisor>,
+    stem: &str,
+    action: &WatchAction,
+    why: &str,
+    cascade: Option<bool>,
 ) -> Result<(), Error> {
     let ws = sup
         .host
@@ -837,10 +880,16 @@ pub(crate) async fn run_action(
         .stem(stem)
         .cloned()
         .ok_or_else(|| Error::new(ErrorCode::UnknownStem, format!("unknown stem `{stem}`")))?;
+    let cascade = cascade.unwrap_or(st.restart.cascade);
     match action {
-        WatchAction::Restart => restart(sup, stem, why).await,
+        WatchAction::Restart => {
+            cascading(sup, &ws, stem, why, cascade, restart(sup, stem, why)).await
+        }
         WatchAction::Rebuild => match st.kind() {
-            StemType::Docker | StemType::Compose => recreate(sup, &ws, &st, why).await,
+            StemType::Docker | StemType::Compose => {
+                let origin = recreate(sup, &ws, &st, why);
+                cascading(sup, &ws, stem, why, cascade, origin).await
+            }
             _ => {
                 let b = sup
                     .build_stems(&ws, &[stem.to_string()], WATCHDOG_ACTOR)
@@ -848,7 +897,7 @@ pub(crate) async fn run_action(
                 if let Some(f) = b.failed.into_iter().next() {
                     return Err(f.error);
                 }
-                restart(sup, stem, why).await
+                cascading(sup, &ws, stem, why, cascade, restart(sup, stem, why)).await
             }
         },
         WatchAction::Script(name) => {

@@ -20,6 +20,7 @@ mod resolve;
 mod spans;
 mod subst;
 mod types;
+pub mod variants;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -109,12 +110,24 @@ pub fn load(opts: LoadOptions) -> Result<Resolved, ConfigErrors> {
             errors: loader.errors,
         });
     }
-    let Loader { sources, spans, .. } = loader;
+    let Loader {
+        sources, mut spans, ..
+    } = loader;
     let mut merged = main.unwrap_or_else(|| Value::Mapping(Mapping::new()));
     let local_keys = local.as_ref().map(LocalEnvKeys::of).unwrap_or_default();
+    // Variants (FR-ST-8): base -> active variant -> stems.local.yaml.
+    let mut variant_diags = Vec::new();
+    let stem_variants = variants::apply(&mut merged, local.as_ref(), &mut variant_diags);
+    for (name, v) in &stem_variants {
+        if let Some(active) = &v.active {
+            let stem = ConfigPath::root().key("stems").key(name);
+            spans.alias(&stem.key("variants").key(active), &stem, &local_file);
+        }
+    }
     if let Some(l) = local {
         merge::merge(&mut merged, l, &ConfigPath::root());
     }
+    variants::strip(&mut merged);
 
     let schema_err = |e: serde_yaml_ng::Error| ConfigErrors::one(yaml_error(&e, None, &spans));
     let prelim: RawWorkspace = serde_yaml_ng::from_value(merged.clone()).map_err(schema_err)?;
@@ -186,9 +199,19 @@ pub fn load(opts: LoadOptions) -> Result<Resolved, ConfigErrors> {
             errors: errors.into_iter().map(|d| locate(d, &spans)).collect(),
         })?;
     local_keys.apply(&mut workspace);
+    for (name, v) in stem_variants {
+        if let Some(stem) = workspace.stems.get_mut(&name) {
+            stem.variant = Some(
+                v.active
+                    .unwrap_or_else(|| variants::BASE_VARIANT.to_string()),
+            );
+            stem.variants = v.names;
+        }
+    }
 
-    let diagnostics = sub_diags
+    let diagnostics = variant_diags
         .into_iter()
+        .chain(sub_diags)
         .chain(ctx.diagnostics)
         .map(|d| locate(d, &spans))
         .collect();

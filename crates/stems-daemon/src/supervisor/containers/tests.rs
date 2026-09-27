@@ -599,3 +599,16 @@ fn status_gets_container_health_and_no_pid() {
     decorate_status(Some(&c), StemType::Process, &mut p);
     assert_eq!(p.pid, Some(7));
 }
+
+#[test]
+fn shutdown_removes_containers_of_failed_stems_only() {
+    use stems_core::StemState as S;
+    let sel = failed_selection([
+        ("db".to_string(), S::Failed),
+        ("cache".to_string(), S::Stopped),
+        ("api".to_string(), S::Healthy),
+        ("redis".to_string(), S::Failed),
+    ]);
+    assert_eq!(sel, ["db", "redis"]);
+    assert!(failed_selection([("x".to_string(), S::Stopped)]).is_empty());
+}

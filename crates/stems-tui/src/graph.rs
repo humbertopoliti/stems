@@ -103,6 +103,9 @@ pub struct GraphState {
     /// Zoom: `None` = auto, `Some(true)` = compact (`-`), `Some(false)` =
     /// full boxes (`+`).
     pub compact: Option<bool>,
+    /// Hard `depends_on` edges `(dependant, dependency)` of the last load
+    /// (soft edges left out): the `r` confirmation's dependants.
+    pub hard_edges: Vec<(String, String)>,
 }
 
 impl GraphState {
@@ -122,6 +125,11 @@ impl GraphState {
             .flat_map(|s| s.depends_on.iter().map(|d| (s.name.clone(), d.clone())))
             .collect();
         let l = from_parts(stems.iter().map(|s| (s.name.clone(), s.kind)), &deps);
+        self.hard_edges = deps
+            .iter()
+            .filter(|(_, d)| !d.soft)
+            .map(|(n, d)| (n.clone(), d.stem.clone()))
+            .collect();
         self.focus = self
             .focus
             .take()
@@ -134,6 +142,25 @@ impl GraphState {
         self.layout = Some(l);
         self.pending = false;
         self.error = None;
+    }
+
+    /// Every stem that depends on `stem` through hard edges, transitively,
+    /// nearest first (each once).
+    pub fn dependants(&self, stem: &str) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut i = 0;
+        let mut frontier = vec![stem.to_string()];
+        while i < frontier.len() {
+            let cur = frontier[i].clone();
+            i += 1;
+            for (dependant, dep) in &self.hard_edges {
+                if *dep == cur && dependant != stem && !out.contains(dependant) {
+                    out.push(dependant.clone());
+                    frontier.push(dependant.clone());
+                }
+            }
+        }
+        out
     }
 
     /// Toggle focus mode around `stem`.

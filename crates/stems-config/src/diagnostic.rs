@@ -27,6 +27,8 @@ pub mod codes {
     /// The same stem is defined by two files of one `include:` level
     /// (two included files, or an included file and the including file).
     pub const DUPLICATE_STEM: &str = "DUPLICATE_STEM";
+    /// `stems.<n>.variant` names a variant the stem does not declare (FR-ST-8).
+    pub const UNKNOWN_VARIANT: &str = "UNKNOWN_VARIANT";
 }
 
 /// A source location (1-based line and column).

@@ -903,3 +903,63 @@ fn outputs_forms_and_invalid_names() {
     )]);
     assert_eq!(ws.fail().errors[0].code, codes::SCHEMA_INVALID);
 }
+
+// ---------------------------------------------------------------------------
+// A local `ports` override drives the primary port (and references to it),
+// with or without a variant; `container_port` is kept by port name.
+// ---------------------------------------------------------------------------
+
+const PORTS: &str = r#"
+schema_version: 1
+name: ports
+stems:
+  a:
+    type: process
+    command: python3 app.py
+    ports: [{ name: http, port: 18301 }]
+    health: { type: http, url: "http://127.0.0.1:${stem.a.port}/healthz" }
+    variants:
+      docker:
+        type: docker
+        image: shop-api
+        ports: [{ name: http, port: 18301, container_port: 8080 }]
+  b:
+    type: process
+    command: python3 app.py
+    depends_on: [a]
+    env: { API_URL: "http://127.0.0.1:${stem.a.port}", API_HTTP: "${stem.a.ports.http}" }
+    ports: [{ name: http, port: 18302 }]
+"#;
+
+#[test]
+fn local_ports_override_is_the_resolved_primary_port() {
+    for variant in ["", "    variant: docker\n"] {
+        let local = format!(
+            "stems:\n  a:\n{variant}    ports: [{{ name: http, port: 20020 }}]\n  b:\n    ports: [{{ name: http, port: 20021 }}]\n"
+        );
+        let ws = Ws::new(&[("stems.yaml", PORTS), ("stems.local.yaml", &local)]);
+        let r = ws.load();
+        assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+        let w = &r.workspace;
+        let a = w.stem("a").unwrap();
+        let p = a.primary_port().unwrap();
+        assert_eq!(p.name, "http");
+        assert_eq!(p.port, PortRef::Fixed(20020), "variant {variant:?}");
+        let container = if variant.is_empty() { None } else { Some(8080) };
+        assert_eq!(p.container_port, container, "variant {variant:?}");
+        assert_eq!(a.ports.len(), 1);
+        assert_eq!(
+            w.stem("b").unwrap().primary_port().unwrap().port,
+            PortRef::Fixed(20021)
+        );
+        assert_eq!(env(w, "b", "API_URL"), "http://127.0.0.1:20020");
+        assert_eq!(env(w, "b", "API_HTTP"), "20020");
+        let health = serde_json::to_value(&a.health).unwrap();
+        assert!(
+            health
+                .to_string()
+                .contains("http://127.0.0.1:20020/healthz"),
+            "{health}"
+        );
+    }
+}

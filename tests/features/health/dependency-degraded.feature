@@ -19,7 +19,8 @@ Feature: a healthy stem with an unhealthy dependency is degraded
     And the JSON at "$.data.stems[?@.name=='web'].glyph" equals "degraded"
     And the JSON at "$.data.stems[?@.name=='web'].reason" equals "dependency api unhealthy"
     And the JSON at "$.data.summary.degraded" equals 1
-    And the JSON at "$.data.summary.failed" equals 1
+    And the JSON at "$.data.summary.unhealthy" equals 1
+    And the JSON at "$.data.summary.failed" equals 0
     When I run "stems status web --human"
     Then stdout contains "dependency api unhealthy"
     Then within 5s the stem "api" is "healthy"

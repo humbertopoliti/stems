@@ -1,28 +1,29 @@
 ---
 source: crates/stems-tui/src/tests.rs
+assertion_line: 712
 expression: text
 ---
  stems · process-chain           1 Graph  2 [Table]  3 Detail  4 Logs  5 Events
   STEM TYPE    STATUS     REASON       PID    PORTS  UPTIME RESTARTS CPU   MEM
 › a    process ✓ healthy  ready (tcp)  101    18301  9s     0
   b    process ✓ healthy  ready (tcp)  102    18302  8s     0
-  c    process ↻ starting -            103    18303  1s     0
-  ┌ Help ───────────────────────────────────────────────────────────────────┐
-  │ j/k ↓/↑    move the selection        x / X      stop / with dependants  │
-  │ h/l ←/→    graph: across columns     r / R      restart / rebuild       │
-  │ f e + -    graph: focus labels zoom  p          pause/resume watchdog   │
-  │ g / G      first / last stem         o          open code in $EDITOR    │
-  │ Enter      open the detail view      S          reset (type `reset`)    │
-  │ Tab S-Tab  next / previous view      :          script menu             │
-  │ 1-5        go to a view (header #)   u / d      up all / down all       │
-  │ /          filter stems by name      Ctrl-P     command palette         │
-  │ O          cycle the sort order      Esc        dismiss toasts, back    │
-  │ Ctrl-L     split: logs below         e          error toast details     │
-  │ click      row / tab (mouse = true)  ?          toggle this help        │
-  │ s          start the stem            q Ctrl-C   quit                    │
-  └─────────────────────────────────────────────────────────────────────────┘
+┌ Help ────────────────────────────────────────────────────────────────────────┐
+│ j/k ↓/↑    move · detail: rows (scroll)   s          start the stem          │
+│ PgUp PgDn  detail: scroll a page          x / X      stop / with dependants  │
+│ g / G      first / last · top / end       r / R      restart / rebuild       │
+│ [ / ]      prev / next stem (wraps)       p          pause/resume watchdog   │
+│ h/l ←/→    graph cols · detail stem       v          switch variant (picker) │
+│ f e + -    graph: focus labels zoom       o          open code in $EDITOR    │
+│ Enter      detail · run/switch/pause row  S          reset (type `reset`)    │
+│ Tab S-Tab  next / previous view           :          script menu             │
+│ 1-5        go to a view (header #)        u / d      up all / down all       │
+│ /          filter stems by name           Ctrl-P     command palette         │
+│ O          cycle the sort order           Esc        dismiss toasts, back    │
+│ Ctrl-L     split: logs below              e          error toast details     │
+│ click      row/tab/strip/bar (mouse)      ?          toggle this help        │
+│ wheel      scroll / move (mouse)          q Ctrl-C   quit                    │
+└──────────────────────────────────────────────────────────────────────────────┘
 
 
-
-
- process-chain · profile - · daemon pid 4242 · ✓2 !0 ✗0 ·1 ?0 ↻1 ? help · q qui…
+ ■ x stop  ↻ r restart  : scripts  o editor  ? more
+ process-chain · profile - · daemon pid 4242 · ✓2 !0 ✗0 ↯0 ·1 ?0 ↻1 ? help · q …

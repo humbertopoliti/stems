@@ -32,13 +32,14 @@ executable's `deps/` dir (Cargo's `CARGO_BIN_EXE_*` only works within one
 package). Override with `STEMS_E2E_BIN=/path/to/stems`.
 
 Other environment knobs: `STEMS_E2E_SCENARIO_TIMEOUT` (seconds, default 60),
-`STEMS_E2E_CONCURRENCY` (default 4), `STEMS_E2E_TMPDIR` (default `/tmp`, kept
+`STEMS_E2E_CONCURRENCY` (default 8), `STEMS_E2E_TMPDIR` (default `/tmp`, kept
 short so `$STEMS_HOME/<hash>/stemsd.sock` stays under the 104-byte socket
 path limit on macOS), `STEMS_E2E_BLESS=1` (write goldens).
 
 ## Isolation (what every scenario gets)
 
-- A fresh temp root `/tmp/stems-e2e-XXXXXX` (canonical path) containing:
+- A fresh temp root `/tmp/stems-e2e-s<slot>-XXXXXX` (canonical path;
+  `/tmp/stems-e2e-XXXXXX` outside `scripts/e2e_slot.sh`) containing:
   - `examples/workspaces/<name>/`: a copy of the chosen workspace (or
     `tests/fixtures/workspaces/<name>/` for fixture workspaces). Developer
     files (`stems.local.yaml`, `.stems/`, caches) are not copied.
@@ -48,7 +49,8 @@ path limit on macOS), `STEMS_E2E_BLESS=1` (write goldens).
     writes into a codebase (watchdog tests).
   - `home/`: `STEMS_HOME` for every command.
   - `outside/`: an empty dir that is not inside any workspace.
-- A unique block of 20 ports (`20000 + n*20`, each port checked free). Every
+- A unique block of 20 ports (`STEMS_E2E_PORT_START + n*20`, each port
+  checked free, wrapping inside the slot's 4000-port range). Every
   numeric port declared in the workspace (`stems.*.ports[*].port`) is
   remapped through a generated `stems.local.yaml`: the `ports` arrays, `env`
   values equal to a declared port (`PORT: "18090"`, `SHOP_CONTROL_PORT`) or
@@ -62,6 +64,34 @@ path limit on macOS), `STEMS_E2E_BLESS=1` (write goldens).
   is recorded for the leak check.
 - stdin is `/dev/null`; stdout/stderr are captured. A command that exits
   while a descendant still holds its stdout does not hang the step (2 s grace).
+
+### Concurrent runs (slots)
+
+`make e2e*` runs the harness through `scripts/e2e_slot.sh`, which claims
+the lowest free slot `i` of `STEMS_E2E_SLOTS` (default 4, max 10) as
+`/tmp/stems-e2e-slots/<i>/` (mkdir lock; a dead owner pid is reclaimed) and
+exports `STEMS_E2E_SLOT=i` and `STEMS_E2E_PORT_START=20000 + i*4000`. Two
+runs in different slots therefore never share:
+
+- ports: each run allocates its blocks in `[start, start+4000)` (200 blocks,
+  reused round-robin once free), and the daemon's orphan scan only inspects
+  listeners on the workspace's *declared* (remapped) ports;
+- scenario dirs: the `stems-e2e-s<i>-` prefix, and the leak hook matches
+  processes by the scenario's own dir/cwd;
+- failure artefacts: `target/e2e-failures/` is shared, each entry records
+  its writer's slot in `.e2e-slot`, and a run's start-up cleanup keeps
+  entries of slots held by another live run (two slots failing the same
+  scenario at once would still overwrite one entry).
+
+The temp root stays under `/tmp` because of the 104-byte `sun_path` limit:
+the daemon socket is `/private/tmp/stems-e2e-s<i>-XXXXXX/home/<12 hex>/stemsd.sock`,
+62 bytes for a one-digit slot.
+
+`@docker` scenarios are Serial within a run, and `make e2e-docker` claims
+every slot (`--exclusive`) because compose projects, containers and
+networks are machine-global. `@slow` scenarios are queued after the others
+(ordering only). `STEMS_E2E_*` variables are stripped from the commands the
+steps run, like every `STEMS_*` variable.
 
 ### Placeholders
 
@@ -95,7 +125,7 @@ Runs after every scenario, whatever the outcome:
 
 1. If a step may have started a daemon, or any `*.sock`/`*.lock` exists under
    `STEMS_HOME`: `stems daemon stop --json` (10 s bound, errors ignored).
-2. Waits up to 3 s for every recorded process group (commands, strays, and
+2. Waits up to 15 s (`STEMS_E2E_LEAK_GRACE_SECS`) for every recorded process group (commands, strays, and
    any `pgid` seen in `--json` output or `state.json`) to disappear.
 3. Reports as leaks: live process groups; any process whose command line or
    cwd (Linux: also environment) mentions the scenario dir (macOS hides other
@@ -916,7 +946,7 @@ and `STATUS`): each named column spans from its header's start to the next
 header's; in the rows below it (up to the first blank line) every masked
 cell becomes `*`, blank ones too (a sparkline may not have its first
 sample yet). `daemon pid N` is always masked, and the status bar is compared
-only up to its six glyph counts (the right-aligned hints move with the
+only up to its seven glyph counts (`✓ ! ✗ ↯ · ? ↻`; the right-aligned hints move with the
 pid's width). `TIME` (29) masks the digits
 of every clock time in the frame (`12:00:01`, `12:00:01.234`: log
 timestamps, the events table). A missing golden is

@@ -189,7 +189,7 @@ fn new_problems(ctx: &Ctx, before: &HashSet<String>) -> Result<(), Errors> {
 }
 
 /// Write `new` over `original` in `file` if it validates.
-fn commit(
+pub(crate) fn commit(
     ctx: &Ctx,
     file: &Path,
     original: &str,
@@ -248,7 +248,7 @@ fn commit(
 }
 
 /// The integration repo's `stems.local.yaml` and the committed tree.
-fn local_file(ctx: &Ctx) -> Result<(PathBuf, serde_yaml_ng::Value), Errors> {
+pub(crate) fn local_file(ctx: &Ctx) -> Result<(PathBuf, serde_yaml_ng::Value), Errors> {
     let (config_file, tree) =
         stems_config::committed_tree(&ctx.load_options()).map_err(Errors::from)?;
     let root = config_file
@@ -257,7 +257,7 @@ fn local_file(ctx: &Ctx) -> Result<(PathBuf, serde_yaml_ng::Value), Errors> {
     Ok((root.join(LOCAL_FILE), tree))
 }
 
-fn read_local(file: &Path) -> Result<String, Error> {
+pub(crate) fn read_local(file: &Path) -> Result<String, Error> {
     match std::fs::read_to_string(file) {
         Ok(t) => Ok(t),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
@@ -345,7 +345,7 @@ pub fn unset(ctx: &Ctx, args: &ConfigUnsetArgs) -> CommandOutput {
 // ---------------------------------------------------------------------------
 
 /// How long `config apply` may take (it restarts stems).
-const APPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3600);
+pub(crate) const APPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3600);
 
 fn table(rows: &[[String; 4]]) -> String {
     let widths: Vec<usize> = (0..4)

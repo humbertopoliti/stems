@@ -35,6 +35,7 @@ stems:
 | `settle` | `0s` | additionally wait until nothing changed for this long |
 | `action` | `restart` | `restart`, `rebuild`, `script:<name>`, `signal:<SIG>` |
 | `root` | `codebase` | `codebase` (the stem's codebase; the integration repo for a stem without one) or `workspace` (the integration repo) |
+| `cascade` | the stem's `restart.cascade` (`false`) | `restart`/`rebuild` only: once the stem is healthy again, also restart its running hard dependants, layer by layer ([restart.md](restart.md#cascading-restarts-fr-lc-9)) |
 
 Matching is done on the changed path **relative to the root**, with `/`
 separators, using [globset](https://docs.rs/globset) syntax:
@@ -91,6 +92,34 @@ Every firing emits `watch.triggered` (actor `watchdog`, `reason` `watch:
 app.py changed` or `watch: 12 files changed`, `data: {paths (the first 10,
 relative to the root), path_count, action, rule_index}`) and, when the
 action is done, `watch.action_finished {action, rule_index, ok, error?}`.
+
+## Cascading rules
+
+```yaml
+stems:
+  api:
+    watch:
+      - paths: ["*.py"]
+        cascade: true        # api, then web (depends_on: [api]), then ...
+```
+
+A `restart` or `rebuild` rule with `cascade: true` (or, without the key, a
+stem with `restart.cascade: true`) runs a cascading restart
+([restart.md](restart.md#cascading-restarts-fr-lc-9)): the stem restarts
+(and is built first for `rebuild`), and once it is healthy its running
+hard dependants restart in dependency order, each exactly once
+(`cascade.started` … `cascade.finished`, actor `watchdog`). The action (and
+`busy`) lasts until the whole cascade finished; `watch.action_finished` is
+`ok: false` when the origin or a dependant failed. `cascade: false` on a
+rule turns cascading off for it even when the stem's `restart.cascade` is
+on. `script:` and `signal:` actions never cascade.
+
+While a cascade restarts a stem (as its origin or as a dependant), that
+stem's own watch triggers are **dropped**, not queued: `web` watching the
+same files as `api` does not restart a second time, and a cascade never
+triggers another one through the watchers (the daemon log says `watch
+trigger dropped`). Changes made during the cascade that only `web` cares
+about are dropped too; save again (or `stems restart web`) afterwards.
 
 ## When watchers run
 

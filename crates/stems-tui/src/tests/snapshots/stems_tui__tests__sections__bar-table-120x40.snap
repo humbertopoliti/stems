@@ -1,0 +1,45 @@
+---
+source: crates/stems-tui/src/tests/sections.rs
+assertion_line: 602
+expression: text
+---
+ stems · process-chain                                                   1 Graph  2 [Table]  3 Detail  4 Logs  5 Events
+  STEM TYPE     STATUS       REASON            PID     PORTS        UPTIME  RESTARTS CPU    MEM    SCRIPTS VARIANT WATCH
+  a    process  ✓ healthy    ready (tcp)       101     http:18301   9s      0                      0       -       -
+› b    process  ✓ healthy    ready (tcp)       102     http:18302   8s      0                      2       local   on
+  c    process  ↻ starting   -                 103     http:18303   1s      0                      0       -       -
+  d    process  · stopped    -                 -       http:18304   -       0                      0       -       -
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ■ x stop  ↻ r restart  : scripts (2)  v variant local ▸ slow  p watch on  o editor  ? more
+ process-chain · profile - · daemon pid 4242 · ✓2 !0 ✗0 ↯0 ·1 ?0 ↻1                                     ? help · q quit

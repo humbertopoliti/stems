@@ -32,11 +32,13 @@ pub mod scripts;
 pub mod watch;
 
 pub use health::{HealthParams, HealthResult, HealthStatus, ProbeOutcome, ProbeRecord, StemHealth};
+pub use lifecycle::{CascadeRef, CascadeReport};
 pub use lifecycle::{
     DownParams, DownResult, PortStatus, RestartParams, StartParams, StatusParams, StatusResult,
     StatusSummary, StemFailure, StemStatus, StopParams, UpParams, UpResult,
 };
 pub use lifecycle::{OutputValue, OutputsParams, OutputsResult, REDACTED, StemOutputs};
+pub use lifecycle::{SwitchVariantParams, SwitchVariantResult, VariantChoice};
 pub use logs::{
     ExportLogsParams, ExportLogsResult, LogFilter, LogRecord, QUERY_LOGS_CAP, QueryLogsParams,
     QueryLogsResult, SubscribeLogsAck, SubscribeLogsParams,
@@ -229,6 +231,11 @@ string_newtype! {
         CONFIG_DIFF = "config_diff";
         /// Apply the pending plan ([`ConfigApplyParams`] -> [`ConfigApplyResult`]).
         CONFIG_APPLY = "config_apply";
+        // --- variants (FR-ST-8) --------------------------------------------------
+        /// List a stem's variants, or switch it: edit `stems.local.yaml`,
+        /// validate, apply to that stem ([`SwitchVariantParams`] ->
+        /// [`SwitchVariantResult`]).
+        SWITCH_VARIANT = "switch_variant";
         // --- crash recovery (11) ----------------------------------------------
         /// Adopt orphaned processes as their stems (`{orphans: [{stem, pid}]}`
         /// -> `{adopted: [{stem, pid, pgid}], failed: [{stem, pid, error}]}`).
@@ -266,6 +273,18 @@ string_newtype! {
         STEM_RESTARTING = "stem.restarting";
         /// A stem exhausted its restart budget.
         STEM_GAVE_UP = "stem.gave_up";
+        /// A cascading restart began (FR-LC-9; `data: {id, origin, origins,
+        /// reason, stems}`, `stems` = the dependants' layers).
+        CASCADE_STARTED = "cascade.started";
+        /// A cascading restart waits for the running one (`data: {id,
+        /// origin, origins, reason, behind}`).
+        CASCADE_QUEUED = "cascade.queued";
+        /// A cascading restart finished (`data: {id, origin, restarted,
+        /// failed, skipped}`).
+        CASCADE_FINISHED = "cascade.finished";
+        /// The origin of a cascading restart did not become healthy; no
+        /// dependant was touched (`stem` = the origin; `data: {id, origin, error}`).
+        CASCADE_ABORTED = "cascade.aborted";
         /// A stem's health changed (`healthy` <-> `unhealthy`/`unknown`, 21):
         /// one per transition, never per probe. `data: {probe, detail, latency_ms, consecutive_failures}`.
         STEM_HEALTH = "stem.health";

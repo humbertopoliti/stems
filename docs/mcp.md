@@ -72,7 +72,7 @@ where a stem failed) are also `isError: true`, with the full result as text.
 | `get_graph` | `focus?`, `profile?` | optional | graph JSON `{nodes, edges, live}` with live glyphs when the daemon runs |
 | `start` | `stems`, `no_deps?`, `timeout_ms?` | yes | start and wait until ready |
 | `stop` | `stems`, `cascade?`, `timeout_ms?` | yes | stop (`HAS_DEPENDANTS` without `cascade`) |
-| `restart` | `stems`, `no_deps?`, `build?`, `timeout_ms?` | yes | restart keeping ports |
+| `restart` | `stems`, `no_deps?`, `build?`, `timeout_ms?`, `cascade?` | yes | restart keeping ports; `cascade` also restarts the running hard dependants ([restart.md](restart.md#cascading-restarts-fr-lc-9)) |
 | `up` | `stems?`, `profile?`, `fresh?`, `confirm?`, `timeout_ms?` | yes | bring up; progress notifications; **`fresh` is destructive** |
 | `down` | `stems?`, `all?`, `volumes?`, `confirm?` | yes | stop; progress notifications; **`all` / `volumes` are destructive** |
 | `run_script` | `stem?`, `name`, `args` (object), `start_deps?` | yes | run a script and wait; progress notifications |

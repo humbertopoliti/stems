@@ -12,7 +12,8 @@ Feature: Keyboard navigation in the dashboard
     Then the command succeeds
 
   Scenario: j then Enter shows the second stem's detail
-    When I run "stems attach --view table --headless --script 'wait:healthy;j;Enter;frame'"
+    # The config is the last section: a tall frame shows all of it.
+    When I run "stems attach --view table --size 100x100 --headless --script 'wait:healthy;j;Enter;frame'"
     Then the command succeeds
     And the last frame contains "Detail: b"
     And the last frame contains "[Detail]"

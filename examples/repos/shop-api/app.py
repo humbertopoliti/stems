@@ -8,6 +8,7 @@ See README.md for routes, environment variables and the chaos endpoint table.
 import json
 import mmap
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -76,15 +77,25 @@ def _on_sigterm(signum, frame):
     os.kill(os.getpid(), signal.SIGTERM)
 
 
-def products_from_db(url):
-    """Read products through `psql` if available; None means "use the in-memory list"."""
+def psql_command(url, custom=None):
+    """The psql argv prefix: `SHOP_PSQL` split like a shell line (it carries its own
+    connection, e.g. `docker exec pg psql -U shop -d shop`), else `psql <url>`.
+    None when neither is usable."""
+    if custom:
+        return shlex.split(custom)
     psql = shutil.which("psql")
-    if not psql:
+    return [psql, url] if psql and url else None
+
+
+def products_from_db(url, custom=None):
+    """Read products through psql if available; None means "use the in-memory list"."""
+    cmd = psql_command(url, custom)
+    if not cmd:
         log("WARN", "DATABASE_URL set but psql not found, using in-memory products")
         return None
     try:
         out = subprocess.run(
-            [psql, url, "-At", "-F", "\t", "-c", "SELECT id, name, price_cents FROM products ORDER BY id"],
+            cmd + ["-At", "-F", "\t", "-c", "SELECT id, name, price_cents FROM products ORDER BY id"],
             capture_output=True, text=True, timeout=3,
         )
     except (OSError, subprocess.SubprocessError) as exc:
@@ -230,8 +241,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(200, {"status": "ok"})
         if method == "GET" and path == "/products":
             rows = None
-            if os.environ.get("DATABASE_URL"):
-                rows = products_from_db(os.environ["DATABASE_URL"])
+            if os.environ.get("DATABASE_URL") or os.environ.get("SHOP_PSQL"):
+                rows = products_from_db(os.environ.get("DATABASE_URL"), os.environ.get("SHOP_PSQL"))
             return self.send_json(200, PRODUCTS if rows is None else rows)
         if method == "POST" and path == "/users":
             length = int(self.headers.get("Content-Length") or 0)

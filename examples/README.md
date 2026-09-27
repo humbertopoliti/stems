@@ -11,12 +11,14 @@ examples/
     shop-worker/    # queue consumer with a chaos control port
   workspaces/
     minimal/        # one process stem; the smallest valid workspace
-    shop-lite/      # api + web + worker, no containers  ← start here without Docker
+    shop-lite/      # api + web + worker + one redis container  ← start here
+                    #   (`--profile local`: the three Python services, no Docker)
     hello-shop/     # the full example: docker, compose, external, every feature
     broken/         # one deliberately invalid workspace per error class
 ```
 
-Only Python 3 is needed for `minimal` and `shop-lite`. `hello-shop` also
+Only Python 3 is needed for `minimal` and for `shop-lite --profile local`.
+`shop-lite`'s default profile adds one container (redis), and `hello-shop`
 needs Docker (Docker Desktop, Colima or OrbStack) with the compose v2 plugin.
 
 ## 0. Build the binary
@@ -30,13 +32,20 @@ export PATH="$PWD/target/release:$PATH"   # or copy target/release/stems somewhe
 stems --version
 ```
 
-## 1. Ten-minute tour with `shop-lite` (no Docker)
+## 1. Ten-minute tour with `shop-lite`
+
+`shop-lite` runs the three Python services as local processes plus `redis`
+as a docker stem (`redis:7`, host port 16380 → container 6379), the
+worker's queue. The worker's edge to redis is `soft`, so it starts (and
+keeps retrying) even while redis is down. No Docker? Use the `local`
+profile, which leaves redis out: `stems up --profile local`.
 
 ```sh
 cd examples/workspaces/shop-lite
 stems validate           # schema, paths, cycles, ports; prints the start order
 stems doctor             # tools, ports, codebases, scripts, orphans
-stems up                 # starts api + worker, then web; opens the dashboard
+stems up                 # starts redis, api and worker, then web; opens the dashboard
+                         # (no Docker: `stems up --profile local`)
 ```
 
 The dashboard is a full-screen TUI. Useful keys: `Tab` cycles Graph → Table →
@@ -105,7 +114,7 @@ stems config unset stems.shop-api.env.GREETING
 ### Tear down
 
 ```sh
-stems down            # stops everything in reverse order, removes overlays, stops the daemon
+stems down            # stops everything in reverse order (removes the redis container and the overlays), stops the daemon
 stems doctor          # confirms nothing is left behind
 ```
 
@@ -127,28 +136,67 @@ scripts), `redis` (compose stem wrapping `compose/redis.yml`) and `httpbin`
 containers, so nothing starts without Docker; `stems validate` still works and
 `stems doctor` tells you what is missing.
 
+The host needs only Docker (Desktop, Colima, OrbStack, ...) with compose v2
+and `python3`: health checks of the containers run inside them, and the seed
+scripts and shop-api's `/products` (`SHOP_PSQL`) use `docker exec ...
+psql`, so no host `psql`, `pg_isready` or `redis-cli` is needed. stems finds
+the `docker` CLI even when Docker Desktop did not put it on `PATH`.
+
 ```sh
 cd examples/workspaces/hello-shop
 cp stems.local.yaml.example stems.local.yaml    # optional per-developer overrides
 stems doctor
-stems up --profile backend --detach             # postgres, redis, shop-api, shop-worker
-stems up                                        # everything, attached
+stems up --detach                               # all six; ~15 s from a warm image cache
+curl localhost:18080/products                   # the rows postgres's `seed` inserted
+stems up --profile backend --detach             # or: postgres, redis, shop-api, shop-worker
 stems run postgres seed-large -- --rows 100000
+stems logs postgres --grep ready
 stems down --volumes --yes                      # also removes the hello-shop_pgdata volume
 ```
 
 | Stem | Type | Demonstrates |
 |---|---|---|
-| `postgres` | docker | image, ports, volumes, env, `command` health check, `reset` and `seed`/`seed-large` scripts |
-| `redis` | compose | wrapping an existing `compose/redis.yml` file |
-| `shop-api` | process | `setup` with stamps and `inputs`, `env_files`, an overlay, `http` health, a watchdog restart, custom scripts with args, depends on postgres + redis |
+| `postgres` | docker | image, ports, volumes, env, `command` health check (run inside the container), `reset` and `seed`/`seed-large` scripts |
+| `redis` | compose | wrapping an existing `compose/redis.yml` file; `command` health check inside the service's container |
+| `shop-api` | process | `setup` with stamps and `inputs`, `env_files`, an overlay, `http` health, a watchdog restart, custom scripts with args, depends on postgres + redis; a `docker` variant (`stems switch shop-api docker`) runs it as a container built from its Dockerfile |
 | `shop-worker` | process | `on-failure` restart policy with backoff, depends on redis (healthy) + postgres (seeded), a chaos control HTTP port |
 | `shop-web` | process | `port: auto`, `${stem.shop-api.port}` substitution, depends on shop-api |
-| `httpbin` | external | monitor-only; `unknown` when unreachable, never started or stopped |
+| `httpbin` | external | monitor-only; `unknown` offline (`unhealthy` if it answers slower than its 2 s timeout), never started or stopped |
 
-The docker and compose paths were developed on a machine without Docker and are
-verified by the `@docker` scenarios (`make e2e-docker`); see `docs/docker.md`
-and `docs/compose.md` for the verification checklist.
+Verified zero-to-ready on macOS (Intel, Docker Desktop with Engine 29.8.0
+and compose v5.5.1) by hand and by the `@docker` scenario
+`tests/features/scripts/hello-shop-zero-to-ready.feature` (`make
+e2e-docker`); `down --volumes --yes` leaves no container, volume or network
+behind. See `docs/docker.md` and `docs/compose.md`.
+
+### Switch a component between local and Docker
+
+`shop-api` declares a `docker` variant (FR-ST-8, `docs/config.md` →
+Variants): the same codebase built from `repos/shop-api/Dockerfile` and run
+as the container `hello-shop-shop-api`, published on 18080 → 8080, with
+the database URL pointing at `host.docker.internal` and the overlay's
+`config/local.ini` mounted read-only. `stems switch` writes the choice into
+`stems.local.yaml` and restarts only shop-api; shop-web, the worker and
+the containers keep running.
+
+```sh
+stems up --detach
+stems switch shop-api              # lists the choices: * local (process), docker (docker)
+stems switch shop-api docker       # stops the process, builds the image, runs the container
+docker ps --filter name=hello-shop-shop-api
+curl localhost:18080/products      # served by the container (see below)
+stems status                       # shop-api: TYPE docker, no pid
+stems switch shop-api local        # back to the process; the container is removed
+curl localhost:18080/products      # the seeded rows again
+stems down --volumes --yes
+```
+
+The image has no `psql` and no docker CLI, so the container's `/products`
+serves shop-api's built-in in-memory list (`WARN DATABASE_URL set but psql
+not found` in `stems logs shop-api`); the process form reads the seeded rows
+through `SHOP_PSQL`. The first switch on a machine builds the image
+(`start_timeout: 3m` covers a cold `python:3-slim` pull); later switches
+take a few seconds. Scenario: `tests/features/variants/hello-shop-switch.feature`.
 
 ### Git codebases
 

@@ -11,6 +11,7 @@
 //! [`DockerRuntime::remove_container_id`], [`verify_labels`]) once it has a
 //! container id from `docker compose ps`.
 
+mod cli;
 mod context;
 mod spec;
 
@@ -43,6 +44,10 @@ use crate::runtime::{
     RuntimeError, RuntimeFacts, StartSpec, StopOutcome,
 };
 
+pub use cli::{
+    CliSearch, DOCKER_CLI_ENV, WELL_KNOWN_DOCKER_PATHS, docker_cli_path, docker_program,
+    ensure_docker_on_path, find_docker_cli, is_executable, path_with_docker_dir,
+};
 pub use context::{DockerIgnore, EXTERNAL_DOCKERFILE, context_tar};
 pub use spec::{
     BuildSpec, ContainerSpec, HealthcheckSpec, ImageProgress, LABEL_RUN_ID, LABEL_SPEC_HASH,
@@ -390,6 +395,38 @@ pub fn volumes_to_remove(inspect: &ContainerInspectResponse) -> Vec<String> {
         .collect()
 }
 
+/// A create/start failure because the container's network vanished
+/// (Docker: "network <name> not found").
+pub fn is_network_gone(e: &RuntimeError) -> bool {
+    matches!(e, RuntimeError::Container(m) if m.contains("network") && m.contains("not found"))
+}
+
+/// How stems removes a container: forced, with its anonymous volumes
+/// (`v=1` never touches named volumes; those are removed explicitly).
+pub fn container_remove_options() -> RemoveContainerOptions {
+    RemoveContainerOptions {
+        force: true,
+        v: true,
+        ..Default::default()
+    }
+}
+
+/// A network may be removed after a container of workspace `ws` left it
+/// when stems created it for `ws` (label `stems.workspace=<ws>`) and no
+/// container is attached any more. A user's own network (`network:`
+/// override without the label) is never removed.
+pub fn network_removable(
+    labels: Option<&HashMap<String, String>>,
+    attached: usize,
+    ws: &str,
+) -> bool {
+    attached == 0
+        && labels
+            .and_then(|l| l.get(LABEL_WORKSPACE))
+            .map(String::as_str)
+            == Some(ws)
+}
+
 /// Containers labelled for `scope.workspace` whose ids are not in `scope.known`.
 pub fn select_orphans(summaries: &[ContainerSummary], scope: &OrphanScope) -> Vec<ContainerOrphan> {
     summaries
@@ -722,7 +759,8 @@ impl DockerRuntime {
         let ours = verify_labels(labels_of(&existing), &spec.workspace, &spec.stem).is_ok();
         if ours && !is_running(&existing) {
             tracing::debug!(container = %id, "removing stopped leftover container");
-            return self.remove_container_id(&id, false).await;
+            // Keep the network: the new container joins it right away.
+            return self.remove_container_inner(&id, false, false).await;
         }
         Err(RuntimeError::Container(format!(
             "a container named `{name}` already exists ({}{}); remove it or run `stems doctor --orphans`",
@@ -743,9 +781,35 @@ impl DockerRuntime {
             ))
         })?;
         self.ensure_network(spec).await?;
+        let mut attempt = self.create_and_start(spec, &image).await;
+        if let Err(e) = &attempt
+            && is_network_gone(e)
+        {
+            // Another stem of the workspace was removed in between and took
+            // the (then empty) network with it: create it again, once.
+            self.ensure_network(spec).await?;
+            attempt = self.create_and_start(spec, &image).await;
+        }
+        match attempt {
+            Ok(h) => Ok(h),
+            Err(e) => {
+                // A failed pull/build/create/start must not leave the
+                // network it created behind (when nothing else uses it).
+                self.prune_network(&spec.network_name(), &spec.workspace)
+                    .await;
+                Err(e)
+            }
+        }
+    }
+
+    async fn create_and_start(
+        &self,
+        spec: &ContainerSpec,
+        image: &str,
+    ) -> Result<Handle, RuntimeError> {
         match &spec.build {
             Some(b) => self.build_image(spec, b).await?,
-            None => self.ensure_image(&image, &spec.progress).await?,
+            None => self.ensure_image(image, &spec.progress).await?,
         }
         self.clear_name(spec).await?;
         let name = spec.container_name();
@@ -766,13 +830,7 @@ impl DockerRuntime {
             // Do not leave a created-but-never-started container behind.
             let _ = self
                 .docker
-                .remove_container(
-                    &id,
-                    Some(RemoveContainerOptions {
-                        force: true,
-                        ..Default::default()
-                    }),
-                )
+                .remove_container(&id, Some(container_remove_options()))
                 .await;
             return Err(err);
         }
@@ -879,26 +937,35 @@ impl DockerRuntime {
         Ok(())
     }
 
-    /// [`DockerRuntime::remove`] by container id (orphan clean-up).
+    /// [`DockerRuntime::remove`] by container id (orphan clean-up). The
+    /// container's anonymous volumes always go with it (an image `VOLUME`
+    /// such as redis's `/data` would otherwise pile up); named volumes only
+    /// with `volumes`. The stems network it was on is removed once no
+    /// container uses it any more ([`network_removable`]).
     pub async fn remove_container_id(&self, id: &str, volumes: bool) -> Result<(), RuntimeError> {
+        self.remove_container_inner(id, volumes, true).await
+    }
+
+    async fn remove_container_inner(
+        &self,
+        id: &str,
+        volumes: bool,
+        prune_networks: bool,
+    ) -> Result<(), RuntimeError> {
         let Some(inspect) = self.inspect(id).await? else {
             return Ok(());
         };
         match self
             .docker
-            .remove_container(
-                id,
-                Some(RemoveContainerOptions {
-                    force: true,
-                    v: volumes,
-                    ..Default::default()
-                }),
-            )
+            .remove_container(id, Some(container_remove_options()))
             .await
         {
             Ok(()) => {}
             Err(e) if is_not_found(&e) => {}
             Err(e) => return Err(self.map_err(e)),
+        }
+        if prune_networks {
+            self.prune_networks_of(&inspect).await;
         }
         if volumes {
             for v in volumes_to_remove(&inspect) {
@@ -914,6 +981,47 @@ impl DockerRuntime {
             }
         }
         Ok(())
+    }
+
+    /// Remove the networks `inspect`'s container was attached to when stems
+    /// created them for its workspace and nothing else uses them now
+    /// (best-effort: a network another container just joined is refused by
+    /// Docker and kept).
+    async fn prune_networks_of(&self, inspect: &ContainerInspectResponse) {
+        let Some(ws) = labels_of(inspect).and_then(|l| l.get(LABEL_WORKSPACE)) else {
+            return;
+        };
+        let names: Vec<String> = inspect
+            .network_settings
+            .as_ref()
+            .and_then(|n| n.networks.as_ref())
+            .map(|n| n.keys().cloned().collect())
+            .unwrap_or_default();
+        for name in names {
+            self.prune_network(&name, ws).await;
+        }
+    }
+
+    /// Remove network `name` when [`network_removable`] for `ws`.
+    async fn prune_network(&self, name: &str, ws: &str) {
+        if BUILTIN_NETWORKS.contains(&name) {
+            return;
+        }
+        let Ok(net) = self
+            .docker
+            .inspect_network(name, None::<InspectNetworkOptions>)
+            .await
+        else {
+            return;
+        };
+        let users = net.containers.as_ref().map_or(0, HashMap::len);
+        if !network_removable(net.labels.as_ref(), users, ws) {
+            return;
+        }
+        match self.docker.remove_network(name).await {
+            Ok(()) => tracing::debug!(network = %name, "network removed"),
+            Err(e) => tracing::debug!(network = %name, error = %e, "network kept"),
+        }
     }
 
     /// Remove the named volume `name` (as Docker knows it, e.g.
@@ -943,7 +1051,8 @@ impl DockerRuntime {
         if recreate {
             if inspect.is_some() {
                 self.stop(h, spec.stop_grace).await?;
-                self.remove_container_id(&id, false).await?;
+                // The network stays: the new container joins it right away.
+                self.remove_container_inner(&id, false, false).await?;
             }
             self.release(h);
             return self.start_container(spec).await;
@@ -1008,24 +1117,32 @@ impl DockerRuntime {
         }
     }
 
-    /// Sizes of the named volumes that exist (`GET /system/df?type=volume`;
+    /// Sizes of the named volumes that exist (`GET /system/df`, see
+    /// [`df_volume_options`];
     /// `--disk`, FR-MT-3). Volumes Docker reports without a size (`-1`) are
     /// left out.
     pub async fn volume_sizes(
         &self,
         names: &[String],
     ) -> Result<HashMap<String, u64>, RuntimeError> {
-        let opts = bollard::query_parameters::DataUsageOptions {
-            _type: Some(vec!["volume".into()]),
-            verbose: false,
-        };
         let df = self
             .docker
-            .df(Some(opts))
+            .df(Some(df_volume_options()))
             .await
             .map_err(|e| self.map_err(e))?;
         let items = df.volume_usage.and_then(|v| v.items).unwrap_or_default();
         Ok(volume_sizes_of(items, names))
+    }
+}
+
+/// `GET /system/df?verbose=1`. No `type` filter: bollard cannot URL-encode
+/// its list value ("Unable to URLEncode: unsupported value", so every call
+/// failed), and without it Docker Engine 29 answers in ~40 ms anyway.
+/// `verbose` makes API 1.52+ fill `VolumeUsage.Items` (the per-volume sizes).
+pub fn df_volume_options() -> bollard::query_parameters::DataUsageOptions {
+    bollard::query_parameters::DataUsageOptions {
+        _type: None,
+        verbose: true,
     }
 }
 

@@ -144,6 +144,9 @@ error_codes! {
     /// A profile name that is not defined.
     UnknownProfile = "UNKNOWN_PROFILE", CONFIG,
         "`--profile`, `STEMS_PROFILE`, `profile:`, `default_profile` or a profile alias names a profile that is not defined (or aliases form a loop)";
+    /// A variant name the stem does not declare (FR-ST-8).
+    UnknownVariant = "UNKNOWN_VARIANT", CONFIG,
+        "`stems.<stem>.variant` or `stems switch <stem> <variant>` names a variant the stem does not declare";
     /// Destructive op without confirmation.
     DestructiveNotConfirmed = "DESTRUCTIVE_NOT_CONFIRMED", CONFIG,
         "a destructive operation was requested without `--yes` / `confirm: true`";

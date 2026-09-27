@@ -44,6 +44,8 @@ Commands:
   profiles     List profiles
   outputs      Show values published by stems' `outputs:`
   config       Read or change local config overrides
+  switch       Switch a stem to one of its variants (e.g. from a local process to a docker
+               container), or back to `local`
   add          Add a stem to stems.yaml
   remove       Remove a stem from stems.yaml
   edit         Open $EDITOR at a stem's block in stems.yaml

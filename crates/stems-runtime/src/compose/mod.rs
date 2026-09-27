@@ -101,7 +101,8 @@ pub struct ComposeOptions {
     pub workspace: String,
     /// `$STEMS_HOME/<ws>/compose/`: env files and ownership markers.
     pub env_dir: PathBuf,
-    /// The `docker` CLI (default `docker`, looked up on `PATH`).
+    /// The `docker` CLI (default [`crate::docker::docker_program`]: `PATH`,
+    /// then the well-known install locations).
     pub binary: OsString,
 }
 
@@ -110,7 +111,7 @@ impl ComposeOptions {
         Self {
             workspace: workspace.into(),
             env_dir: env_dir.into(),
-            binary: "docker".into(),
+            binary: crate::docker::docker_program(),
         }
     }
 }
@@ -395,7 +396,8 @@ impl ComposeRuntime {
         self.targets().get(&h.id()).cloned()
     }
 
-    /// `docker compose rm -f -s <service>` and forget the handle (`down`).
+    /// `docker compose rm -f -s -v <service>` and forget the handle
+    /// (`down`); an owned project left empty is `down`ed (its network).
     pub async fn remove(&self, h: &Handle) -> Result<(), RuntimeError> {
         let Some(inv) = self.invocation_of(h) else {
             return Err(RuntimeError::NotFound(h.id()));
@@ -405,20 +407,49 @@ impl ComposeRuntime {
             let _guard = lock.lock().await;
             self.run(&inv, ComposeCommand::rm(&inv.target), Some(QUICK_TIMEOUT))
                 .await?;
+            self.prune_project(&inv.target.project).await;
         }
         self.release(h);
         Ok(())
     }
 
-    /// `docker compose rm -f -s <service>` for `spec` without a handle
+    /// After a service container was removed: when the project is
+    /// stems-owned and has no container left, `down` it so its
+    /// `<project>_default` network does not outlive it. Best-effort; the
+    /// caller holds the project lock.
+    async fn prune_project(&self, project: &str) {
+        if !self.is_owned(project) {
+            return;
+        }
+        match self.project_ps(project).await {
+            Ok(left) if left.is_empty() => {
+                let inv = self.project_invocation(project);
+                if let Err(e) = self
+                    .run(
+                        &inv,
+                        ComposeCommand::down_project(project),
+                        Some(QUICK_TIMEOUT),
+                    )
+                    .await
+                {
+                    tracing::debug!(project, error = %e, "compose down of an empty project");
+                }
+            }
+            Ok(_) => {}
+            Err(e) => tracing::debug!(project, error = %e, "compose ps before prune"),
+        }
+    }
+
+    /// `docker compose rm -f -s -v <service>` for `spec` without a handle
     /// (the daemon's `down` of a compose stem that was already stopped).
     pub async fn remove_service(&self, spec: &ComposeSpec) -> Result<(), RuntimeError> {
         let inv = self.spec_invocation(spec);
         let lock = self.project_lock(&inv.target.project);
         let _guard = lock.lock().await;
         self.run(&inv, ComposeCommand::rm(&inv.target), Some(QUICK_TIMEOUT))
-            .await
-            .map(|_| ())
+            .await?;
+        self.prune_project(&inv.target.project).await;
+        Ok(())
     }
 
     /// Adopt the recorded container of `spec` after a daemon restart: same

@@ -297,13 +297,14 @@ impl Check for ComposeCheck {
             return Vec::new();
         };
         let ws_name = cx.workspace().map(|w| w.name.clone()).unwrap_or_default();
-        let rt = ComposeRuntime::new(
-            docker,
-            ComposeOptions::new(ws_name, cx.input.paths.dir.join("compose")),
-        );
+        let opts = ComposeOptions::new(ws_name, cx.input.paths.dir.join("compose"));
+        // The CLI found by `docker_cli_path` (PATH, then the well-known
+        // install locations), shown so a user can tell which one ran.
+        let cli = opts.binary.to_string_lossy().into_owned();
+        let rt = ComposeRuntime::new(docker, opts);
         vec![match rt.ensure_version().await {
             Ok(v) => CheckResult::ok("compose.version", format!("docker compose {v}"))
-                .details(json!({ "version": v.to_string() })),
+                .details(json!({ "version": v.to_string(), "cli": cli })),
             Err(e) => {
                 CheckResult::from_error("compose.version", CheckStatus::Fail, &runtime_error(e))
             }

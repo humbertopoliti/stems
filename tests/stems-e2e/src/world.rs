@@ -18,8 +18,50 @@ use crate::{http, remap, util};
 
 /// Ports per scenario block.
 pub const PORT_BLOCK: u16 = 20;
-/// First port of the first block.
+/// First port of the first block when no slot is set (see [`port_start`]).
 pub const PORT_START: u16 = 20000;
+/// Ports owned by one `scripts/e2e_slot.sh` slot: slot `i` starts at
+/// `20000 + i * 4000` (200 blocks of [`PORT_BLOCK`]).
+pub const SLOT_PORTS: u32 = 4000;
+/// Upper bound (exclusive) of any port block.
+const PORT_CEILING: u32 = 60000;
+
+/// The e2e slot this run holds (`STEMS_E2E_SLOT`, exported by
+/// `scripts/e2e_slot.sh`), if any.
+pub fn slot() -> Option<u32> {
+    std::env::var("STEMS_E2E_SLOT")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+}
+
+/// First port of this run's range: `STEMS_E2E_PORT_START` (exported by
+/// `scripts/e2e_slot.sh`), else [`PORT_START`].
+pub fn port_start() -> u16 {
+    std::env::var("STEMS_E2E_PORT_START")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(PORT_START)
+}
+
+/// End (exclusive) of this run's port range: [`SLOT_PORTS`] past
+/// [`port_start`] when a slot range was given, else the old global ceiling.
+fn port_end() -> u32 {
+    let start = u32::from(port_start());
+    if std::env::var_os("STEMS_E2E_PORT_START").is_some() {
+        (start + SLOT_PORTS).min(PORT_CEILING)
+    } else {
+        PORT_CEILING
+    }
+}
+
+/// Prefix of scenario temp dirs: `stems-e2e-s<slot>-` inside a slot (so
+/// leftovers and leak scans are attributable per run), else `stems-e2e-`.
+pub fn tmp_prefix() -> String {
+    slot().map_or_else(
+        || String::from("stems-e2e-"),
+        |i| format!("stems-e2e-s{i}-"),
+    )
+}
 
 /// The repository root (two levels above this crate's manifest).
 pub fn repo_root() -> &'static Path {
@@ -62,6 +104,9 @@ pub fn scenario_timeout() -> Duration {
 /// Where scenario temp dirs are created. `/tmp` by default (not `$TMPDIR`)
 /// because macOS `$TMPDIR` paths are long enough to push
 /// `$STEMS_HOME/<ws-hash>/stemsd.sock` past the 104-byte Unix socket limit.
+/// With the slot prefix the socket is
+/// `/private/tmp/stems-e2e-s<i>-XXXXXX/home/<12 hex>/stemsd.sock`: 62 bytes
+/// for a one-digit slot, well inside the limit.
 pub fn tmp_base() -> PathBuf {
     std::env::var_os("STEMS_E2E_TMPDIR").map_or_else(|| PathBuf::from("/tmp"), PathBuf::from)
 }
@@ -73,21 +118,28 @@ fn port_free(port: u16) -> bool {
         && std::net::TcpListener::bind(("0.0.0.0", port)).is_ok()
 }
 
-/// Allocates a block of [`PORT_BLOCK`] free ports: `20000 + n * 20` for the
-/// n-th request, skipping blocks where any port is already bound.
+/// Allocates a block of [`PORT_BLOCK`] free ports: `port_start() + n * 20`
+/// for the n-th request, skipping blocks where any port is already bound.
+/// Wraps around inside this run's range (a slot owns 200 blocks, fewer than
+/// a full run's scenarios); a block is only reused once its ports are free.
 pub fn allocate_port_block() -> u16 {
-    loop {
-        let n = NEXT_BLOCK.fetch_add(1, Ordering::SeqCst);
-        let base = u32::from(PORT_START) + n * u32::from(PORT_BLOCK);
-        assert!(
-            base + u32::from(PORT_BLOCK) < 60000,
-            "e2e harness ran out of port blocks"
-        );
-        let base = u16::try_from(base).unwrap_or(PORT_START);
+    let start = u32::from(port_start());
+    let blocks = port_end().saturating_sub(start) / u32::from(PORT_BLOCK);
+    assert!(blocks > 0, "e2e harness: empty port range at {start}");
+    for _ in 0..blocks {
+        let n = NEXT_BLOCK.fetch_add(1, Ordering::SeqCst) % blocks;
+        let base = start + n * u32::from(PORT_BLOCK);
+        let Ok(base) = u16::try_from(base) else {
+            continue;
+        };
         if (base..base + PORT_BLOCK).all(port_free) {
             return base;
         }
     }
+    panic!(
+        "e2e harness ran out of port blocks in {start}..{}",
+        port_end()
+    );
 }
 
 /// Recursively copies `src` into `dst`, recreating symlinks and skipping
@@ -362,8 +414,9 @@ impl E2eWorld {
     /// Creates the temp root with `home/` and `outside/`.
     pub fn create() -> Result<Self, String> {
         let base = tmp_base();
+        let prefix = tmp_prefix();
         let tmp = tempfile::Builder::new()
-            .prefix("stems-e2e-")
+            .prefix(&prefix)
             .tempdir_in(&base)
             .map_err(|e| format!("cannot create temp dir in {}: {e}", base.display()))?;
         let root = tmp.path().canonicalize().map_err(|e| e.to_string())?;
@@ -603,10 +656,14 @@ impl E2eWorld {
         }
         cmd.env("STEMS_HOME", &self.home).env("STEMS_NO_COLOR", "1");
         // `Given a fake tool ... on PATH` (19) puts scripts in `<root>/bin`.
+        // `docker` must resolve for shell steps (`docker exec ...`) and the
+        // daemon even when Docker Desktop's bin dir is not on PATH.
         let bin = self.root.join("bin");
-        if bin.is_dir() {
-            let path = std::env::var_os("PATH").unwrap_or_default();
-            let mut dirs = vec![bin];
+        let path = crate::docker::path_with_docker();
+        if bin.is_dir() || path.is_some() {
+            let path =
+                path.map_or_else(|| std::env::var_os("PATH").unwrap_or_default(), Into::into);
+            let mut dirs: Vec<PathBuf> = bin.is_dir().then_some(bin).into_iter().collect();
             dirs.extend(std::env::split_paths(&path));
             if let Ok(joined) = std::env::join_paths(dirs) {
                 cmd.env("PATH", joined);

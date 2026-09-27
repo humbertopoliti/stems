@@ -652,6 +652,11 @@ async fn docker_live_roundtrip() {
     assert!(facts.pid > 0);
     assert_eq!(facts.container_id.as_deref(), h.container_id());
 
+    // `system/df` reports the named volume's size (metrics `--disk`).
+    let vol = format!("{ws}_data");
+    let sizes = rt.volume_sizes(std::slice::from_ref(&vol)).await.unwrap();
+    assert!(sizes.contains_key(&vol), "no size for {vol}: {sizes:?}");
+
     // Adoption and orphan scan see the same container.
     let rec = AdoptRecord {
         pid: 0,
@@ -675,6 +680,16 @@ async fn docker_live_roundtrip() {
     assert_eq!(outcome, StopOutcome::Killed);
     assert!(!rt.is_alive(&h).await);
     assert_eq!(rt.wait(&h).await.unwrap().code, Some(137));
+
+    // A fresh start replaces our stopped leftover (same name) and keeps the
+    // network it is about to join (`stems stop`, then `stems start`).
+    rt.release(&h);
+    let h = rt
+        .start(&StartSpec::Docker(Box::new(spec.clone())))
+        .await
+        .expect("start over a stopped leftover");
+    assert!(rt.is_alive(&h).await);
+    rt.stop(&h, spec.stop_grace).await.unwrap();
     rt.remove(&h, true).await.unwrap();
     assert!(
         rt.inspect(h.container_id().unwrap())
@@ -682,6 +697,13 @@ async fn docker_live_roundtrip() {
             .unwrap()
             .is_none()
     );
+    // Nothing left: the named volume and the now unused `<ws>_net`.
+    assert!(!rt.remove_volume(&vol).await.unwrap(), "{vol} left behind");
+    let net = rt
+        .docker
+        .inspect_network(&default_network(&ws), None::<InspectNetworkOptions>)
+        .await;
+    assert!(net.is_err(), "{} left behind", default_network(&ws));
 }
 
 #[test]
@@ -730,4 +752,47 @@ fn volume_sizes_from_df_items() {
     let m = volume_sizes_of(items, &names);
     assert_eq!(m.len(), 1);
     assert_eq!(m["ws-pgdata"], 4096);
+}
+
+/// Docker Engine 29 (API 1.53) only lists per-volume sizes in
+/// `VolumeUsage.Items` for a verbose `system/df`; a `type` list cannot be
+/// URL-encoded by bollard (the request fails before it is sent).
+#[test]
+fn df_asks_for_verbose_usage_without_a_type_list() {
+    let o = df_volume_options();
+    assert!(o.verbose);
+    assert_eq!(o._type, None);
+}
+
+#[test]
+fn removal_takes_anonymous_volumes() {
+    let o = container_remove_options();
+    assert!(o.force);
+    assert!(o.v, "anonymous volumes (image VOLUMEs) must not leak");
+}
+
+#[test]
+fn only_empty_stems_networks_of_the_workspace_are_removed() {
+    let ours = HashMap::from([(LABEL_WORKSPACE.to_string(), "ws".to_string())]);
+    let other = HashMap::from([(LABEL_WORKSPACE.to_string(), "other".to_string())]);
+    let user = HashMap::from([("team".to_string(), "x".to_string())]);
+    assert!(network_removable(Some(&ours), 0, "ws"));
+    assert!(!network_removable(Some(&ours), 1, "ws"));
+    assert!(!network_removable(Some(&other), 0, "ws"));
+    assert!(!network_removable(Some(&user), 0, "ws"));
+    assert!(!network_removable(None, 0, "ws"));
+}
+
+#[test]
+fn network_gone_is_recognised() {
+    let gone = RuntimeError::Container(
+        "docker: failed to set up container networking: network ws_net not found".into(),
+    );
+    assert!(is_network_gone(&gone));
+    assert!(!is_network_gone(&RuntimeError::Container(
+        "No such image: x".into()
+    )));
+    assert!(!is_network_gone(&RuntimeError::Unsupported(
+        "network not found".into()
+    )));
 }

@@ -25,7 +25,7 @@ Feature: start, stop and restart single stems
     And the JSON at "$.data.stems[?@.name=='shop-api'].pid" equals null
     And the JSON at "$.data.stems[?@.name=='shop-web'].state" equals "stopped"
     And the JSON at "$.data.stems[?@.name=='shop-worker'].state" equals "healthy"
-    And the JSON at "$.data.summary" equals {"healthy": 1, "degraded": 0, "failed": 0, "stopped": 2, "unknown": 0, "starting": 0}
+    And the JSON at "$.data.summary" equals {"healthy": 1, "degraded": 0, "failed": 0, "unhealthy": 0, "stopped": 2, "unknown": 0, "starting": 0}
     When I run "stems start shop-web --json"
     Then the command succeeds
     And the JSON at "$.data.ready" equals ["shop-api", "shop-web"]

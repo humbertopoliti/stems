@@ -1,0 +1,45 @@
+---
+source: crates/stems-tui/src/tests/sections.rs
+assertion_line: 605
+expression: text
+---
+ stems · process-chain                                                   1 [Graph]  2 Table  3 Detail  4 Logs  5 Events
+             ┌─────┐
+         ╭──▶│ b ✓ ├──╮
+┌─────┐  │   └─────┘  │   ┌─────┐
+│ d · ├──┤            ├──▶│ a ✓ │
+└─────┘  │   ┌─────┐  │   └─────┘
+         ╰──▶│ c ↻ ├──╯
+             └─────┘
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ✓ healthy  ! degraded  ✗ failed  · stopped  ? unknown  ↻ transitioning                                        zoom auto
+ ■ x stop  ↻ r restart  : scripts (2)  v variant local ▸ slow  p watch on  o editor  ? more
+ process-chain · profile - · daemon pid 4242 · ✓2 !0 ✗0 ↯0 ·1 ?0 ↻1                                     ? help · q quit

@@ -1,0 +1,45 @@
+---
+source: crates/stems-tui/src/tests/sections.rs
+assertion_line: 611
+expression: text
+---
+ stems · process-chain                                                   1 Graph  2 Table  3 [Detail]  4 Logs  5 Events
+┌ Detail: b · ✓ healthy · lines 1-35/41 ──────────────────────────────────────────────── a  [b]  c  d · [ ] ←/→ switch ┐
+│✓ healthy · ready (tcp)                                                                                               │
+│pid 102 · up 8s · restarts 0 · variant local                                                                          │
+│ports http:18302                                                                                                      │
+│                                                                                                                      │
+│Scripts · Enter run · : menu                                                                                          │
+│› create-test-user custom    (email*, role) Create a user with a known password                                       │
+│  flaky            custom    Fails on its first two attempts                                                          │
+│  start            lifecycle                                                                                          │
+│                                                                                                                      │
+│Variants · Enter switch · v picker                                                                                    │
+│  ● local  process  active                                                                                            │
+│  ○ slow   process                                                                                                    │
+│  ○ docker docker                                                                                                     │
+│                                                                                                                      │
+│Watchdog · Enter/p pause·resume                                                                                       │
+│  watch on · last trigger never                                                                                       │
+│  *.py → restart · debounce 200ms                                                                                     │
+│                                                                                                                      │
+│Health                                                                                                                │
+│n/a                                                                                                                   │
+│                                                                                                                      │
+│Recent events                                                                                                         │
+│12:00:04 stem.state starting→healthy                                                                                  │
+│                                                                                                                      │
+│Config                                                                                                                │
+│type: process                                                                                                         │
+│enabled: true                                                                                                         │
+│env:                                                                                                                  │
+│  SHOP_SLEEP_START: '0.5'                                                                                             │
+│ports:                                                                                                                │
+│- name: http                                                                                                          │
+│  port: 18302                                                                                                         │
+│depends_on:                                                                                                           │
+│- stem: a                                                                                                             │
+│  condition: healthy                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ ■ x stop  ↻ r restart  : scripts (2)  v variant local ▸ slow  p watch on  o editor  ? more
+ process-chain · profile - · daemon pid 4242 · ✓2 !0 ✗0 ↯0 ·1 ?0 ↻1 j/k row · Enter act · [ ] stem · Esc back · ? help …

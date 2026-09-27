@@ -2,7 +2,11 @@
 
 `stems up` (attached) and `stems attach` open a terminal dashboard driven by
 the daemon's RPCs and event stream (deliverables 27 to 30; FR-UI-1..4,
-FR-GR-4/5/6, FR-LC-4, FR-LG-3/4, FR-SC-2, FR-WD-2, FR-AI-4).
+FR-GR-4/5/6, FR-LC-4, FR-LG-3/4, FR-SC-2, FR-WD-2, FR-ST-8, FR-AI-4).
+The main things you do to a stem (start/stop/restart, its scripts, its
+variants, its file watcher) are always one key away: the **action bar**
+names them for the selected stem, and the **Detail** view lists its
+scripts, variants and watchdog as rows you run with `Enter`.
 The code lives in the `stems-tui` crate (ratatui 0.30 + crossterm 0.29).
 
 ## Opening it
@@ -31,7 +35,8 @@ stop everything in attached `up` and just leave in `attach`. A plain
   STEM     TYPE    STATUS     REASON   PID    PORTS  UPTIME RESTARTS CPU   MEM
 › echo-svc process ✓ healthy  -        12345  18090  42s    0
 
- minimal · profile - · daemon pid 4242 · ✓1 !0 ✗0 ·0 ?0 ↻0     ? help · q quit
+ ■ x stop  ↻ r restart  : scripts (0)  o editor  ? more
+ minimal · profile - · daemon pid 4242 · ✓1 !0 ✗0 ↯0 ·0 ?0 ↻0   ? help · q quit
 ```
 
 * Title bar: workspace and the views; the current one is in brackets, each
@@ -40,27 +45,164 @@ stop everything in attached `up` and just leave in `attach`. A plain
   (` Graph [Table] Detail  Logs  Events`). With `mouse = true` a click on
   a tab switches to that view.
 * Body: the current view.
-* Status bar: workspace, profile, daemon pid, counts per glyph (healthy,
-  degraded, failed, stopped, unknown, transitioning), the filter (`/b`),
-  then key hints or the last notice/error.
+* Action bar (Table, Graph and Detail; also under the split log pane):
+  what the keys do to the selected stem, always visible (below).
+* Status bar: workspace, profile, daemon pid, counts per glyph (healthy
+  `✓`, degraded `!`, failed `✗`, unhealthy `↯`, stopped `·`, unknown `?`,
+  transitioning `↻`; unhealthy stems, running or external with a failing
+  probe, are counted apart from failed ones, as in `stems status`), the
+  filter (`/b`), then key hints or the last notice/error.
+
+### The action bar
+
+```
+ ■ x stop  ↻ r restart  : scripts (3)  v variant local ▸ docker  p watch on  o editor  ? more
+```
+
+One line directly above the status bar, contextual to the selected stem:
+
+| Segment | Shown |
+|---|---|
+| `▶ s start` | the stem is stopped or failed |
+| `■ x stop  ↻ r restart` | otherwise (running, starting, unhealthy, ...) |
+| `: scripts (N)` | always; `N` custom scripts (from `script_catalog`); dimmed at 0 |
+| `v variant local ▸ docker` | the stem has `variants`: the active choice, then the next one |
+| `p watch on` / `p watch ⏸ paused` | the stem has `watch:` rules |
+| `o editor`, `? more` | always (`?` is the full key help) |
+
+Segments that do nothing now are dimmed (no custom scripts; with no stem
+selected every stem key is). On a narrow terminal the bar is cut from the
+right, ending in `…`. With `mouse = true` a click on a segment presses its
+key. ASCII mode (`STEMS_ASCII=1`) drops the icons (`s start`, `v variant
+local > docker`, `p watch || paused`).
 
 ### Views
 
 * **Table**: the `stems status` columns plus CPU and MEM sparklines (empty
   until deliverable 25 feeds samples). Columns adapt to the width (below
   100 columns PORTS shows only port numbers); names and reasons truncate
-  with `…`. The selected row is marked `›` (`>` in ASCII).
-* **Detail**: the selected stem's effective config (the `stem_config` RPC:
-  the resolved stem as the daemon loaded it, shown as YAML), its state,
-  pid, uptime, restarts and ports, the scripts, health (the probe summary
-  from `status` and the last probe results from the `health` RPC, or
-  `n/a`), metrics (placeholder until 25) and the last 10 events of the stem.
+  with `…`. The selected row is marked `›` (`>` in ASCII). From 120
+  columns three more columns show: `SCRIPTS` (custom scripts, from
+  `script_catalog`, loaded once and again on `tools.changed` /
+  `config.applied`; `-` until then), `VARIANT` (the active variant, `-`
+  without variants) and `WATCH` (`on`, `⏸` when paused, `-` without
+  rules). Below 120 columns REASON would have no room left, so they stay
+  hidden.
+* **Detail**: the selected stem in sections (below).
+  `PageDown`/`PageUp`, `g`/`G` (`Home`/`End`) and the mouse wheel scroll
+  it when it is taller than the view; the title then says which lines show
+  (`Detail: b · ✓ healthy · lines 10-19/31`). Another stem starts at the
+  top, on its first row.
 * **Graph**: the dependency graph with live glyphs (below). It is the
   default view when the workspace has more than one stem; with one stem
   the dashboard opens on the Table (`ui.default_view` or `--view` win).
 * **Logs**: the selected stem's logs, or every stem merged (`m`), live
   (below).
+
+**Switching stems in Detail and Logs.** Both views follow the one shared
+selection (the table row, the graph box). Without going back to the
+table: `[` / `]` select the previous / next stem in table order (the
+current sort and filter), wrapping, in every view; in Detail and Logs
+`h` / `l` and `←` / `→` do the same (in the Graph they keep moving across
+columns). Detail loads the new stem's data, the Logs view (and the split
+pane) resubscribes to it, and `]` in merged Logs leaves merged mode. With
+more than one stem the Detail and Logs titles carry the **stem strip**,
+the picker, on the right of the title line:
+
+```
+┌ Detail: b · ✓ healthy ──────────────────────── a  [b]  c  d · [ ] ←/→ switch ┐
+┌ Logs: b · following ──────────────── a  [b]  c  d · [ ] ←/→ switch · m merged ┐
+```
+
+The current stem is bracketed (none while merged). When the line is too
+narrow the hint goes first, then the stems furthest from the current one
+(`…  e  [f]  g  …`). With `mouse = true` a click on a stem in the strip
+selects it.
 * **Events**: the daemon's event stream as a table (below).
+
+### The Detail view
+
+```
+┌ Detail: shop-api · ✓ healthy ─────────────────────────────────────────┐
+│✓ healthy · ready (tcp)                                                │
+│pid 41234 · up 2m05s · restarts 0 · variant local                      │
+│ports http:18611                                                       │
+│                                                                       │
+│Scripts · Enter run · : menu                                           │
+│› create-test-user custom    ✓ 1.2s (email*, role) Create a user with… │
+│  flaky            custom    running… Fails on its first two attempts  │
+│  start            lifecycle                                           │
+│                                                                       │
+│Variants · Enter switch · v picker                                     │
+│  ● local  process  active                                             │
+│  ○ docker docker                                                      │
+│                                                                       │
+│Watchdog · Enter/p pause·resume                                        │
+│  watch on · last trigger 12:00:03                                     │
+│  *.py → restart · debounce 200ms                                      │
+│                                                                       │
+│Health …  Recent events …  Config …                                    │
+```
+
+Top to bottom:
+
+1. **Header**: state and reason, pid, uptime, restarts, the active
+   variant, ports.
+2. **Scripts**: one row per script of the stem (`script_catalog`): custom
+   ones by name, then lifecycle ones; the kind, the last run as the
+   daemon's `script.*` events tell it (any actor: `queued`, `running…`,
+   `✓ 1.2s`, `✗ exit 3`), the arguments (`*` = required) and the
+   description. `Enter` runs the script (`run_script {wait: false}`); a
+   script with `args` opens its form first, exactly as from the `:` menu.
+3. **Variants** (a stem with `variants`, FR-ST-8): `local` (the base
+   definition) and each variant with the stem type it gives, the active
+   one marked `●` (`*`). `Enter` on another one asks "restart shop-api as
+   docker? [y/N]" (`switch shop-api to docker?` when it is not running);
+   `y` calls `switch_variant {stem, variant}` (below).
+4. **Watchdog** (a stem with `watch:` rules, FR-WD-2): `watch on` or
+   `⏸ paused`, `inactive` when the stem does not run, the last trigger
+   (from `watch_status`, reloaded on `watch.*` events), then one line per
+   rule: `paths → action · debounce 200ms[ · settle 1s]`. `Enter` on it
+   (or `p` anywhere) pauses / resumes the stem's watchdog.
+5. **Health** (the probe summary from `status` and the last probe results
+   from the `health` RPC, or `n/a`), **Recent events** (the stem's last
+   10) and **Config** (the `stem_config` RPC: the resolved stem as the
+   daemon loaded it, as YAML).
+
+`j`/`k` (`↓`/`↑`) move the selection (`›`, reverse video) over the rows of
+every section in order (scripts, then variants, then the watchdog); the
+view scrolls to keep the selected row (and the line above it, a section's
+heading) visible. Past the last row `j` scrolls down, before the first
+`k` scrolls up; a stem without any row scrolls with `j`/`k` as before.
+
+### Variants (`v`, FR-ST-8)
+
+`v` in Table, Graph or Detail opens the selected stem's variant picker:
+
+```
+┌ Variant of api ──────────────────────────────┐
+│ › ● local   process  active                  │
+│   ○ slow    process                          │
+│   ○ docker  docker                           │
+│                                              │
+│ ↑/↓ move · Enter switch · Esc                │
+└──────────────────────────────────────────────┘
+```
+
+It opens on the active choice; `j`/`k` (`↑`/`↓`, `Tab`) move, `Enter` asks
+the same confirmation as the Variants row, `Esc` closes. `y` sends
+`switch_variant {stem, variant}`: the daemon does what `stems switch
+<stem> <variant>` does (writes `stems.<stem>.variant` to the workspace's
+`stems.local.yaml`, keeping comments; `local` removes the key; the
+workspace is re-validated and the file restored on errors), then applies
+it to that stem only (`config_apply {stems: [stem], yes: true}`: stopped
+in its old form, started in the new one). The toast says `✓ api: local ->
+slow (restarted)`. A stem without variants gets a toast instead of the
+picker (`web has no variants (declare `variants:` in stems.yaml)`). The
+choices come from `switch_variant {stem}` (no `variant`: list only),
+loaded once for every stem whose `status` has a `variant`, again after a
+switch and after `config.applied`. The palette has `switch variant of
+<stem>` for those stems.
 
 `Tab` cycles Graph → Table → Detail → Logs → Events; `1`-`5` jump straight
 to one (in every view, except while typing a filter or search or with a
@@ -144,7 +286,12 @@ the rest of the file is kept), so the next session starts split.
 * `y` copies the selected line's text; `V` starts a visual range (marked
   `│`), move, then `y` copies the range (one line per record). See
   [Clipboard](#clipboard).
-* `[` / `]` switch to the previous / next stem.
+* `[` / `]` (also `h` / `l`, `←` / `→`) switch to the previous / next
+  stem, wrapping; the title's stem strip shows where you are (above).
+* The mouse wheel (`mouse = true`) moves the selected line three lines at
+  a time; up leaves follow mode like `k`, down to the newest line follows
+  again. Over the split pane the wheel scrolls the pane, elsewhere the
+  view under it.
 
 ### The Events view (29)
 
@@ -178,13 +325,16 @@ its own line (and never runs a clipboard command). The status bar says
 
 | Key | Action |
 |---|---|
-| `j` / `k`, `↓` / `↑` | move the selection (graph: within a column) |
-| `h` / `l`, `←` / `→` | graph: move to the column on the left / right (the first connected stem there, else the same position) |
+| `j` / `k`, `↓` / `↑` | move the selection (graph: within a column); Detail: the next / previous row (script, variant, watchdog), scrolling past the ends |
+| `PageUp` / `PageDown` | Detail: scroll a page |
+| `[` / `]` | previous / next stem in table order, wrapping (every view; not while typing) |
+| `h` / `l`, `←` / `→` | graph: move to the column on the left / right (the first connected stem there, else the same position); Detail: previous / next stem, like `[` / `]` |
 | `f` | graph: focus mode, only the selected stem and its direct neighbours (again to leave) |
 | `e` | graph: edge labels from `protocol` / `via` (FR-GR-5) |
 | `+` / `-` / `0` | graph: full boxes / compact boxes / auto |
-| `g` / `G`, `Home` / `End` | first / last stem |
-| `Enter` | open the detail view (`Esc` goes back to the graph or table) |
+| `g` / `G`, `Home` / `End` | first / last stem; Detail: top / end |
+| `Enter` | open the detail view (`Esc` goes back to the graph or table); in Detail: run the selected script (its form first), switch to the selected variant (after `y`), pause / resume the watchdog |
+| `v` | the variant picker of the selected stem (Table, Graph, Detail) |
 | `Tab` / `Shift-Tab` | next / previous view |
 | `1` `2` `3` `4` `5` | Graph / Table / Detail / Logs / Events, from any view (not while typing into a filter, search or dialog). `3` with no stem selected selects the first one; `Esc` in Detail goes back to the Table or Graph it came from |
 | `/` | filter by name: type, `Enter` keeps it, `Esc` clears it |
@@ -194,7 +344,8 @@ its own line (and never runs a clipboard command). The status bar says
 | `q`, `Ctrl-C` | quit (see above) |
 | `Ctrl-L` | split layout: the selected stem's log pane under Table/Graph/Detail (saved in `ui.toml`) |
 | `Ctrl-P` | the command palette (any view; below) |
-| mouse click | select a table row; a view tab in the title bar switches to it (`mouse = true`) |
+| mouse click | select a table row; a view tab in the title bar switches to it; a stem in the Detail / Logs stem strip selects it; an action bar segment presses its key (`mouse = true`) |
+| mouse wheel | Table / Graph: move the selection; Detail: scroll; Logs and the split pane (under the pointer): move the selected line, up leaves follow; Events: move the selection (`mouse = true`; three rows per notch) |
 
 In the Logs view:
 
@@ -205,18 +356,20 @@ In the Logs view:
 | `L` | level filter: all, info+, warn+, error |
 | `s` | show / hide script output lines |
 | `m` | merged: every stem, with stem prefixes |
-| `[` / `]` | previous / next stem |
-| `j` / `k`, `PgUp` / `PgDn` | move the selected line |
+| `[` / `]`, `h` / `l`, `←` / `→` | previous / next stem, wrapping (leaves merged mode) |
+| `j` / `k`, `PgUp` / `PgDn`, wheel | move the selected line (up leaves follow) |
 | `g` / `G`, `Home` / `End` | top / bottom (bottom follows) |
 | `Enter` | expand / collapse a structured line's fields |
 | `V`, `y` | start / leave a visual range; copy the line or the range |
 | `w`, `t` | wrap long lines; timestamps |
 | `Esc` | leave the range, clear the search |
 
-In the Events view: `j`/`k`, `g`/`G` move, `/` filters, `Enter` jumps to
-the logs, `Esc` clears the filter. In both views `Tab` and `1`-`5` switch
+In the Events view: `j`/`k`, `PgUp`/`PgDn`, `g`/`G` and the wheel move,
+`/` filters, `Enter` jumps to the logs, `Esc` clears the filter, `[`/`]`
+move the shared stem selection. In both views `Tab` and `1`-`5` switch
 views (not while typing a search or filter). `?` shows the keys of the
-current view.
+current view. The status bar's hints name the keys of Detail, Logs and
+Events (`j/k row · Enter act`, `Space pause`, `[ ] stem`).
 
 ## Actions (30, FR-UI-2)
 
@@ -231,9 +384,10 @@ runs the status bar says `restart shop-api…`; the result is a toast.
 | `s` | start (and its dependencies) | `start {stems: [stem]}` |
 | `x` | stop; when running stems depend on it the daemon answers `HAS_DEPENDANTS` (nothing stops) and a dialog names them: `y`/`X` stop them too, `n`/`Esc`/`Enter` cancel | `stop {stems, cascade: false}` |
 | `X` | stop with its running dependants, no question | `stop {stems, cascade: true}` |
-| `r` | restart (keeps ports) | `restart {stems}` |
+| `r` | restart (keeps ports). When the stem has running hard dependants (transitively, from the dependency graph, loaded on demand) a dialog asks "also restart 3 dependants (b, c, d)? [y/N]": `y` restarts them too in dependency order once the stem is healthy again (FR-LC-9), `n`/`Enter` only the stem, `Esc` cancels. A stem without running dependants restarts at once (its `restart.cascade` decides) | `restart {stems, cascade?}` |
 | `R` | rebuild + restart (`build` script first) | `restart {stems, build: true}` |
-| `p` | pause the stem's watchdog, or resume it when paused; paused stems show `⏸` (`\|\|` in ASCII) after their name in the table and on their graph box | `watch_pause` / `watch_resume {stems}` |
+| `p` | pause the stem's watchdog, or resume it when paused; paused stems show `⏸` (`\|\|` in ASCII) after their name in the table and on their graph box, in the action bar and the Detail view's Watchdog section | `watch_pause` / `watch_resume {stems}` |
+| `v` | the variant picker, then `y` to switch (above) | `switch_variant {stem, variant}` |
 | `o` | open the stem's codebase (else the workspace root) in `$EDITOR` (else `$VISUAL`, else `vi`); the dashboard suspends (leaves the alternate screen and raw mode, stops reading keys), runs `sh -c '$EDITOR "$1"' sh <dir>` on the terminal and comes back; a toast says how it ended | `stem_config` for the path |
 | `S` | reset: a dialog asks to type `reset` then `Enter` (anything else clears the field, `Esc` cancels); stops the stem, runs its `reset` script, clears its stamps. The typed word is the confirmation (the RPC has no `yes` flag; the CLI's `--yes` guards only `down --volumes`) | `reset {stems: [stem]}` |
 | `u` | up everything (the session's profile, if any) | `up {profile}` |
@@ -274,7 +428,8 @@ or `✗ create-test-user failed: exit 3` (`timed out`, `signal N`).
 A fuzzy search over everything the dashboard can do: per stem `restart
 shop-api`, `start …`, `stop …`, `stop … (cascade)`, `rebuild …`, `pause
 watch …` / `resume watch …`, `open … in $EDITOR`, `reset …`, `scripts of
-…`, `view logs …`, `view detail …`; every script of the catalogue (`run
+…`, `switch variant of …` (stems with variants), `view logs …`, `view
+detail …`; every script of the catalogue (`run
 seed-large (api)`, `run needs-api (workspace)`); `view table|graph|…`,
 `up all`, `down all`, `help`. Type (`rest api`), `↑`/`↓` move, `Enter`
 selects the stem and does exactly what its key would (dialogs included),
@@ -291,7 +446,8 @@ shop-api` above `reset shop-api`.
 
 ### Toasts
 
-Results and errors stack bottom-right above the status bar (newest
+Results and errors stack bottom-right above the status bar (and the
+action bar) (newest
 lowest, at most four), each for 5 s of the tick clock (`refresh_ms` per
 tick; headless runs have no ticks, so their toasts stay until dismissed).
 `Esc` dismisses them all. A success reads `✓ restarted shop-api`; an error
@@ -312,14 +468,18 @@ too, `Esc` closes). `config.applied` removes the toast.
 Every dialog is a `Modal` variant and takes every key while open
 (`update::modal_key`): `QuitConfirm` (27), `StopConfirm {stem,
 dependants}`, `DownConfirm`, `ResetTyped {stem, buffer}`, `ScriptMenu`,
-`ScriptForm`, `Palette`, `ErrorDetails {title, text}` and `Plan`.
+`ScriptForm`, `Palette`, `ErrorDetails {title, text}`, `Plan`,
+`VariantPicker {stem, selected}`, `SwitchConfirm {stem, from, variant,
+kind, running}` (`y` switches, `n`/`Esc`/`Enter` cancel) and
+`RestartConfirm {stem, dependants}` (`y` cascade, `n`/`Enter` only the
+stem, `Esc` cancels).
 `Ctrl-C` closes any of them.
 
 ## Preferences: `~/.config/stems/ui.toml` (FR-UI-4)
 
 ```toml
 theme = "dark"          # dark | light (accent colours)
-mouse = false           # clicking a table row selects it, a header tab switches view
+mouse = false           # clicks (table row, header tab, stem strip, action bar) and the wheel
 default_view = "graph"  # table | detail | graph | logs | events (unset: graph for >1 stem, else table)
 refresh_ms = 250        # tick interval, 50..5000; status refreshes about every second
 split_logs = false      # the split log pane (Ctrl-L toggles and saves it)
@@ -349,7 +509,7 @@ is refreshed, so the frame shows the daemon's current state.
 | Token | Effect |
 |---|---|
 | `j`, `q`, `?` (one character) | that key |
-| `Enter`, `Esc`, `Tab`, `BackTab`, `Up`, `Down`, `Left`, `Right`, `Home`, `End`, `Backspace`, `Space`, `Ctrl-C`, `Ctrl-L`, `Ctrl-P` (any `Ctrl-<char>`) | a named key |
+| `Enter`, `Esc`, `Tab`, `BackTab`, `Up`, `Down`, `Left`, `Right`, `Home`, `End`, `PageUp`, `PageDown`, `Backspace`, `Space`, `Ctrl-C`, `Ctrl-L`, `Ctrl-P` (any `Ctrl-<char>`) | a named key |
 | `/api<Enter>` (anything else) | typed character by character; `<Name>` inside is a named key |
 | `wait:<state>` | wait until every stem is in `<state>` (a state such as `healthy`/`failed`, or a glyph name); fails after 30 s |
 | `wait:stem=<name>:<state>` | wait for one stem |
@@ -429,6 +589,14 @@ prove it (`tests/features/tui/panic-restore.feature`, run with
   per cell, the box it belongs to, its glyph colour and whether it is a
   (soft) edge. `Cmd::LoadGraph` / `RpcResult::Graph` load it;
   `graph::step` holds the selection rules.
+* The action bar is `stems_tui::bar` (`segments(model)`, `text(model,
+  width)`, `render`; clicks via `Model::bar_hits`); the Detail view is
+  `stems_tui::detail` (`content(model, stem, width)`: the lines and the
+  selectable `DetailRow`s with their line index; `rows(model, stem)`).
+  `Cmd::LoadVariants(stem)` (`switch_variant {stem}`, list only) fills
+  `Model::variants`, `Cmd::LoadWatch(stem)` (`watch_status`) the Detail's
+  watchdog; `Action::SwitchVariant` is the switch. `Model::script_activity`
+  keeps the last `script.*` state per script.
 * Frame goldens: `stems_tui::assert_frame!(model, "name")` snapshots the
   frame at 80x24 and 120x40 (`crates/stems-tui/src/snapshots/`).
 * E2E: `Then the frame matches golden "<name>" masking PID,UPTIME,CPU,MEM`

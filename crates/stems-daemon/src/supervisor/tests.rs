@@ -38,6 +38,8 @@ struct FakeRuntime {
     script_exit: HashMap<String, i32>,
     /// `<stem>:<script>` scripts that run until stopped.
     script_hang: HashSet<String>,
+    /// Stems whose spawn fails from now on (set during a test; cascades).
+    fail_spawn_now: Mutex<HashSet<String>>,
 }
 
 impl FakeRuntime {
@@ -82,7 +84,7 @@ impl Runtime for FakeRuntime {
             return Ok(h);
         }
         let stem = Self::stem_of(spec);
-        if self.fail_spawn.contains(&stem) {
+        if self.fail_spawn.contains(&stem) || self.fail_spawn_now.lock().unwrap().contains(&stem) {
             return Err(RuntimeError::Io(std::io::Error::other("no such binary")));
         }
         self.starts.lock().unwrap().push(stem.clone());
@@ -1373,3 +1375,7 @@ mod watchdogs;
 // --- config reload (33) -----------------------------------------------------
 
 mod reload;
+
+// --- cascading restarts (FR-LC-9) --------------------------------------------
+
+mod cascade;

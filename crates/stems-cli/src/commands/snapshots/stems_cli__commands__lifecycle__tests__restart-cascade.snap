@@ -1,0 +1,11 @@
+---
+source: crates/stems-cli/src/commands/lifecycle.rs
+expression: up_human(&r)
+---
+up: 1 ready, 0 failed, 0 skipped
+cascade from a: 3 restarted, 1 failed, 1 skipped
+  restarted b (layer 1)
+  restarted c (layer 1)
+  restarted d (layer 2)
+  failed    e: `e` exited with code 3
+  skipped   f

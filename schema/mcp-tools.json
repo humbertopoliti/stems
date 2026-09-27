@@ -140,7 +140,7 @@
     },
     {
       "name": "restart",
-      "description": "Restart stems keeping their ports; with build, run each stem's build script between stop and start.",
+      "description": "Restart stems keeping their ports; with build, run each stem's build script between stop and start. cascade: true also restarts their running hard dependants (transitively, in dependency order) once they are healthy again, false never does; omitted, each stem's restart.cascade decides. The result's cascade lists the restarted dependants per layer.",
       "inputSchema": {
         "required": [
           "stems"
@@ -171,6 +171,13 @@
             ],
             "default": null,
             "minimum": 0
+          },
+          "cascade": {
+            "description": "Also restart the stems' running hard dependants, transitively, once the stems are healthy again (FR-LC-9). `null`/absent: each stem's `restart.cascade`; `true`/`false` overrides it.",
+            "type": [
+              "boolean",
+              "null"
+            ]
           }
         },
         "type": "object"

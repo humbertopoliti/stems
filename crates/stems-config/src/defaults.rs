@@ -85,6 +85,8 @@ pub const BACKOFF_FACTOR: f64 = 2.0;
 pub const RESTART_ON_UNHEALTHY: bool = false;
 /// `restart.unhealthy_grace`.
 pub const UNHEALTHY_GRACE: Dur = Dur::from_secs(10);
+/// `restart.cascade`.
+pub const RESTART_CASCADE: bool = false;
 
 /// Built-in watch ignores; user `ignore` entries are appended.
 pub const WATCH_IGNORE: [&str; 6] = [
@@ -203,6 +205,7 @@ pub fn defaults_table() -> Vec<(&'static str, String)> {
             RESTART_ON_UNHEALTHY.to_string(),
         ),
         ("stems.<n>.restart.unhealthy_grace", t(UNHEALTHY_GRACE)),
+        ("stems.<n>.restart.cascade", RESTART_CASCADE.to_string()),
         (
             "stems.<n>.watch[].ignore",
             format!("{WATCH_IGNORE:?} + user entries"),
@@ -211,6 +214,10 @@ pub fn defaults_table() -> Vec<(&'static str, String)> {
         ("stems.<n>.watch[].action", WATCH_ACTION.to_string()),
         ("stems.<n>.watch[].settle", t(WATCH_SETTLE)),
         ("stems.<n>.watch[].root", json(&WATCH_ROOT)),
+        (
+            "stems.<n>.watch[].cascade",
+            "stems.<n>.restart.cascade".into(),
+        ),
         ("stems.<n>.overlays[].keep", OVERLAY_KEEP.to_string()),
         ("stems.<n>.overlays[].mode", OVERLAY_MODE.to_string()),
         (

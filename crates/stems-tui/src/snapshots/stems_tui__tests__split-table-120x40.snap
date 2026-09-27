@@ -1,11 +1,11 @@
 ---
 source: crates/stems-tui/src/tests.rs
+assertion_line: 1255
 expression: text
 ---
  stems · minimal                                                         1 Graph  2 [Table]  3 Detail  4 Logs  5 Events
-  STEM     TYPE     STATUS       REASON                    PID     PORTS          UPTIME  RESTARTS CPU        MEM
-› echo-svc process  ✓ healthy    ready (tcp)               12345   http:18090     42s     0
-
+  STEM     TYPE     STATUS       REASON        PID     PORTS        UPTIME  RESTARTS CPU    MEM    SCRIPTS VARIANT WATCH
+› echo-svc process  ✓ healthy    ready (tcp)   12345   http:18090   42s     0                      -       -       -
 
 
 
@@ -41,4 +41,5 @@ expression: text
 │                                                                                                                      │
 │                                                                                                                      │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
- minimal · profile - · daemon pid 4242 · ✓1 !0 ✗0 ·0 ?0 ↻0                                              ? help · q quit
+ ■ x stop  ↻ r restart  : scripts  o editor  ? more
+ minimal · profile - · daemon pid 4242 · ✓1 !0 ✗0 ↯0 ·0 ?0 ↻0                                           ? help · q quit

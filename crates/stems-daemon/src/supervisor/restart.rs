@@ -101,6 +101,11 @@ impl RestartState {
         }
     }
 
+    /// `restart.cascade` of the settings in force (FR-LC-9).
+    pub(crate) fn cascades(&self) -> bool {
+        self.config.as_ref().is_some_and(|c| c.cascade)
+    }
+
     /// The workspace policy restarts start from (33: the config a running
     /// stem runs with).
     pub(crate) fn workspace(&self) -> Option<&Arc<Resolved>> {
@@ -201,8 +206,12 @@ pub(crate) enum Cause {
     Exit(ExitStatus),
     /// `unhealthy` for longer than `restart.unhealthy_grace`.
     Unhealthy,
-    /// [`StemCell::restart_bypassing_policy`] (watchdogs, 24).
-    Bypass(String),
+    /// [`StemCell::restart_bypassing_policy`] (watchdogs, 24), or a
+    /// dependant of a cascading restart (FR-LC-9, with its id).
+    Bypass {
+        why: String,
+        cascade: Option<String>,
+    },
 }
 
 impl Cause {
@@ -210,7 +219,11 @@ impl Cause {
         match self {
             Cause::Exit(s) => json!({ "reason": "exit", "exit_code": s.code, "signal": s.signal }),
             Cause::Unhealthy => json!({ "reason": "unhealthy" }),
-            Cause::Bypass(why) => json!({ "reason": why }),
+            Cause::Bypass { why, cascade: None } => json!({ "reason": why }),
+            Cause::Bypass {
+                why,
+                cascade: Some(id),
+            } => json!({ "reason": why, "cascade": id }),
         }
     }
 }
@@ -307,7 +320,7 @@ pub(crate) async fn on_exit(
 /// Go `starting` ("restarting in …"), emit `stem.restarting` and arm the
 /// cancellable backoff timer that sends [`Cmd::Respawn`].
 fn schedule(
-    core: &Core,
+    core: &Arc<Core>,
     cell: &Arc<StemCell>,
     delay: Duration,
     attempt: u32,
@@ -317,7 +330,7 @@ fn schedule(
 ) {
     let delay_ms = delay.as_millis() as u64;
     let reason = match &cause {
-        Cause::Bypass(why) => format!("restarting ({why})"),
+        Cause::Bypass { why, .. } => format!("restarting ({why})"),
         _ => format!("restarting in {} (attempt {attempt})", fmt_delay(delay)),
     };
     let token = CancellationToken::new();
@@ -346,6 +359,11 @@ fn schedule(
             .reason(reason)
             .data(data),
     );
+    // A policy restart of a stem with `restart.cascade` restarts its
+    // dependants once it is healthy again (FR-LC-9).
+    if counted {
+        super::cascade::after_policy_restart(core, cell);
+    }
     let c = cell.clone();
     tokio::spawn(async move {
         tokio::select! {
@@ -508,6 +526,7 @@ pub(crate) async fn bypass(
     cell: &Arc<StemCell>,
     actor: &str,
     why: &str,
+    cascade: Option<&str>,
 ) -> Result<(), Error> {
     let (state, has_ws) = {
         let info = cell.info();
@@ -538,7 +557,10 @@ pub(crate) async fn bypass(
         Duration::ZERO,
         0,
         false,
-        Cause::Bypass(why.to_string()),
+        Cause::Bypass {
+            why: why.to_string(),
+            cascade: cascade.map(str::to_string),
+        },
         actor,
     );
     Ok(())

@@ -159,12 +159,12 @@ workspace:
         url: null
         status: null
         body_contains: null
-        command: pg_isready -U shop
+        command: pg_isready -h 127.0.0.1 -U shop -d shop
         interval: 400ms
-        timeout: 300ms
+        timeout: 2s
         retries: 5
         start_period: 1s
-        start_timeout: 1m
+        start_timeout: 2m
       watch: []
       restart:
         policy: on-failure
@@ -210,9 +210,9 @@ workspace:
         url: null
         status: null
         body_contains: null
-        command: redis-cli -p 16379 ping
+        command: redis-cli ping
         interval: 400ms
-        timeout: 300ms
+        timeout: 2s
         retries: 5
         start_period: 1s
         start_timeout: 1m
@@ -250,6 +250,7 @@ workspace:
         PORT: '18080'
         HOST: 0.0.0.0
         DATABASE_URL: postgres://shop:local@localhost:15432/shop
+        SHOP_PSQL: docker exec hello-shop-postgres psql -U shop -d shop
         REDIS_URL: redis://localhost:16379
         SHOP_CONFIG: <repo>/examples/repos/shop-api/config/local.ini
         SHOP_CHAOS: '1'
@@ -379,6 +380,9 @@ workspace:
         mode: '0644'
       tags: []
       stop_grace: 2s
+      variant: local
+      variants:
+      - docker
     shop-worker:
       name: shop-worker
       type: process
@@ -546,7 +550,7 @@ workspace:
         body_contains: null
         command: null
         interval: 500ms
-        timeout: 400ms
+        timeout: 2s
         retries: 3
         start_period: 0s
         start_timeout: 1m

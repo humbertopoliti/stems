@@ -52,6 +52,29 @@ impl SpanIndex {
         self.map.extend(other.map);
     }
 
+    /// Copy every span under `from` to the same relative path under `to`
+    /// (an active variant's fields become the stem's), except where `to`
+    /// already has a span in `keep_file` (a local override wins).
+    pub(crate) fn alias(&mut self, from: &ConfigPath, to: &ConfigPath, keep_file: &Path) {
+        let n = from.segments().len();
+        let copies: Vec<(ConfigPath, Span)> = self
+            .map
+            .iter()
+            .filter(|(p, _)| p.segments().len() > n && p.starts_with(from))
+            .map(|(p, s)| {
+                let mut segs = to.segments().to_vec();
+                segs.extend_from_slice(&p.segments()[n..]);
+                (ConfigPath::from_segments(segs), s.clone())
+            })
+            .collect();
+        for (p, s) in copies {
+            if self.map.get(&p).is_some_and(|old| old.file == keep_file) {
+                continue;
+            }
+            self.map.insert(p, s);
+        }
+    }
+
     /// Number of indexed paths.
     pub fn len(&self) -> usize {
         self.map.len()

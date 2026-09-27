@@ -26,6 +26,9 @@ Feature: external stems are monitored by their probe
     Then the JSON at "$.data.stems[?@.name=='hosted'].reason" contains "connection refused"
     And the JSON at "$.data.stems[?@.name=='api'].degraded" equals true
     And the JSON at "$.data.stems[?@.name=='api'].reason" equals "dependency hosted unhealthy"
+    # An unhealthy external is counted as unhealthy, not failed.
+    And the JSON at "$.data.summary.unhealthy" equals 1
+    And the JSON at "$.data.summary.failed" equals 0
     And within 5s the events stream contains {"kind": "stem.health", "stem": "hosted", "from": "healthy", "to": "unhealthy"}
     When I run "stems down --json"
     Then the command succeeds

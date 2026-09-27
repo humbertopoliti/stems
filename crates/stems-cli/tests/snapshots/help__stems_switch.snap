@@ -1,0 +1,56 @@
+---
+source: crates/stems-cli/tests/help.rs
+expression: help
+---
+Switch a stem to one of its variants (e.g. from a local process to a docker container), or back to
+`local`.
+
+Writes `stems.<stem>.variant` to stems.local.yaml (comments kept; `local` removes the key),
+validates the workspace (the file is restored on error) and, when the daemon runs, applies the
+change to that stem: it restarts in its new form (`--no-apply` only edits the file). Without a
+variant, lists the stem's variants and marks the active one. An unknown name is UNKNOWN_VARIANT
+(exit 2). See docs/config.md#variants-fr-st-8.
+
+Usage: stems switch [OPTIONS] <STEM> [VARIANT]
+
+Arguments:
+  <STEM>
+          The stem
+
+  [VARIANT]
+          A variant name, or `local` for the base definition. Omit to list the variants
+
+Options:
+      --no-apply
+          Only edit stems.local.yaml; do not apply the change to a running daemon
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Global options:
+      --workspace <PATH>
+          Workspace directory or stems.yaml path (default: $STEMS_WORKSPACE, else walk up from the
+          current directory)
+
+      --json
+          Emit the JSON envelope (the default when stdout is not a terminal)
+
+      --human
+          Emit human text even when stdout is not a terminal
+
+      --no-color
+          Disable colours in human output
+          
+          [env: STEMS_NO_COLOR]
+
+  -q, --quiet
+          Print only errors in human mode
+
+  -v, --verbose...
+          More detail (repeat for more: -vv)
+
+      --home <PATH>
+          Root for daemon state, sockets, locks and logs (default: ~/Library/Application
+          Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
+          
+          [env: STEMS_HOME]

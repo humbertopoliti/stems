@@ -1,44 +1,45 @@
 ---
 source: crates/stems-tui/src/tests.rs
+assertion_line: 705
 expression: text
 ---
  stems · process-chain                                                   1 Graph  2 Table  3 [Detail]  4 Logs  5 Events
-┌ Detail: b · ✓ healthy ───────────────────────────────────────────────────────────────────────────────────────────────┐
-│Config                                                      Status                                                    │
-│type: process                                               ✓ healthy (ready (tcp))                                   │
-│enabled: true                                               pid 102 · up 8s · restarts 0                              │
-│env:                                                        ports http:18302                                          │
-│  SHOP_SLEEP_START: '0.5'                                   Scripts                                                   │
-│ports:                                                      start, seed                                               │
-│- name: http                                                Health                                                    │
-│  port: 18302                                               12:00:05 ✓ connected (1ms)                                │
-│depends_on:                                                 12:00:06 ✗ connection refused (150ms)                     │
-│- stem: a                                                   Metrics                                                   │
-│  condition: healthy                                        n/a (no samples yet)                                      │
-│scripts:                                                    Events                                                    │
-│  start:                                                    12:00:03 stem.state stopped→starting                      │
-│    command: python3 app.py                                 12:00:04 stem.state starting→healthy                      │
+┌ Detail: b · ✓ healthy ──────────────────────────────────────────────────────────────── a  [b]  c  d · [ ] ←/→ switch ┐
+│✓ healthy · ready (tcp)                                                                                               │
+│pid 102 · up 8s · restarts 0                                                                                          │
+│ports http:18302                                                                                                      │
+│                                                                                                                      │
+│Scripts                                                                                                               │
+│loading…                                                                                                              │
+│                                                                                                                      │
+│Health                                                                                                                │
+│12:00:05 ✓ connected (1ms)                                                                                            │
+│12:00:06 ✗ connection refused (150ms)                                                                                 │
+│                                                                                                                      │
+│Recent events                                                                                                         │
+│12:00:03 stem.state stopped→starting                                                                                  │
+│12:00:04 stem.state starting→healthy                                                                                  │
+│                                                                                                                      │
+│Config                                                                                                                │
+│type: process                                                                                                         │
+│enabled: true                                                                                                         │
+│env:                                                                                                                  │
+│  SHOP_SLEEP_START: '0.5'                                                                                             │
+│ports:                                                                                                                │
+│- name: http                                                                                                          │
+│  port: 18302                                                                                                         │
+│depends_on:                                                                                                           │
+│- stem: a                                                                                                             │
+│  condition: healthy                                                                                                  │
+│scripts:                                                                                                              │
+│  start:                                                                                                              │
+│    command: python3 app.py                                                                                           │
 │  seed:                                                                                                               │
 │    command: ./seed.sh                                                                                                │
 │stop_grace: 1s                                                                                                        │
 │                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
- process-chain · profile - · daemon pid 4242 · ✓2 !0 ✗0 ·1 ?0 ↻1                             Esc back · ? help · q quit
+ ■ x stop  ↻ r restart  : scripts  o editor  ? more
+ process-chain · profile - · daemon pid 4242 · ✓2 !0 ✗0 ↯0 ·1 ?0 ↻1 j/k row · Enter act · [ ] stem · Esc back · ? help …

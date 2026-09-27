@@ -20,7 +20,7 @@ use stems_api::StemStatus;
 use stems_core::Glyph;
 
 use crate::graph::glyph_color;
-use crate::model::{Model, SortKey, ViewKind};
+use crate::model::{Model, SortKey, StemHit, ViewKind};
 use crate::prefs::Theme;
 
 /// Smallest usable terminal.
@@ -31,36 +31,37 @@ pub const COLUMNS: [&str; 10] = [
     "STEM", "TYPE", "STATUS", "REASON", "PID", "PORTS", "UPTIME", "RESTARTS", "CPU", "MEM",
 ];
 
+/// The columns added when the table is at least [`EXTRA_COLUMNS_MIN`]
+/// wide: custom scripts, active variant, watchdog.
+pub const EXTRA_COLUMNS: [&str; 3] = ["SCRIPTS", "VARIANT", "WATCH"];
+
+/// Width from which the table shows [`EXTRA_COLUMNS`] (below it the
+/// REASON column would have no room left).
+pub const EXTRA_COLUMNS_MIN: u16 = 120;
+
 /// Render the whole dashboard.
 pub fn view(model: &Model, f: &mut Frame) {
     let area = f.area();
     model.tab_hits.borrow_mut().clear();
+    model.stem_hits.borrow_mut().clear();
+    model.bar_hits.borrow_mut().clear();
     if area.width < MIN_SIZE.0 || area.height < MIN_SIZE.1 {
         too_small(f, area);
         return;
     }
-    let [title, body, status] = Layout::vertical([
+    let bar_h = u16::from(has_bar(model));
+    let [title, body, bar, status] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Fill(1),
+        Constraint::Length(bar_h),
         Constraint::Length(1),
     ])
     .areas(area);
     title_bar(model, f, title);
-    let split = model.log_pane.visible
-        && matches!(
-            model.view,
-            ViewKind::Table | ViewKind::Graph | ViewKind::Detail
-        );
-    let (main, pane) = if split {
-        let [a, b] =
-            Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)]).areas(body);
-        (a, Some(b))
-    } else {
-        (body, None)
-    };
+    let (main, pane) = split_body(model, body);
     match model.view {
         ViewKind::Table => table(model, f, main),
-        ViewKind::Detail => detail(model, f, main),
+        ViewKind::Detail => crate::detail::render(model, f, main),
         ViewKind::Graph => crate::graph::render(model, f, main),
         ViewKind::Logs => log_pane(model, f, main),
         ViewKind::Events => crate::events::render(
@@ -75,12 +76,77 @@ pub fn view(model: &Model, f: &mut Frame) {
     if let Some(p) = pane {
         log_pane(model, f, p);
     }
+    if bar_h > 0 {
+        crate::bar::render(model, f, bar);
+    }
     status_bar(model, f, status);
     crate::modals::toasts(model, f, area);
     if model.help {
         help(model, f, area);
     }
     crate::modals::render(model, f, area);
+}
+
+/// The body split: the current view and, with the split layout under
+/// Table/Graph/Detail, the log pane (bottom 40 %).
+fn split_body(model: &Model, body: Rect) -> (Rect, Option<Rect>) {
+    let split = model.log_pane.visible
+        && matches!(
+            model.view,
+            ViewKind::Table | ViewKind::Graph | ViewKind::Detail
+        );
+    if split {
+        let [a, b] =
+            Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)]).areas(body);
+        (a, Some(b))
+    } else {
+        (body, None)
+    }
+}
+
+/// The screen areas of the current view and of the split log pane for a
+/// terminal of [`Model::size`] (what [`view`] draws into; the reducer uses
+/// it for scrolling and the mouse wheel). `None` below [`MIN_SIZE`].
+pub fn body_areas(model: &Model) -> Option<(Rect, Option<Rect>)> {
+    let (w, h) = model.size;
+    if w < MIN_SIZE.0 || h < MIN_SIZE.1 {
+        return None;
+    }
+    let bar = u16::from(has_bar(model));
+    Some(split_body(model, Rect::new(0, 1, w, h - 2 - bar)))
+}
+
+/// The Detail view's scroll bounds for [`Model::size`]: `(content rows,
+/// visible rows)`; `None` when Detail is not showing a stem.
+pub fn detail_extent(model: &Model) -> Option<(usize, usize)> {
+    let (c, h) = detail_content(model)?;
+    Some((c.lines.len(), h))
+}
+
+/// The Detail content of the selected stem as drawn at [`Model::size`],
+/// and the visible rows.
+pub fn detail_content(model: &Model) -> Option<(crate::detail::Content, usize)> {
+    let name = model.selected.as_deref()?;
+    let (main, _) = body_areas(model)?;
+    let inner = crate::detail::inner(main);
+    Some((
+        crate::detail::content(model, name, inner.width),
+        usize::from(inner.height),
+    ))
+}
+
+/// Whether the current view has the action bar (Table, Graph, Detail).
+pub fn has_bar(model: &Model) -> bool {
+    matches!(
+        model.view,
+        ViewKind::Table | ViewKind::Graph | ViewKind::Detail
+    )
+}
+
+/// The status bar's unhealthy counter glyph: `↯` (`U` in ASCII); the
+/// state's own glyph is the failed one (`✗`), counted apart.
+pub fn unhealthy_marker(ascii: bool) -> &'static str {
+    if ascii { "U" } else { "↯" }
 }
 
 /// The watchdog-paused marker (30): `⏸` (`||` in ASCII).
@@ -98,12 +164,157 @@ fn log_pane(model: &Model, f: &mut Frame, area: Rect) {
             None => "Logs".to_string(),
         }
     };
+    // The Logs view's title carries the stem strip (the split pane follows
+    // the table / graph selection, which is its own picker).
+    let strip = if model.view == ViewKind::Logs {
+        let left = format!(" {title} · {} ", model.log_pane.status_text());
+        let current = (!model.log_pane.merged)
+            .then_some(model.selected.as_deref())
+            .flatten();
+        stem_strip(model, area, str_width(&left), current, "m merged")
+    } else {
+        None
+    };
     let style = crate::logs::PaneStyle {
         title,
         ascii: model.ascii,
         accent: accent(model),
+        strip,
     };
     model.log_pane.render(f, area, &style);
+}
+
+/// Display width of `s` in columns.
+pub fn str_width(s: &str) -> u16 {
+    Span::raw(s).width() as u16
+}
+
+/// The stem strip on the right of a Detail / Logs title (the stem picker):
+/// ` a  [b]  c  d · [ ]/←→ switch `, the current stem bracketed, every
+/// visible stem in table order. When it does not fit next to the title
+/// (`left` columns) the hint goes first, then the stems furthest from the
+/// current one (`…` marks the cut sides). Each stem's columns are recorded
+/// in [`Model::stem_hits`] for mouse clicks. `None` with fewer than two
+/// stems (nothing to switch to) or no room.
+pub fn stem_strip(
+    model: &Model,
+    area: Rect,
+    left: u16,
+    current: Option<&str>,
+    extra: &str,
+) -> Option<Line<'static>> {
+    let names: Vec<String> = model.visible().iter().map(|s| s.name.clone()).collect();
+    if names.len() < 2 || area.width < 4 {
+        return None;
+    }
+    let a = model.ascii;
+    // Inside the corners, one border cell between the title and the strip.
+    let max = area.width.saturating_sub(2 + left + 1);
+    let cur = current.and_then(|c| names.iter().position(|n| n == c));
+    let label = |i: usize| {
+        if Some(i) == cur {
+            format!("[{}]", names[i])
+        } else {
+            names[i].clone()
+        }
+    };
+    let ell = if a { "..." } else { "…" };
+    let arrows = if a { "<-/->" } else { "←/→" };
+    let hint = if extra.is_empty() {
+        format!("[ ] {arrows} switch")
+    } else {
+        format!("[ ] {arrows} switch · {extra}")
+    };
+    const GAP: u16 = 2;
+    let width = |lo: usize, hi: usize, with_hint: bool| -> u16 {
+        let items: u16 = (lo..=hi).map(|i| str_width(&label(i))).sum();
+        let mut w = 2 + items + GAP * (hi - lo) as u16;
+        if lo > 0 {
+            w += str_width(ell) + GAP;
+        }
+        if hi + 1 < names.len() {
+            w += str_width(ell) + GAP;
+        }
+        if with_hint {
+            w += 3 + str_width(&hint);
+        }
+        w
+    };
+    let last = names.len() - 1;
+    let (lo, hi, with_hint) = if width(0, last, true) <= max {
+        (0, last, true)
+    } else if width(0, last, false) <= max {
+        (0, last, false)
+    } else {
+        // Grow a window around the current stem, right first.
+        let c = cur.unwrap_or(0);
+        if width(c, c, false) > max {
+            return None;
+        }
+        let (mut lo, mut hi) = (c, c);
+        loop {
+            let mut grew = false;
+            if hi < last && width(lo, hi + 1, false) <= max {
+                hi += 1;
+                grew = true;
+            }
+            if lo > 0 && width(lo - 1, hi, false) <= max {
+                lo -= 1;
+                grew = true;
+            }
+            if !grew {
+                break;
+            }
+        }
+        (lo, hi, false)
+    };
+    let total = width(lo, hi, with_hint);
+    let bold = Style::default()
+        .fg(accent(model))
+        .add_modifier(Modifier::BOLD);
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let mut x = (area.x + area.width).saturating_sub(1 + total);
+    let mut spans = vec![Span::raw(" ")];
+    x += 1;
+    let mut hits = Vec::new();
+    let push = |spans: &mut Vec<Span<'static>>, x: &mut u16, text: String, style: Style| {
+        *x += str_width(&text);
+        spans.push(Span::styled(text, style));
+    };
+    let gap = || " ".repeat(usize::from(GAP));
+    if lo > 0 {
+        push(&mut spans, &mut x, ell.to_string(), dim);
+        push(&mut spans, &mut x, gap(), Style::default());
+    }
+    for (i, name) in names.iter().enumerate().take(hi + 1).skip(lo) {
+        if i > lo {
+            push(&mut spans, &mut x, gap(), Style::default());
+        }
+        let start = x;
+        let style = if Some(i) == cur {
+            bold
+        } else {
+            Style::default()
+        };
+        push(&mut spans, &mut x, label(i), style);
+        hits.push(StemHit {
+            stem: name.clone(),
+            row: area.y,
+            start,
+            end: x,
+        });
+    }
+    if hi < last {
+        push(&mut spans, &mut x, gap(), Style::default());
+        push(&mut spans, &mut x, ell.to_string(), dim);
+    }
+    if with_hint {
+        push(&mut spans, &mut x, " · ".to_string(), dim);
+        push(&mut spans, &mut x, hint, dim);
+    }
+    spans.push(Span::raw(" "));
+    model.stem_hits.borrow_mut().extend(hits);
+    Some(Line::from(spans).right_aligned())
 }
 
 /// The accent colour of the theme.
@@ -247,7 +458,7 @@ fn status_bar(model: &Model, f: &mut Frame, area: Rect) {
     let s = &model.summary;
     let g = |g: Glyph| g.symbol(!model.ascii);
     let mut left = format!(
-        " {} · profile {} · daemon pid {} · {}{} {}{} {}{} {}{} {}{} {}{}",
+        " {} · profile {} · daemon pid {} · {}{} {}{} {}{} {}{} {}{} {}{} {}{}",
         if model.workspace.is_empty() {
             "-"
         } else {
@@ -263,6 +474,8 @@ fn status_bar(model: &Model, f: &mut Frame, area: Rect) {
         s.degraded,
         g(Glyph::Failed),
         s.failed,
+        unhealthy_marker(model.ascii),
+        s.unhealthy,
         g(Glyph::Stopped),
         s.stopped,
         g(Glyph::Unknown),
@@ -281,9 +494,13 @@ fn status_bar(model: &Model, f: &mut Frame, area: Rect) {
         m.clone()
     } else {
         match (model.view, model.sort) {
-            (ViewKind::Detail, _) => "Esc back · ? help · q quit ".to_string(),
-            (ViewKind::Logs, _) => "Space pause · ? help · q quit ".to_string(),
-            (ViewKind::Events, _) => "Enter logs · ? help · q quit ".to_string(),
+            (ViewKind::Detail, _) => {
+                "j/k row · Enter act · [ ] stem · Esc back · ? help · q quit ".to_string()
+            }
+            (ViewKind::Logs, _) => {
+                "Space pause · j/k scroll · [ ] stem · ? help · q quit ".to_string()
+            }
+            (ViewKind::Events, _) => "j/k scroll · Enter logs · ? help · q quit ".to_string(),
             (_, SortKey::Declared) => "? help · q quit ".to_string(),
             (_, sort) => format!("sort:{} · ? help · q quit ", sort.label()),
         }
@@ -306,7 +523,8 @@ fn status_bar(model: &Model, f: &mut Frame, area: Rect) {
     );
 }
 
-fn ports_text(s: &StemStatus, wide: bool) -> String {
+/// `http:18090,admin:18091` (`wide`) or `18090,18091`; `-` without ports.
+pub fn ports_text(s: &StemStatus, wide: bool) -> String {
     let v: Vec<String> = s
         .ports
         .iter()
@@ -323,9 +541,11 @@ fn ports_text(s: &StemStatus, wide: bool) -> String {
 }
 
 /// Column widths for a table `width` columns wide (highlight gutter
-/// included): fixed columns, `STEM` up to its longest name, `REASON` the rest.
-pub fn column_widths(model: &Model, width: u16) -> [u16; 10] {
+/// included): fixed columns, `STEM` up to its longest name, `REASON` the
+/// rest; from [`EXTRA_COLUMNS_MIN`] also SCRIPTS, VARIANT and WATCH.
+pub fn column_widths(model: &Model, width: u16) -> Vec<u16> {
     let wide = width >= 100;
+    let extra = width >= EXTRA_COLUMNS_MIN;
     let mark = paused_marker(model.ascii).chars().count() + 1;
     let longest = model
         .stems
@@ -334,22 +554,43 @@ pub fn column_widths(model: &Model, width: u16) -> [u16; 10] {
         .max()
         .unwrap_or(4)
         .max(4) as u16;
-    let (stem_max, ty, st, pid, ports, up, rs, cpu, mem) = if wide {
+    let (stem_max, ty, st, pid, ports, up, rs, cpu, mem) = if extra {
+        (20, 8, 12, 7, 12, 7, 8, 6, 6)
+    } else if wide {
         (20, 8, 12, 7, 14, 7, 8, 10, 10)
     } else {
         (12, 7, 10, 6, 6, 6, 8, 5, 5)
     };
     let stem = longest.min(stem_max);
-    let avail = width.saturating_sub(2 + 9);
-    let fixed = stem + ty + st + pid + ports + up + rs + cpu + mem;
+    let mut rest = vec![pid, ports, up, rs, cpu, mem];
+    if extra {
+        let variant = model
+            .stems
+            .iter()
+            .filter_map(|s| s.variant.as_ref().map(|v| v.chars().count() as u16))
+            .max()
+            .unwrap_or(0)
+            .clamp(7, 12);
+        rest.extend([7, variant, 5]);
+    }
+    let columns = 4 + rest.len() as u16;
+    let avail = width.saturating_sub(2 + columns - 1);
+    let fixed = stem + ty + st + rest.iter().sum::<u16>();
     let reason = avail.saturating_sub(fixed);
-    [stem, ty, st, reason, pid, ports, up, rs, cpu, mem]
+    let mut out = vec![stem, ty, st, reason];
+    out.extend(rest);
+    out
 }
 
 fn table(model: &Model, f: &mut Frame, area: Rect) {
     let widths = column_widths(model, area.width);
     let wide = area.width >= 100;
-    let header = Row::new(COLUMNS.map(Cell::from)).style(
+    let extra = widths.len() > COLUMNS.len();
+    let mut headers: Vec<&str> = COLUMNS.to_vec();
+    if extra {
+        headers.extend(EXTRA_COLUMNS);
+    }
+    let header = Row::new(headers.into_iter().map(Cell::from)).style(
         Style::default()
             .fg(accent(model))
             .add_modifier(Modifier::BOLD),
@@ -384,7 +625,7 @@ fn table(model: &Model, f: &mut Frame, area: Rect) {
             } else {
                 truncate(&s.name, usize::from(widths[0]), a)
             };
-            Row::new(vec![
+            let mut cells = vec![
                 Cell::from(name),
                 Cell::from(truncate(&s.kind, usize::from(widths[1]), a)),
                 Cell::from(Span::styled(
@@ -398,11 +639,26 @@ fn table(model: &Model, f: &mut Frame, area: Rect) {
                 Cell::from(s.restarts.to_string()),
                 Cell::from(spark(hist.map(|h| &h.cpu), widths[8])),
                 Cell::from(spark(hist.map(|h| &h.mem), widths[9])),
-            ])
+            ];
+            if extra {
+                let scripts = model
+                    .custom_scripts(&s.name)
+                    .map_or_else(|| "-".to_string(), |n| n.to_string());
+                let variant = s.variant.clone().unwrap_or_else(|| "-".into());
+                let watch = match &s.watch {
+                    None => "-".to_string(),
+                    Some(w) if w.paused => paused_marker(a).to_string(),
+                    Some(_) => "on".to_string(),
+                };
+                cells.push(Cell::from(scripts));
+                cells.push(Cell::from(truncate(&variant, usize::from(widths[11]), a)));
+                cells.push(Cell::from(watch));
+            }
+            Row::new(cells)
         })
         .collect();
     let empty = rows.is_empty();
-    let t = Table::new(rows, widths.map(Constraint::Length))
+    let t = Table::new(rows, widths.iter().map(|w| Constraint::Length(*w)))
         .header(header)
         .column_spacing(1)
         .highlight_symbol(if model.ascii { "> " } else { "› " })
@@ -444,164 +700,6 @@ pub fn config_lines(v: &Value) -> Vec<String> {
         .collect()
 }
 
-fn detail(model: &Model, f: &mut Frame, area: Rect) {
-    let Some(name) = model.selected.as_deref() else {
-        let block = Block::default().borders(Borders::ALL).title(" Detail ");
-        f.render_widget(Paragraph::new(" no stem selected").block(block), area);
-        return;
-    };
-    let st = model.selected_stem();
-    let a = model.ascii;
-    let title = match st {
-        Some(s) => format!(" Detail: {name} · {} {} ", s.glyph.symbol(!a), s.state),
-        None => format!(" Detail: {name} "),
-    };
-    let block = Block::default().borders(Borders::ALL).title(Span::styled(
-        title,
-        Style::default().add_modifier(Modifier::BOLD),
-    ));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-    let d = model.detail.as_ref().filter(|d| d.stem == name);
-
-    // Left: the effective config.
-    let mut cfg: Vec<Line> = vec![Line::styled(
-        "Config",
-        Style::default()
-            .fg(accent(model))
-            .add_modifier(Modifier::BOLD),
-    )];
-    match d.and_then(|d| d.config.as_ref()) {
-        None => cfg.push(Line::from("loading…")),
-        Some(Err(e)) => cfg.push(Line::from(format!("unavailable: {e}"))),
-        Some(Ok(v)) => cfg.extend(config_lines(v).into_iter().map(Line::from)),
-    }
-
-    // Right: runtime state, scripts, health, metrics, events.
-    let head = |t: &str| {
-        Line::styled(
-            t.to_string(),
-            Style::default()
-                .fg(accent(model))
-                .add_modifier(Modifier::BOLD),
-        )
-    };
-    let mut rt: Vec<Line> = vec![head("Status")];
-    if let Some(s) = st {
-        rt.push(Line::from(vec![
-            Span::styled(
-                format!("{} {}", s.glyph.symbol(!a), s.state),
-                Style::default().fg(glyph_color(s.glyph)),
-            ),
-            Span::raw(
-                s.reason
-                    .as_deref()
-                    .map(|r| format!(" ({r})"))
-                    .unwrap_or_default(),
-            ),
-        ]));
-        rt.push(Line::from(format!(
-            "pid {} · up {} · restarts {}",
-            s.pid.map_or_else(|| "-".into(), |p| p.to_string()),
-            uptime(s.uptime_s),
-            s.restarts
-        )));
-        rt.push(Line::from(format!("ports {}", ports_text(s, true))));
-    }
-    rt.push(head("Scripts"));
-    let scripts: Vec<String> = d
-        .and_then(|d| d.config.as_ref())
-        .and_then(|c| c.as_ref().ok())
-        .and_then(|c| c.get("scripts"))
-        .and_then(Value::as_object)
-        .map(|m| m.keys().cloned().collect())
-        .unwrap_or_default();
-    rt.push(Line::from(if scripts.is_empty() {
-        "-".to_string()
-    } else {
-        scripts.join(", ")
-    }));
-    rt.push(head("Health"));
-    rt.extend(health_lines(model, st, d).into_iter().map(Line::from));
-    rt.push(head("Metrics"));
-    rt.push(Line::from(if model.metrics.contains_key(name) {
-        "see CPU/MEM in the table"
-    } else {
-        "n/a (no samples yet)"
-    }));
-    rt.push(head("Events"));
-    let events = d.map(|d| d.events.as_slice()).unwrap_or_default();
-    if events.is_empty() {
-        rt.push(Line::from("-"));
-    }
-    for e in events.iter().rev().take(10).rev() {
-        let mut s = format!("{} {}", e.ts.format("%H:%M:%S"), e.kind);
-        if let (Some(from), Some(to)) = (&e.from, &e.to) {
-            s.push_str(&format!(" {from}→{to}"));
-        }
-        rt.push(Line::from(s));
-    }
-
-    if inner.width >= 60 {
-        let [l, r] = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .spacing(1)
-            .areas(inner);
-        f.render_widget(Paragraph::new(cfg), l);
-        f.render_widget(Paragraph::new(rt), r);
-    } else {
-        let mut all = rt;
-        all.push(Line::from(""));
-        all.extend(cfg);
-        f.render_widget(Paragraph::new(all), inner);
-    }
-}
-
-/// The health section: the probe summary from `status`, then the last
-/// probe results from the `health` RPC (newest last, at most 3), or `n/a`.
-fn health_lines(
-    model: &Model,
-    st: Option<&StemStatus>,
-    d: Option<&crate::model::DetailData>,
-) -> Vec<String> {
-    let mut out = Vec::new();
-    let summary = st
-        .and_then(|s| s.health.as_ref())
-        .and_then(|h| serde_json::to_value(h).ok())
-        .filter(|v| !v.is_null());
-    if let Some(v) = &summary {
-        let kind = v.get("type").and_then(Value::as_str).unwrap_or("?");
-        let fails = v
-            .get("consecutive_failures")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        out.push(format!("{kind} probe · {fails} failing in a row"));
-    }
-    let records: &[Value] = d
-        .and_then(|d| d.health.as_ref())
-        .and_then(|h| h.as_ref().ok())
-        .map_or(&[], Vec::as_slice);
-    for r in records.iter().rev().take(3).rev() {
-        let ok = r.get("ok").and_then(Value::as_bool).unwrap_or(false);
-        let g = if ok { Glyph::Healthy } else { Glyph::Failed };
-        let ts = r
-            .get("ts")
-            .and_then(Value::as_str)
-            .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
-            .map(|t| t.format("%H:%M:%S").to_string())
-            .unwrap_or_default();
-        out.push(format!(
-            "{ts} {} {} ({}ms)",
-            g.symbol(!model.ascii),
-            r.get("detail").and_then(Value::as_str).unwrap_or(""),
-            r.get("latency_ms").and_then(Value::as_u64).unwrap_or(0)
-        ));
-    }
-    if out.is_empty() {
-        out.push("n/a".into());
-    }
-    out
-}
-
 /// A `w`x`h` rectangle centred in `area` (clipped to it).
 pub fn centered(area: Rect, w: u16, h: u16) -> Rect {
     let w = w.min(area.width);
@@ -617,21 +715,25 @@ pub fn centered(area: Rect, w: u16, h: u16) -> Rect {
 /// Key help lines (key, what) of Table/Graph/Detail: navigation, then
 /// the actions on the selected stem (30).
 pub const HELP: &[(&str, &str)] = &[
-    ("j/k ↓/↑", "move the selection"),
-    ("h/l ←/→", "graph: across columns"),
+    ("j/k ↓/↑", "move · detail: rows (scroll)"),
+    ("PgUp PgDn", "detail: scroll a page"),
+    ("g / G", "first / last · top / end"),
+    ("[ / ]", "prev / next stem (wraps)"),
+    ("h/l ←/→", "graph cols · detail stem"),
     ("f e + -", "graph: focus labels zoom"),
-    ("g / G", "first / last stem"),
-    ("Enter", "open the detail view"),
+    ("Enter", "detail · run/switch/pause row"),
     ("Tab S-Tab", "next / previous view"),
     ("1-5", "go to a view (header #)"),
     ("/", "filter stems by name"),
     ("O", "cycle the sort order"),
     ("Ctrl-L", "split: logs below"),
-    ("click", "row / tab (mouse = true)"),
+    ("click", "row/tab/strip/bar (mouse)"),
+    ("wheel", "scroll / move (mouse)"),
     ("s", "start the stem"),
     ("x / X", "stop / with dependants"),
     ("r / R", "restart / rebuild"),
     ("p", "pause/resume watchdog"),
+    ("v", "switch variant (picker)"),
     ("o", "open code in $EDITOR"),
     ("S", "reset (type `reset`)"),
     (":", "script menu"),
@@ -650,23 +752,29 @@ pub const LOGS_HELP: &[(&str, &str)] = &[
     ("L", "level: all, info+, warn+, error"),
     ("s", "show / hide script output lines"),
     ("m", "merged: every stem, with prefixes"),
-    ("[ / ]", "previous / next stem"),
+    ("[ ] h/l ←/→", "previous / next stem (wraps; leaves m)"),
     ("j / k, g / G", "move · top / bottom (follows)"),
+    ("PgUp / PgDn", "move a page"),
+    ("wheel", "scroll (up leaves follow; mouse = true)"),
     ("Enter", "expand the fields of a structured line"),
     ("V, y", "visual range · copy line or range"),
     ("w / t", "wrap long lines / timestamps (UTC)"),
     ("Tab, Ctrl-L", "next view · split pane elsewhere"),
     ("1-5, click", "go to a view (header number or tab)"),
+    ("click", "a stem in the title strip (mouse = true)"),
     ("q", "quit"),
 ];
 
 /// Key help of the Events view.
 pub const EVENTS_HELP: &[(&str, &str)] = &[
     ("j / k, g / G", "move · first / newest (follows)"),
+    ("PgUp / PgDn", "move a page"),
+    ("wheel", "scroll (mouse = true)"),
     ("/", "filter by stem, kind, state or reason"),
     ("Enter", "the stem's logs at the event time"),
     ("Esc", "clear the filter"),
     ("Tab, 1-5", "next view · go to a view"),
+    ("[ / ]", "previous / next stem (selection)"),
     ("?", "toggle this help"),
     ("q", "quit"),
 ];

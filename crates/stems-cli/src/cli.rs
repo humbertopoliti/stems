@@ -320,6 +320,17 @@ pub enum Command {
     /// Read or change local config overrides.
     #[command(subcommand)]
     Config(ConfigCommand),
+    /// Switch a stem to one of its variants (e.g. from a local process to a
+    /// docker container), or back to `local`.
+    ///
+    /// Writes `stems.<stem>.variant` to stems.local.yaml (comments kept;
+    /// `local` removes the key), validates the workspace (the file is
+    /// restored on error) and, when the daemon runs, applies the change to
+    /// that stem: it restarts in its new form (`--no-apply` only edits the
+    /// file). Without a variant, lists the stem's variants and marks the
+    /// active one. An unknown name is UNKNOWN_VARIANT (exit 2). See
+    /// docs/config.md#variants-fr-st-8.
+    Switch(SwitchArgs),
     /// Add a stem to stems.yaml.
     Add(AddArgs),
     /// Remove a stem from stems.yaml.
@@ -381,6 +392,19 @@ pub struct ShowArgs {
     /// Also print the table of defaults applied to unset fields.
     #[arg(long)]
     pub effective: bool,
+}
+
+/// `stems switch`.
+#[derive(Debug, Args)]
+pub struct SwitchArgs {
+    /// The stem.
+    pub stem: String,
+    /// A variant name, or `local` for the base definition. Omit to list
+    /// the variants.
+    pub variant: Option<String>,
+    /// Only edit stems.local.yaml; do not apply the change to a running daemon.
+    #[arg(long)]
+    pub no_apply: bool,
 }
 
 /// `stems completions`.
@@ -506,6 +530,24 @@ pub struct RestartArgs {
     /// Deadline (e.g. 60s).
     #[arg(long, value_name = "DURATION")]
     pub timeout: Option<String>,
+    /// Then restart their running hard dependants too, transitively, in
+    /// dependency order (overrides `restart.cascade`; see docs/restart.md).
+    #[arg(long, conflicts_with = "no_cascade")]
+    pub cascade: bool,
+    /// Restart only these stems, even if `restart.cascade` is set.
+    #[arg(long)]
+    pub no_cascade: bool,
+}
+
+impl RestartArgs {
+    /// `--cascade` / `--no-cascade` / neither (the config decides).
+    pub fn cascade_flag(&self) -> Option<bool> {
+        match (self.cascade, self.no_cascade) {
+            (true, _) => Some(true),
+            (_, true) => Some(false),
+            _ => None,
+        }
+    }
 }
 
 /// `stems attach`.

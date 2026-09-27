@@ -53,6 +53,12 @@ Feature: docker stems run as labelled containers; down removes them
     When I run the shell command "docker inspect -f '{{.State.Status}}' docker-pg-db"
     Then the exit code is 0
     And stdout contains "exited"
+    # Starting again replaces the stopped leftover and keeps `docker-pg_net`.
+    When I run "stems start db --json"
+    Then the command succeeds
+    And the container "docker-pg-db" is running with label "stems.stem=db"
+    When I run "stems stop db --json"
+    Then the command succeeds
     When I run "stems down --volumes --yes --json"
     Then the command succeeds
     And no container with label stems.workspace=docker-pg exists

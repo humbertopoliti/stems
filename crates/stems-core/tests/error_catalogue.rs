@@ -184,6 +184,13 @@ fn sample(code: ErrorCode) -> Error {
             "profile `web-onyl` is not defined",
             "did you mean `web-only`? profiles: default, backend, web-only (see `stems profiles`)",
         ),
+        UnknownVariant => cfg(
+            code,
+            "stems.shop-api.variant",
+            4,
+            "stem `shop-api` has no variant `dockr`",
+            "variants of `shop-api`: docker (or `local` for the base definition; see `stems switch shop-api`)",
+        ),
         DestructiveNotConfirmed => rt(
             code,
             "`down --volumes` deletes data and needs confirmation",

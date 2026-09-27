@@ -14,6 +14,7 @@
 //! handler (restart policies 22), [`Host`] (its `state_store` is 11's state file).
 
 pub mod actor;
+pub mod cascade;
 pub mod containers;
 pub mod env;
 pub mod hooks;
@@ -287,6 +288,8 @@ pub struct Core {
     pub(crate) metrics: metrics::MetricsStore,
     /// Watchdogs: per-stem watchers, pause flags (24).
     pub(crate) watch: watch::WatchHub,
+    /// Cascading restarts: the running one, the queue gate (FR-LC-9).
+    pub(crate) cascade: cascade::CascadeHub,
 }
 
 /// The supervisor. Installed into the daemon by [`Daemon::run`].
@@ -305,6 +308,16 @@ pub struct Supervisor {
 }
 
 /// A fresh run id (a ULID, unique per daemon run).
+/// The daemon's environment as inherited by scripts, health commands and
+/// process stems, with the `docker` CLI's directory prepended to `PATH`
+/// when `docker` is not on it (so `docker exec ...` works from a daemon
+/// started without Docker Desktop's bin directory on `PATH`; docs/docker.md).
+fn base_env() -> BTreeMap<String, String> {
+    let mut env: BTreeMap<String, String> = std::env::vars().collect();
+    stems_runtime::docker::ensure_docker_on_path(&mut env);
+    env
+}
+
 fn new_run_id() -> String {
     crate::state::new_run_id()
 }
@@ -362,7 +375,7 @@ impl Supervisor {
                 waiter,
                 ports: PortBook::default(),
                 run_id,
-                base_env: std::env::vars().collect(),
+                base_env: base_env(),
                 sink,
                 state: Some(state),
                 scripts,
@@ -370,6 +383,7 @@ impl Supervisor {
                 outputs: outputs::OutputStore::default(),
                 metrics: metrics::MetricsStore::default(),
                 watch: watch::WatchHub::default(),
+                cascade: cascade::CascadeHub::default(),
             }),
             host,
             cells: Mutex::new(IndexMap::new()),
@@ -380,6 +394,8 @@ impl Supervisor {
         });
         // Watchdog actions run through the supervisor (24).
         sup.core.watch.bind(&sup);
+        // Policy-triggered cascades run through it too (FR-LC-9).
+        sup.core.cascade.bind(&sup);
         sup
     }
 
@@ -634,13 +650,26 @@ impl Supervisor {
         Ok(res)
     }
 
-    /// `restart`: stop the stems, then start them (and missing deps), keeping ports.
+    /// `restart`: stop the stems, then start them (and missing deps), keeping
+    /// ports; with a cascade their running hard dependants follow (FR-LC-9,
+    /// [`cascade::restart`]).
     pub async fn restart(&self, p: RestartParams, actor: &str) -> Result<UpResult, Error> {
         let ws = self.workspace(true, actor)?;
         schedule::plan(&ws, &p.stems, p.no_deps)?;
         Self::not_managed(&ws, &p.stems, "restart")?;
         let plan = schedule::plan(&ws, &p.stems, p.no_deps)?;
-        let _ops = self.ops.lock().await;
+        cascade::restart(self, &ws, &plan, p, actor).await
+    }
+
+    /// The stop, build and start of `restart` (the ops lock is held).
+    pub(crate) async fn restart_stems(
+        &self,
+        ws: &Arc<Resolved>,
+        plan: &Plan,
+        p: &RestartParams,
+        actor: &str,
+    ) -> Result<UpResult, Error> {
+        let ws = ws.clone();
         let stop = self.stop_set(&ws, &p.stems, None, actor, "restart").await;
         if let Some(f) = stop.failed.into_iter().next() {
             return Err(f.error);
@@ -656,8 +685,8 @@ impl Supervisor {
             timeout_ms: p.timeout_ms,
             ..UpParams::default()
         };
-        let mut res = self.run_plan(&plan, &ws, &up, actor, "restart").await;
-        res.requested = p.stems;
+        let mut res = self.run_plan(plan, &ws, &up, actor, "restart").await;
+        res.requested = p.stems.clone();
         Ok(res)
     }
 
@@ -924,6 +953,182 @@ impl Supervisor {
                 .with_hint("run `stems status` for the stems of this workspace")
         })?;
         to_value(stem)
+    }
+
+    /// `switch_variant {stem, variant?}` (FR-ST-8): what `stems switch`
+    /// does, in the daemon (the TUI's variant picker; the CLI when a daemon
+    /// runs). Without `variant`: the stem's choices. With one: write
+    /// `stems.<stem>.variant` to the workspace's `stems.local.yaml` with the
+    /// comment-preserving editor (`local` removes the key unless
+    /// `stems.yaml` selects a default variant), re-validate the workspace
+    /// from disk (the file is restored when that fails), then `config_apply
+    /// {stems: [stem], yes: true}`.
+    pub async fn switch_variant(
+        &self,
+        p: stems_api::SwitchVariantParams,
+        actor: &str,
+    ) -> Result<stems_api::SwitchVariantResult, Error> {
+        use stems_config::{ConfigPath, edit, variants};
+        let applied = self.workspace(false, actor)?;
+        let root = applied.workspace.root.clone();
+        let first = |errs: stems_core::Errors| {
+            let all = errs.0.clone();
+            let mut e = errs.0.into_iter().next().unwrap_or_else(|| {
+                Error::internal("the workspace failed to load without an error")
+            });
+            if all.len() > 1 {
+                e.details = json!({ "errors": all });
+            }
+            e
+        };
+        let opts = stems_config::LoadOptions {
+            workspace: Some(root.clone()),
+            cwd: root.clone(),
+            env: std::env::vars().collect(),
+            skip_local: false,
+        };
+        let (config_file, committed) =
+            stems_config::committed_tree(&opts).map_err(|e| first(stems_core::Errors::from(e)))?;
+        let file = config_file
+            .parent()
+            .map_or_else(|| root.clone(), std::path::Path::to_path_buf)
+            .join(stems_config::LOCAL_FILE);
+        let original = match std::fs::read_to_string(&file) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => {
+                return Err(Error::new(
+                    ErrorCode::ConfigReadFailed,
+                    format!("{} cannot be read: {e}", file.display()),
+                )
+                .with_hint("check that the file is readable by the daemon's user"));
+            }
+        };
+        let current = self.host.load_candidate(actor, false).map_err(first)?;
+        let Some(stem) = current.workspace.stem(&p.stem) else {
+            let known: Vec<&String> = current.workspace.stems.keys().collect();
+            return Err(Error::new(
+                ErrorCode::UnknownStem,
+                format!("no stem named `{}`", p.stem),
+            )
+            .with_hint("run `stems status` for the stems of this workspace")
+            .with_details(json!({ "stem": p.stem, "known": known })));
+        };
+        let name = stem.name.clone();
+        let from = stem
+            .variant
+            .clone()
+            .unwrap_or_else(|| variants::BASE_VARIANT.to_string());
+        let local_tree = edit::parse_value(&original).ok();
+        let choices = variants::choices(&committed, local_tree.as_ref(), &name);
+        let list: Vec<stems_api::VariantChoice> = choices
+            .iter()
+            .map(|c| stems_api::VariantChoice {
+                name: c.name.clone(),
+                kind: c.kind.clone(),
+                active: c.name == from,
+            })
+            .collect();
+        let path = ConfigPath::root().key("stems").key(&name).key("variant");
+        let mut out = stems_api::SwitchVariantResult {
+            stem: name.clone(),
+            from: from.clone(),
+            to: from.clone(),
+            kind: choices
+                .iter()
+                .find(|c| c.name == from)
+                .and_then(|c| c.kind.clone()),
+            variants: list,
+            path: path.to_string(),
+            ..Default::default()
+        };
+        let Some(target) = p.variant else {
+            return Ok(out);
+        };
+        let to = if variants::is_base(&target) {
+            variants::BASE_VARIANT.to_string()
+        } else {
+            target.clone()
+        };
+        let Some(choice) = choices.iter().find(|c| c.name == to) else {
+            let names: Vec<&str> = choices
+                .iter()
+                .map(|c| c.name.as_str())
+                .filter(|n| *n != variants::BASE_VARIANT)
+                .collect();
+            let hint = if names.is_empty() {
+                format!("`{name}` declares no `variants` (see docs/config.md#variants-fr-st-8)")
+            } else {
+                format!(
+                    "variants of `{name}`: {} (or `{}` for the base definition)",
+                    names.join(", "),
+                    variants::BASE_VARIANT
+                )
+            };
+            return Err(Error::new(
+                ErrorCode::UnknownVariant,
+                format!("stem `{name}` has no variant `{target}`"),
+            )
+            .with_path(path)
+            .with_hint(hint)
+            .with_details(json!({ "stem": name, "variant": target, "known": names })));
+        };
+        let committed_default =
+            variants::committed_selection(&committed, &name).filter(|v| !variants::is_base(v));
+        let no_base = |_: &ConfigPath| None;
+        let edited = if to == variants::BASE_VARIANT && committed_default.is_none() {
+            edit::unset(&original, &path).map(|(t, _)| t)
+        } else {
+            edit::set(&original, &path, &to, &no_base)
+        };
+        let new = edited.map_err(|e| {
+            Error::new(
+                ErrorCode::Usage,
+                format!("cannot edit `{path}` in {}: {}", file.display(), e.0),
+            )
+            .with_path(path.clone())
+            .with_hint(format!(
+                "set `variant: {to}` under `stems.{name}` in {} by hand",
+                file.display()
+            ))
+        })?;
+        out.to = to.clone();
+        out.kind = choice.kind.clone();
+        out.file = Some(file.clone());
+        out.changed = original != new;
+        out.diff = edit::diff_lines(&original, &new);
+        if out.changed {
+            let check = || self.host.load_candidate(actor, false).map(|_| ());
+            match edit::write_checked(&file, &new, check) {
+                Ok(()) => {}
+                Err(edit::WriteError::Io(e)) => {
+                    return Err(Error::new(
+                        ErrorCode::ConfigReadFailed,
+                        format!("cannot write {}: {e}", file.display()),
+                    )
+                    .with_hint("check the permissions of the integration repo directory")
+                    .with_details(json!({ "file": file })));
+                }
+                Err(edit::WriteError::Rejected(errs)) => {
+                    let mut e = first(errs);
+                    if e.hint.is_none() {
+                        e.hint = Some(format!("{} was left unchanged", stems_config::LOCAL_FILE));
+                    }
+                    return Err(e);
+                }
+            }
+        }
+        let r = self
+            .config_apply(
+                stems_api::ConfigApplyParams {
+                    stems: vec![name],
+                    yes: true,
+                },
+                actor,
+            )
+            .await?;
+        out.applied = Some(r);
+        Ok(out)
     }
 
     /// Crash recovery (deliverable 11): adopt every stem the previous run
@@ -1223,6 +1428,10 @@ impl SupervisorHooks for Supervisor {
                 Ok(p) => self.config_apply(p, actor).await.and_then(to_value),
                 Err(e) => Err(e),
             },
+            m if m == Method::SWITCH_VARIANT => match params(m, p) {
+                Ok(p) => self.switch_variant(p, actor).await.and_then(to_value),
+                Err(e) => Err(e),
+            },
             _ => return None,
         };
         Some(r)
@@ -1232,6 +1441,20 @@ impl SupervisorHooks for Supervisor {
         self.runs.shutdown().await;
         self.stop_all(stems_api::DAEMON_ACTOR, "daemon shutdown")
             .await;
+        // A failed start (or a crash the restart policy gave up on) keeps
+        // its stopped container for inspection until `down`; it does not
+        // outlive the daemon either (only `stems stop` keeps one).
+        let failed = containers::failed_selection(
+            self.existing_cells()
+                .iter()
+                .map(|c| (c.name.clone(), c.state())),
+        );
+        if !failed.is_empty()
+            && let Some(ws) = self.host.resolved()
+        {
+            let none_running = |_: &str| false;
+            containers::after_down(&self.core, &ws.workspace, &failed, &none_running, false).await;
+        }
     }
 
     async fn recover(&self, previous: Option<StateFile>) {

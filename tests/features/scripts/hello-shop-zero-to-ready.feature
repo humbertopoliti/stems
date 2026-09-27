@@ -6,9 +6,10 @@ Feature: hello-shop from zero to ready (phase 2 exit criterion)
   shop-api serves the seeded products, and `down --all` removes every
   process and container (and runs the workspace teardown).
 
-  Needs Docker (postgres is a docker stem, redis a compose stem), `curl`,
-  and a `psql` client on the host: shop-api reads `/products` through
-  `psql $DATABASE_URL` (without psql it falls back to built-in products).
+  Needs Docker (postgres is a docker stem, redis a compose stem) and `curl`,
+  nothing else on the host: health checks run inside the containers, and
+  shop-api reads `/products` through `docker exec hello-shop-postgres psql`
+  (`SHOP_PSQL`), so the seeded rows are served without a host `psql`.
   Runs only under `make e2e-docker`.
 
   Scenario: up on a clean home, seeded rows served, down --all clean

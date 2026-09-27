@@ -18,7 +18,7 @@ Feature: stems status prints a table for humans
     Then the command succeeds
     And stdout contains "OK healthy"
     And stdout contains "- stopped"
-    And stdout contains "1 healthy, 0 degraded, 0 failed, 0 starting, 1 stopped, 0 unknown"
+    And stdout contains "1 healthy, 0 degraded, 0 failed, 0 unhealthy, 0 starting, 1 stopped, 0 unknown"
     When I run "stems status nope --json"
     Then the exit code is 2
     And the JSON error has code "UNKNOWN_STEM"

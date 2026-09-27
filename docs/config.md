@@ -6,6 +6,8 @@ Deliverable 26 (part A). The file format itself is described in
 and profiles (FR-WS-8), `stems config get|set|unset` (FR-CL-5), the
 include / extends error cases (FR-WS-9), and stem outputs (FR-ST-6, part B,
 [below](#outputs-fr-st-6)).
+[Variants](#variants-fr-st-8) (FR-ST-8, `stems switch`) came later: one
+stem, several forms, e.g. a local process or a docker container.
 
 ## Profiles (FR-WS-8)
 
@@ -140,7 +142,8 @@ edited as data and rewritten in flow style on its key line (comments inside
 it are lost). A list the local file does not have yet is copied from the
 committed config first, so `config set stems.api.ports[0].port 18091`
 produces `ports: [{ name: http, port: 18091 }]` in `stems.local.yaml`
-(lists replace, they never merge).
+(lists replace, they never merge; an entry keeps the `container_port` of
+the replaced entry with the same `name`, see [Variants](#variants-fr-st-8)).
 
 ## Reload on change (FR-WD-3)
 
@@ -366,3 +369,145 @@ reference literally instead.
   value contains a secret — as `"<redacted>"`.
 * `stems show --json` prints the declarations as written (`{command,
   secret: true}`); there is no value at config time, so nothing leaks.
+
+## Variants (FR-ST-8)
+
+A stem can have alternative forms — "run shop-api as a local process, or
+as a docker container built from its codebase" — without duplicating it.
+`variants:` holds partial stem definitions; `variant:` picks one.
+
+```yaml
+stems:
+  api:
+    type: process
+    codebase: ../repos/api
+    command: python3 app.py
+    ports: [{ name: http, port: 18080 }]
+    health: { type: http, url: "http://127.0.0.1:${stem.api.port}/healthz" }
+    variants:
+      docker:
+        type: docker
+        build: { context: "${codebase}" }
+        ports: [{ name: http, port: 18080, container_port: 8080 }]
+      slow:
+        env: { SHOP_SLEEP_START: "1" }
+```
+
+### Resolution
+
+Order, lowest first: the stem as defined by `stems.yaml` (with its
+`include`s / `extends`) → the **active variant** → `stems.local.yaml`. So a
+local override still wins over a variant.
+
+* A variant is merged over the base with the usual [merge
+  rules](../crates/stems-config/README.md#merge-rules): maps recursively
+  (`env` keys add up), lists replace (`ports`, `depends_on`, …), `scripts`
+  per key, a `health` with a different `type` replaces the base's.
+* One exception to "lists replace": when a later layer (a variant or
+  `stems.local.yaml`) replaces a stem's `ports`, an entry whose `name`
+  matches a replaced entry keeps that entry's `container_port` unless it
+  sets its own. So a developer (or the e2e harness) remapping only the host
+  port in `stems.local.yaml` — `ports: [{ name: http, port: 28080 }]` —
+  keeps the docker variant's `container_port: 8080`. A renamed port, an
+  unnamed one and the shorthand forms (`5432`, `"15432:5432"`) inherit
+  nothing.
+* A variant that sets a **different `type`** first drops every
+  type-specific field of the base — `cwd`, `command`, `shell`, `stdin`
+  (process), `image`, `build`, `volumes`, `entrypoint`, `network`, `labels`,
+  `healthcheck` (docker), `file`, `service`, `project_name`, `adopt`
+  (compose) — and keeps the shared ones: `description`, `codebase`, `env`,
+  `env_files`, `ports`, `depends_on`, `health`, `restart`, `watch`,
+  `overlays`, `outputs`, `tags`, `limits`, `stop_grace`, `scripts` (custom
+  scripts keep working; a docker stem ignores `scripts.start`).
+* `${…}` is substituted after the merge: `${codebase}` in a variant is the
+  stem's codebase (the base's, unless the variant sets its own), so
+  `build: { context: "${codebase}" }` builds the stem's own Dockerfile.
+* Variant fields go through the same schema: an unknown or invalid field is
+  `SCHEMA_INVALID` at its path, e.g. `stems.api.variants.docker.imag`.
+  Variant names `local` and `base` are reserved, and a variant cannot set
+  `variant` / `variants` itself (`SCHEMA_INVALID`).
+
+### Choosing one
+
+`stems.<stem>.variant: <name>` selects a variant. In `stems.yaml` it is the
+team's default; in `stems.local.yaml` a developer's choice (it wins). Absent,
+`local` or `base` (or `null` in the local file) = the base definition. A
+name the stem does not declare is `UNKNOWN_VARIANT` (exit 2, at
+`stems.<stem>.variant`, `details: {stem, variant, known}`); `validate`
+reports it and the base is used meanwhile.
+
+`stems show <stem> --json` reports `variant` (the active one, `"local"` for
+the base) and `variants` (the declared names) next to the resolved form;
+`stems status --json` has `variant` per stem. Both keys are omitted for a
+stem without variants. The human status table's `TYPE` column shows the
+effective type.
+
+### `stems switch <stem> [<variant>|local] [--no-apply] [--json]`
+
+* `stems switch api` lists the choices, `*` marking the active one:
+  `data: { stem, variant, variants: [{name, type, active}] }` (`local`
+  first).
+* `stems switch api docker` writes `stems.api.variant: docker` into
+  `stems.local.yaml` with the comment-preserving editor (like `config set`),
+  re-validates the workspace and restores the file on error. `stems switch
+  api local` removes the key (or writes `variant: local` when `stems.yaml`
+  selects a default variant). Then, if the daemon runs and `--no-apply` is
+  not given, it applies the change to that stem only (`config apply api
+  --yes`): the stem stops in its old form (the process group, or the
+  container is removed) and starts in the new one; its dependants keep
+  running unless their own config changed. A `type` change is
+  `restart_required` with field `type` in the reload plan; the variant name
+  itself is metadata.
+* `data: { stem, from, to, type, path, file, changed, diff, daemon,
+  applied, status }`: `applied` is the `config apply` result and `status`
+  the stem's status afterwards (`null` with `--no-apply` or without a
+  daemon; `daemon: false` when none runs — the next `up` uses the new
+  form). A stem that fails to start in its new form is reported as an error
+  (`applied.failed`); `stems switch api local` goes back.
+
+### Example: shop-api in hello-shop
+
+`examples/workspaces/hello-shop` runs `shop-api` as a process. This variant
+runs the same codebase as a container built from its Dockerfile (the image
+listens on `0.0.0.0:$PORT`; stems publishes host port 18080 → container
+port 8080). Inside a container `localhost` is the container itself, so the
+database URL goes through `host.docker.internal`; the psql-through-`docker
+exec` shortcut (`SHOP_PSQL`) is cleared (there is no docker CLI in the
+image: `/products` falls back to its in-memory list), and the overlay
+`config/local.ini`, still materialised into the codebase, is mounted into
+the container. Under `stems.shop-api`:
+
+```yaml
+    # `stems switch shop-api docker` runs the same codebase as a container
+    # (built from its Dockerfile); `stems switch shop-api local` goes back.
+    variants:
+      docker:
+        type: docker
+        build: { context: "${codebase}" }
+        ports: [{ name: http, port: 18080, container_port: 8080 }]
+        volumes: ["${codebase}/config:/app/config:ro"]
+        env:
+          PORT: "8080"
+          DATABASE_URL: "postgres://${var.pg_user}:local@host.docker.internal:${stem.postgres.port}/shop"
+          SHOP_PSQL: ""
+          SHOP_CONFIG: /app/config/local.ini
+        health: { start_timeout: 3m }
+```
+
+```console
+$ stems up --detach
+$ stems switch shop-api docker     # stops the process, builds, runs the container
+$ stems switch shop-api            # * docker
+$ stems switch shop-api local      # back to the process; container removed
+```
+
+The first switch builds the image (tag `stems/<ws>/<stem>:<run_id>`, see
+[docker.md](docker.md)); `start_timeout: 3m` leaves room for it. Only
+shop-api restarts: shop-web and the rest keep their pids. The container is
+`hello-shop-shop-api`. A `stems.local.yaml` that moves shop-api's host
+port keeps `container_port: 8080` (the merge rule above), and a local `PORT`
+equal to the new host port is rewritten to the container port inside the
+container, so the image still listens on 8080. Scenarios: `tests/features/variants/` (fixture
+`tests/fixtures/workspaces/variants-demo`; the Docker ones are `@docker`,
+run by `make e2e-docker`; `hello-shop-switch.feature` runs exactly this
+example).

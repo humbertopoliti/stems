@@ -10,7 +10,8 @@ stems:
   api:
     type: docker
     codebase: ../../../../examples/repos/shop-api
-    build: { context: ../../../../examples/repos/shop-api }
+    # `build.context` is relative to the codebase when the stem has one.
+    build: { context: . }
     ports: [{ name: http, port: 18571, container_port: 8080 }]
     env:
       SHOP_CHAOS: "1"

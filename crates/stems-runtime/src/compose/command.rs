@@ -90,9 +90,19 @@ impl ComposeCommand {
         Self::with(t, &["stop", "-t", &secs])
     }
 
-    /// `rm -f -s <service>` (stops first if it is still running).
+    /// `rm -f -s -v <service>` (stops first if it is still running; `-v`
+    /// takes the container's anonymous volumes, e.g. redis's `/data`, never
+    /// named ones).
     pub fn rm(t: &ComposeTarget) -> Vec<OsString> {
-        Self::with(t, &["rm", "-f", "-s"])
+        Self::with(t, &["rm", "-f", "-s", "-v"])
+    }
+
+    /// `-p <project> down` (no `-f`, no `-v`, no `--rmi`): removes what is
+    /// left of an empty project, i.e. its `<project>_default` network.
+    pub fn down_project(project: &str) -> Vec<OsString> {
+        let mut v = Self::base(&ComposeTarget::project(project));
+        v.push("down".into());
+        v
     }
 
     /// `ps --format json -a [<service>]`.

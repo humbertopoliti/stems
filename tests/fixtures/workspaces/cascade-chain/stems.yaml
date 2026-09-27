@@ -1,0 +1,51 @@
+# cascade-chain — fixture for tests/features/cascade/*.feature (FR-LC-9).
+#
+# process-chain's diamond: b and c depend on a, d depends on b and c. Each
+# stem is examples/repos/shop-api (chaos endpoints on) and sleeps
+# SHOP_SLEEP_START before it listens. A start fails (exit 3) while the file
+# `fail-<stem>` exists in the workspace dir, so a scenario can make a
+# restart fail without a config change. No `watch:` rules and no
+# `restart.cascade` here: scenarios add them through local overrides.
+schema_version: 1
+name: cascade-chain
+
+stems:
+  a:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    env: { SHOP_SLEEP_START: "0.3", SHOP_CHAOS: "1" }
+    ports: [{ name: http, port: 18311 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts:
+      start: 'if [ -f "$STEMS_WORKSPACE/fail-$STEMS_STEM" ]; then echo "fail-$STEMS_STEM exists"; exit 3; fi; exec python3 app.py'
+  b:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    depends_on: [a]
+    env: { SHOP_SLEEP_START: "0.3", SHOP_CHAOS: "1" }
+    ports: [{ name: http, port: 18312 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts:
+      start: 'if [ -f "$STEMS_WORKSPACE/fail-$STEMS_STEM" ]; then echo "fail-$STEMS_STEM exists"; exit 3; fi; exec python3 app.py'
+  c:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    depends_on: [a]
+    env: { SHOP_SLEEP_START: "0.3", SHOP_CHAOS: "1" }
+    ports: [{ name: http, port: 18313 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts:
+      start: 'if [ -f "$STEMS_WORKSPACE/fail-$STEMS_STEM" ]; then echo "fail-$STEMS_STEM exists"; exit 3; fi; exec python3 app.py'
+  d:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    depends_on: [b, c]
+    env: { SHOP_SLEEP_START: "0.3", SHOP_CHAOS: "1" }
+    ports: [{ name: http, port: 18314 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts:
+      start: 'if [ -f "$STEMS_WORKSPACE/fail-$STEMS_STEM" ]; then echo "fail-$STEMS_STEM exists"; exit 3; fi; exec python3 app.py'

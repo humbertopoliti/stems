@@ -104,6 +104,38 @@ pub struct UpResult {
     pub failed: Vec<StemFailure>,
     /// Stems not started (a dependency failed, or fail-fast aborted).
     pub skipped: Vec<String>,
+    /// `restart` with a cascade (FR-LC-9): what happened to the dependants.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cascade: Option<CascadeReport>,
+}
+
+/// The outcome of a cascading restart (FR-LC-9, `docs/restart.md`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct CascadeReport {
+    /// The cascade's id (a ULID; `cascade` in its events).
+    pub id: String,
+    /// The first stem the cascade started from.
+    pub origin: String,
+    /// Every stem it started from (`stems restart a b --cascade`).
+    pub origins: Vec<String>,
+    /// The dependants restarted, per layer (dependency order).
+    pub restarted: Vec<Vec<String>>,
+    /// Dependants whose restart failed.
+    pub failed: Vec<StemFailure>,
+    /// Dependants left alone: not running, or a dependency of theirs failed.
+    pub skipped: Vec<String>,
+    /// The origin did not become healthy: no dependant was touched.
+    #[serde(default)]
+    pub aborted: bool,
+}
+
+/// A stem taking part in a running cascade (`status`, FR-LC-9).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CascadeRef {
+    /// The cascade's id.
+    pub id: String,
+    /// The stem it started from.
+    pub origin: String,
 }
 
 /// `down` params.
@@ -183,6 +215,11 @@ pub struct RestartParams {
     /// Overall deadline in milliseconds.
     #[serde(default)]
     pub timeout_ms: Option<u64>,
+    /// Also restart the stems' running hard dependants, transitively, once
+    /// the stems are healthy again (FR-LC-9). `null`/absent: each stem's
+    /// `restart.cascade`; `true`/`false` overrides it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cascade: Option<bool>,
 }
 
 /// `status` params.
@@ -272,6 +309,14 @@ pub struct StemStatus {
     /// Watchdogs (24): `{paused, rules}`; omitted for a stem without `watch:` rules.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub watch: Option<crate::watch::WatchSummary>,
+    /// Active variant (FR-ST-8): its name, or `local` for the base
+    /// definition; omitted for a stem without `variants`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
+    /// The cascading restart this stem takes part in right now (FR-LC-9):
+    /// `{id, origin}`; omitted otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cascade: Option<CascadeRef>,
 }
 
 /// What `status` and `outputs` show instead of a secret output's value.
@@ -324,8 +369,13 @@ pub struct StatusSummary {
     pub healthy: usize,
     /// `healthy` with a warning.
     pub degraded: usize,
-    /// `failed` and `unhealthy`.
+    /// `failed`: exited, could not start, gave up.
     pub failed: usize,
+    /// `unhealthy`: running (or, for an external stem, reachable) but its
+    /// health check fails. Counted apart from `failed` (both show the
+    /// `failed` glyph).
+    #[serde(default)]
+    pub unhealthy: usize,
     /// `stopped`.
     pub stopped: usize,
     /// `unknown`.
@@ -342,6 +392,7 @@ impl StatusSummary {
             match st.glyph {
                 Glyph::Healthy => s.healthy += 1,
                 Glyph::Degraded => s.degraded += 1,
+                Glyph::Failed if st.state == StemState::Unhealthy => s.unhealthy += 1,
                 Glyph::Failed => s.failed += 1,
                 Glyph::Stopped => s.stopped += 1,
                 Glyph::Unknown => s.unknown += 1,
@@ -359,6 +410,61 @@ pub struct StatusResult {
     pub stems: Vec<StemStatus>,
     /// Counts.
     pub summary: StatusSummary,
+}
+
+/// `switch_variant` params (FR-ST-8): what `stems switch <stem>
+/// [<variant>]` does, run by the daemon (the TUI's variant picker uses it).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SwitchVariantParams {
+    /// The stem.
+    pub stem: String,
+    /// The variant to switch to (`local`/`base` for the base definition);
+    /// `None` only lists the choices (nothing is written).
+    #[serde(default)]
+    pub variant: Option<String>,
+}
+
+/// One choice of a stem: `local` (the base definition) or a variant.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct VariantChoice {
+    /// `local` or the variant name.
+    pub name: String,
+    /// The stem `type` with this choice (`null` if unset).
+    #[serde(rename = "type")]
+    pub kind: Option<String>,
+    /// The active choice.
+    pub active: bool,
+}
+
+/// `switch_variant` result.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct SwitchVariantResult {
+    /// The stem.
+    pub stem: String,
+    /// The active choice before the call.
+    pub from: String,
+    /// The active choice after it (= `from` when only listing).
+    pub to: String,
+    /// The stem type of `to`.
+    #[serde(rename = "type")]
+    pub kind: Option<String>,
+    /// `local` first, then the variants in declaration order (as before
+    /// the call).
+    pub variants: Vec<VariantChoice>,
+    /// The config path written (`stems.<stem>.variant`).
+    #[serde(default)]
+    pub path: String,
+    /// `stems.local.yaml` (`null` when only listing).
+    #[schemars(with = "Option<String>")]
+    pub file: Option<std::path::PathBuf>,
+    /// The file changed.
+    pub changed: bool,
+    /// Its line diff (`-old` / `+new`).
+    pub diff: Vec<String>,
+    /// `config_apply {stems: [stem], yes: true}` after the edit (`null`
+    /// when only listing).
+    #[serde(default)]
+    pub applied: Option<crate::reload::ConfigApplyResult>,
 }
 
 #[cfg(test)]
@@ -400,6 +506,8 @@ mod tests {
             env: None,
             outputs: BTreeMap::new(),
             watch: None,
+            variant: None,
+            cascade: None,
         };
         let v = serde_json::to_value(&st).unwrap();
         assert_eq!(v["type"], "process");
@@ -407,7 +515,27 @@ mod tests {
         assert_eq!(v["glyph"], "healthy");
         assert!(v.get("env").is_none());
         assert_eq!(serde_json::from_value::<StemStatus>(v).unwrap(), st);
-        let s = StatusSummary::of(&[st]);
+        let s = StatusSummary::of(std::slice::from_ref(&st));
         assert_eq!(s.healthy, 1);
+        // Unhealthy (running, probe failing; also an external stem) is
+        // counted apart from failed, though both show the failed glyph.
+        let with = |state: StemState, kind: &str| StemStatus {
+            state,
+            glyph: Glyph::Failed,
+            kind: kind.into(),
+            ..st.clone()
+        };
+        let s = StatusSummary::of(&[
+            with(StemState::Unhealthy, "process"),
+            with(StemState::Unhealthy, "external"),
+            with(StemState::Failed, "process"),
+        ]);
+        assert_eq!((s.unhealthy, s.failed), (2, 1));
+        // Old summaries without the field still parse.
+        let old: StatusSummary = serde_json::from_value(serde_json::json!({
+            "healthy": 1, "degraded": 0, "failed": 0, "stopped": 0, "unknown": 0, "starting": 0
+        }))
+        .unwrap();
+        assert_eq!(old.unhealthy, 0);
     }
 }

@@ -24,6 +24,7 @@ pub mod scripts;
 pub mod show;
 pub mod status;
 pub mod stubs;
+pub mod switch;
 pub mod upgrade;
 pub mod validate;
 pub mod version;
@@ -115,6 +116,7 @@ pub fn dispatch(cmd: Command, ctx: &Ctx, mode: Mode, stdout: &mut dyn Write) -> 
         Command::Config(crate::cli::ConfigCommand::Unset(a)) => config::unset(ctx, &a),
         Command::Config(crate::cli::ConfigCommand::Diff) => config::diff(ctx),
         Command::Config(crate::cli::ConfigCommand::Apply(a)) => config::apply(ctx, &a, mode),
+        Command::Switch(a) => switch::run(ctx, &a),
         Command::Completions(a) => completions::run(&a),
         Command::Upgrade(a) => upgrade::run(ctx, &a),
         Command::Man { outdir } => man::run(&ctx.cwd, &outdir),

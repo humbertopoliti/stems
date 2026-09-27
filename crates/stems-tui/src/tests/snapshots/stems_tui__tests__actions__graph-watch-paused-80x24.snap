@@ -1,5 +1,6 @@
 ---
 source: crates/stems-tui/src/tests/actions.rs
+assertion_line: 592
 expression: text
 ---
  stems · process-chain           1 [Graph]  2 Table  3 Detail  4 Logs  5 Events
@@ -23,6 +24,6 @@ expression: text
 
 
 
-
  ✓ healthy  ! degraded  ✗ failed  · stopped  ? unknown  ↻ transitioning
- process-chain · profile - · daemon pid 4242 · ✓1 !0 ✗1 ·1 ?0 ↻1 ? help · q qui…
+ ▶ s start  : scripts  o editor  ? more
+ process-chain · profile - · daemon pid 4242 · ✓1 !0 ✗0 ↯1 ·1 ?0 ↻1 ? help · q …

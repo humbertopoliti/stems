@@ -167,12 +167,49 @@ fn up_human(r: &UpResult) -> String {
     for n in &r.skipped {
         s.push_str(&format!("  skipped {n}\n"));
     }
+    if let Some(c) = &r.cascade {
+        s.push_str(&cascade_human(c));
+    }
+    s
+}
+
+/// A cascading restart (FR-LC-9): one line per dependant.
+fn cascade_human(c: &stems_api::CascadeReport) -> String {
+    if c.aborted {
+        return format!(
+            "cascade from {}: aborted, {} did not become healthy; dependants not restarted\n",
+            c.origins.join(", "),
+            c.origins.join(", ")
+        );
+    }
+    let restarted: usize = c.restarted.iter().map(Vec::len).sum();
+    let mut s = format!(
+        "cascade from {}: {} restarted, {} failed, {} skipped\n",
+        c.origins.join(", "),
+        restarted,
+        c.failed.len(),
+        c.skipped.len()
+    );
+    for (i, layer) in c.restarted.iter().enumerate() {
+        for n in layer {
+            s.push_str(&format!("  restarted {n} (layer {})\n", i + 1));
+        }
+    }
+    for f in &c.failed {
+        s.push_str(&format!("  failed    {}: {}\n", f.stem, f.error.message));
+    }
+    for n in &c.skipped {
+        s.push_str(&format!("  skipped   {n}\n"));
+    }
     s
 }
 
 /// Output for an [`UpResult`] (up/start/restart).
 fn up_output(r: &UpResult) -> CommandOutput {
-    let errors: Vec<Error> = r.failed.iter().map(|f| f.error.clone()).collect();
+    let mut errors: Vec<Error> = r.failed.iter().map(|f| f.error.clone()).collect();
+    if let Some(c) = &r.cascade {
+        errors.extend(c.failed.iter().map(|f| f.error.clone()));
+    }
     CommandOutput::data(to_value(r))
         .with_human(up_human(r))
         .with_errors(Errors(errors))
@@ -749,6 +786,7 @@ pub fn restart(ctx: &Ctx, args: &RestartArgs) -> CommandOutput {
             no_deps: args.no_deps,
             build: args.build,
             timeout_ms: ms(timeout),
+            cascade: args.cascade_flag(),
         };
         let bound = grace_sum(ctx) + timeout.unwrap_or(LONG);
         let res: UpResult = c.call_with_timeout(Method::RESTART, &params, bound).await?;
@@ -1066,6 +1104,38 @@ mod tests {
         let out = up_output(&r);
         assert_eq!(out.exit_code(), 1);
         assert_eq!(out.envelope()["data"]["failed"][0]["stem"], "b");
+    }
+
+    #[test]
+    fn cascade_human_golden() {
+        let mut r = UpResult {
+            ok: false,
+            requested: vec!["a".into()],
+            ready: vec!["a".into()],
+            ..UpResult::default()
+        };
+        r.cascade = Some(stems_api::CascadeReport {
+            id: "01J".into(),
+            origin: "a".into(),
+            origins: vec!["a".into()],
+            restarted: vec![vec!["b".into(), "c".into()], vec!["d".into()]],
+            failed: vec![StemFailure {
+                stem: "e".into(),
+                error: Error::new(ErrorCode::StartFailed, "`e` exited with code 3"),
+            }],
+            skipped: vec!["f".into()],
+            aborted: false,
+        });
+        insta::assert_snapshot!("restart-cascade", up_human(&r));
+        assert_eq!(up_exit(&r), 3);
+        assert_eq!(
+            up_output(&r).envelope()["errors"][0]["code"],
+            "START_FAILED"
+        );
+        let c = r.cascade.as_mut().unwrap();
+        c.aborted = true;
+        c.restarted.clear();
+        insta::assert_snapshot!("restart-cascade-aborted", cascade_human(c));
     }
 
     #[test]

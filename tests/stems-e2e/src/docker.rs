@@ -16,9 +16,26 @@ pub struct Ran {
     pub stderr: String,
 }
 
+/// The `docker` CLI: `PATH`, then the well-known install locations
+/// (`stems_runtime::docker::docker_cli_path`, shared with the daemon).
+pub fn docker_program() -> std::ffi::OsString {
+    stems_runtime::docker::docker_program()
+}
+
+/// This process's `PATH` with the docker CLI's directory prepended, or
+/// `None` when `docker` already resolves through it (or there is none).
+pub fn path_with_docker() -> Option<String> {
+    let cli = stems_runtime::docker::docker_cli_path();
+    stems_runtime::docker::path_with_docker_dir(
+        std::env::var("PATH").ok().as_deref(),
+        cli.as_deref(),
+        &stems_runtime::docker::is_executable,
+    )
+}
+
 /// Run `docker <args>` (bounded by `timeout`).
 pub async fn docker(args: &[String], timeout: Duration) -> Ran {
-    let fut = tokio::process::Command::new("docker")
+    let fut = tokio::process::Command::new(docker_program())
         .args(args)
         .stdin(std::process::Stdio::null())
         .kill_on_drop(true)

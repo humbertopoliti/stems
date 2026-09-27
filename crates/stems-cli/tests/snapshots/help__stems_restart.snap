@@ -20,6 +20,13 @@ Options:
       --timeout <DURATION>
           Deadline (e.g. 60s)
 
+      --cascade
+          Then restart their running hard dependants too, transitively, in dependency order
+          (overrides `restart.cascade`; see docs/restart.md)
+
+      --no-cascade
+          Restart only these stems, even if `restart.cascade` is set
+
   -h, --help
           Print help
 

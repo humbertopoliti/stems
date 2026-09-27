@@ -52,6 +52,7 @@ pub fn target(cmd: &Command) -> (String, &'static str) {
         | Command::Daemon(_)
         | Command::Validate(_)
         | Command::Show(_)
+        | Command::Switch(_)
         | Command::Completions(_)
         | Command::Upgrade(_)
         | Command::Man { .. }

@@ -215,6 +215,13 @@ pub struct Stem {
     pub tags: Vec<String>,
     /// SIGTERM → SIGKILL grace.
     pub stop_grace: Dur,
+    /// Active variant (FR-ST-8): its name, or `local` when the base
+    /// definition is active. Absent for a stem without `variants`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
+    /// Names of the declared variants (FR-ST-8), in declaration order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variants: Vec<String>,
 }
 
 impl Stem {
@@ -480,6 +487,10 @@ pub struct Watch {
     pub settle: Dur,
     /// Root.
     pub root: WatchRoot,
+    /// Cascade a restart to the hard dependants; `None` = the stem's
+    /// `restart.cascade`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cascade: Option<bool>,
 }
 
 /// A resolved restart policy.
@@ -497,6 +508,9 @@ pub struct Restart {
     pub on_unhealthy: bool,
     /// Grace before an unhealthy restart.
     pub unhealthy_grace: Dur,
+    /// Restarting this stem also restarts its hard dependants (cascade).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cascade: bool,
 }
 
 /// Backoff parameters.

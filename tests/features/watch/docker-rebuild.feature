@@ -3,8 +3,7 @@ Feature: rebuild of a docker stem rebuilds its image and recreates it
   For a docker stem with `build:`, `action: rebuild` stops the stem (the
   container is removed) and starts it again: a fresh start always builds
   the image (`docker.build` events, same `stems/<ws>/<stem>:<run_id>` tag)
-  and creates a new container. Needs Docker: `make e2e-docker` (written,
-  not run on the development machine, which has no Docker).
+  and creates a new container. Needs Docker: `make e2e-docker`.
 
   Scenario: touching a file of the build context rebuilds and recreates
     Given the fixture workspace "watch-docker"

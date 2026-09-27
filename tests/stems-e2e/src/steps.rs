@@ -468,10 +468,12 @@ pub fn mask_frame(frame: &str, cols: &[String]) -> String {
             let mut s = pid.replace_all(s.trim_end(), "daemon pid *").into_owned();
             // The status bar's right-hand hints are right-aligned (and cut
             // with `…`) after a left part whose width depends on the pid's
-            // digits: keep the line only up to the six glyph counts.
+            // digits: keep the line only up to the seven glyph counts
+            // (healthy, degraded, failed, unhealthy, stopped, unknown,
+            // transitioning).
             if let Some(i) = s.find("daemon pid * · ") {
                 let head = i + "daemon pid * · ".len();
-                let counts: Vec<&str> = s[head..].split(' ').take(6).collect();
+                let counts: Vec<&str> = s[head..].split(' ').take(7).collect();
                 s = format!("{}{}", &s[..head], counts.join(" "));
             }
             if mask_time {
@@ -2428,12 +2430,12 @@ mod tests {
         );
         assert_eq!(base64(b"foobar"), "Zm9vYmFy");
         // Status bars differing only by the pid's width compare equal.
-        let a = " ws · profile - · daemon pid 4242 · ✓1 !0 ✗0 ·0 ?0 ↻0 Space pause · ? help…\n";
-        let b = " ws · profile - · daemon pid 94242 · ✓1 !0 ✗0 ·0 ?0 ↻0 Space pause · ? hel…\n";
+        let a = " ws · profile - · daemon pid 4242 · ✓1 !0 ✗0 ↯0 ·0 ?0 ↻0 Space pause · ? help…\n";
+        let b = " ws · profile - · daemon pid 94242 · ✓1 !0 ✗0 ↯0 ·0 ?0 ↻0 Space pause · ? hel…\n";
         assert_eq!(mask_frame(a, &[]), mask_frame(b, &[]));
         assert_eq!(
             mask_frame(a, &[]),
-            " ws · profile - · daemon pid * · ✓1 !0 ✗0 ·0 ?0 ↻0\n"
+            " ws · profile - · daemon pid * · ✓1 !0 ✗0 ↯0 ·0 ?0 ↻0\n"
         );
         assert_eq!(base64(b"fooba"), "Zm9vYmE=");
     }

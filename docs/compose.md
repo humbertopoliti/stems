@@ -18,7 +18,10 @@ let h = rt.start(&StartSpec::Compose(Box::new(spec))).await?;       // Handle::C
 
 `ComposeOptions { workspace, env_dir, binary }`: `env_dir` is
 `$STEMS_HOME/<ws>/compose/` (env files and ownership markers), `binary`
-defaults to `docker` on `PATH`.
+defaults to `stems_runtime::docker::docker_program()`: `$STEMS_DOCKER_CLI`,
+else `docker` on `PATH`, else Docker Desktop's (and Homebrew's, Rancher's,
+OrbStack's) well-known install location (see `docs/docker.md`, "Finding the
+docker CLI").
 
 ## Who owns what
 
@@ -47,7 +50,8 @@ compose file's directory (goldens in
 | up | `up -d --no-deps <service>` | start |
 | find container | `ps --format json -a <service>` | right after `up` |
 | stop | `stop -t <grace, rounded up to seconds> <service>` | `stop` (the container is kept) |
-| remove | `rm -f -s <service>` | `ComposeRuntime::remove(handle)`, i.e. `down` |
+| remove | `rm -f -s -v <service>` (`-v`: the container's anonymous volumes, never named ones) | `ComposeRuntime::remove(handle)`, i.e. `down` |
+| prune | `-p <project> down` (no `-f`, `-v` or `--rmi`) | after a remove, when the project is stems-owned and `ps -a` shows no container left: removes its `<project>_default` network |
 | config | `config --services` | available, not used by the lifecycle |
 
 `ps --format json` output is accepted both as a JSON array (compose before
@@ -131,7 +135,7 @@ reported twice.
 
 | `RuntimeError` | error code | when |
 |---|---|---|
-| `ComposeUnavailable { hint }` | `DOCKER_UNAVAILABLE` | `docker` not on `PATH`, `'compose' is not a docker command`, `docker compose version` failing or unparseable, or Compose v1 |
+| `ComposeUnavailable { hint }` | `DOCKER_UNAVAILABLE` | no `docker` CLI (not on `PATH` nor in a well-known location), `'compose' is not a docker command`, `docker compose version` failing or unparseable, or Compose v1 |
 | `DockerUnavailable { hint }` | `DOCKER_UNAVAILABLE` | compose output says the engine is unreachable (`Cannot connect to the Docker daemon`, `error during connect`), or `DockerRuntime::connect` failed |
 | `ComposeFailed { command, exit, tail }` | `COMPOSE_FAILED` | any other non-zero exit (bad image, unknown service, invalid file); `tail` is the last 20 non-empty lines of stdout then stderr; `exit: None` on timeout (60 s for quick commands, grace + 30 s for `stop`, none for `up`, which may pull) |
 | `ComposeProjectInUse { project }` | `COMPOSE_PROJECT_IN_USE` | the table above |
@@ -141,13 +145,15 @@ reported twice.
 - One service per stem. Several stems may share a project (one per service).
 - `--no-deps` always: compose `depends_on` is ignored; stems' graph is
   authoritative.
-- `remove` removes the service container only; the project network
-  (`<project>_default`) and named volumes are left to `docker compose -p
-  <project> down [-v]`.
+- `remove` removes the service container (and its anonymous volumes); the
+  project network (`<project>_default`) goes once the last container of a
+  stems-owned project is removed. Named volumes are left to `docker compose
+  -p <project> down -v`.
 - `wait` reports the container exit; compose `restart:` policies inside the
   file still apply and can fight stems' own restart policy, so leave
   `restart:` unset in wrapped services.
-- `docker compose` must be v2 and on the daemon's `PATH`. With compose
+- `docker compose` must be v2 (found on the daemon's `PATH` or in a
+  well-known install location). With compose
   stems in the workspace, `stems doctor` checks it (`compose.version`,
   fail) and `stems validate` warns (`TOOL_VERSION` in `data.warnings`,
   `details.tool: "docker compose"`; skipped by `--skip-requires`); a
@@ -175,7 +181,7 @@ stems, see `docs/docker.md`):
   `COMPOSE_PROJECT_IN_USE` (`details.project`), `DOCKER_UNAVAILABLE` for
   a missing/v1 compose or an unreachable engine; every one carries
   `details.stem`.
-- `down` (and daemon shutdown, `reset`) runs `rm -f -s <service>` for the
+- `down` (and daemon shutdown, `reset`) runs `rm -f -s -v <service>` for the
   stem's handle; a compose stem left stopped by `stems stop` is removed by
   `down` through `ComposeRuntime::remove_service(spec)`. `restart` is
   `compose stop` + `up -d --no-deps` (compose itself recreates the
@@ -186,32 +192,36 @@ stems, see `docs/docker.md`):
   from the config). Orphans: `doctor` and `doctor --orphans` include the
   compose scan; `up` includes running ones when the selection needs Docker.
 
-## Verifying with Docker (checklist)
+## Verified against Docker (2026-09-27)
 
-Not run on the development machine (no Docker). With Docker and compose
-v2:
+Docker Desktop on macOS (Intel): Engine 29.8.0, **compose v5.5.1** (NDJSON
+`ps --format json`; `compose version --format json` parses as v2+). `docker`
+was not on `PATH`; the runtime used Docker Desktop's CLI via
+`docker_cli_path`.
 
 ```sh
-STEMS_TEST_DOCKER=1 cargo test -p stems-runtime compose_live_roundtrip -- --ignored
-make e2e-docker FEATURE=tests/features/compose
+STEMS_TEST_DOCKER=1 cargo test -p stems-runtime compose_live_roundtrip -- --ignored   # ok
+make e2e-docker FEATURE=tests/features/compose    # 5 scenarios, pass
 ```
 
-and check:
-
-1. `stems up` in `tests/fixtures/workspaces/compose-redis`: `docker
-   compose -p stems-compose-redis ps` shows `redis` running, published on
+1. `compose-redis`: `stems-compose-redis-redis-1` running, published on
    the stem's port; `<STEMS_HOME>/<hash>/compose/cache.env` holds
-   `REDIS_PORT`.
-2. A `REDIS_ARGS` local override is visible in the container's command.
-3. `stems logs cache` shows redis's start-up lines (followed from one
-   second before `up`).
-4. `kill -9` of the daemon + `stems up` adopts the same container.
-5. `stems.cache.service=broken` fails with `COMPOSE_FAILED` and the pull
-   error in `details.tail`.
-6. A project started by hand under the stem's `project_name` is refused
-   (`COMPOSE_PROJECT_IN_USE`) and co-managed with `adopt: true`; `down`
-   leaves the foreign service running.
-7. `stems down` removes the service container; the project network is
-   left (`docker compose -p <project> down` removes it).
-8. `stems validate --json` with and without `docker` on `PATH`: a
-   `TOOL_VERSION` warning only without it.
+   `REDIS_PORT`. ✓
+2. A `REDIS_ARGS` local override is in the container's command
+   (`env-override.feature`). ✓
+3. `stems logs cache` shows redis's start-up lines. ✓
+4. `kill -9` of the daemon + `stems up` adopts the same container. ✓
+5. A bad image fails with `COMPOSE_FAILED` and the pull error in
+   `details.tail`. ✓
+6. A hand-started project under the stem's `project_name` is refused
+   (`COMPOSE_PROJECT_IN_USE`) and co-managed with `adopt: true`. ✓
+7. `stems down` removes the service container with its anonymous volumes
+   and, once a stems-owned project is empty, its `<project>_default`
+   network (first contact: both were left behind; fixed, see "Commands"). ✓
+8. `stems validate --json` without a docker CLI: `TOOL_VERSION` warning
+   (`validate/compose-requires.feature`, which now sets `STEMS_DOCKER_CLI`
+   to a missing file, since an empty `PATH` no longer hides Docker
+   Desktop's CLI). ✓
+
+Not verified: compose v2.x before 2.21 (JSON-array `ps` output; unit-tested
+only) and compose on Linux.

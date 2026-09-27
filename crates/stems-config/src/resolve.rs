@@ -285,6 +285,16 @@ pub(crate) fn names_script_file(s: &str, root: &Path) -> bool {
     !t.is_empty() && !t.contains(char::is_whitespace) && !t.contains('$') && root.join(t).is_file()
 }
 
+/// Names of the type-specific stem fields (kept in step with
+/// `variants::TYPE_SPECIFIC_FIELDS` by a unit test there).
+#[cfg(test)]
+pub(crate) fn type_specific_field_names() -> Vec<&'static str> {
+    type_specific_fields(&RawStem::default())
+        .into_iter()
+        .map(|(f, _, _)| f)
+        .collect()
+}
+
 /// Fields that only apply to some stem types: (field, is set, allowed types).
 fn type_specific_fields(rs: &RawStem) -> Vec<(&'static str, bool, &'static [StemType])> {
     use StemType::*;
@@ -421,6 +431,7 @@ fn resolve_stem(
             action: w.action.unwrap_or(d::WATCH_ACTION),
             settle: w.settle.unwrap_or(d::WATCH_SETTLE),
             root: w.root.unwrap_or(d::WATCH_ROOT),
+            cascade: w.cascade,
         })
         .collect();
 
@@ -437,6 +448,7 @@ fn resolve_stem(
         },
         on_unhealthy: r.on_unhealthy.unwrap_or(d::RESTART_ON_UNHEALTHY),
         unhealthy_grace: r.unhealthy_grace.unwrap_or(d::UNHEALTHY_GRACE),
+        cascade: r.cascade.unwrap_or(d::RESTART_CASCADE),
     };
 
     let limits = rs
@@ -551,6 +563,8 @@ fn resolve_stem(
         overlays,
         tags: rs.tags.clone().unwrap_or_default(),
         stop_grace: rs.stop_grace.unwrap_or(d::STOP_GRACE),
+        variant: None,
+        variants: Vec::new(),
     })
 }
 

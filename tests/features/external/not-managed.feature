@@ -21,7 +21,7 @@ Feature: External stems are monitored, never started or stopped
     And the JSON at "$.data.stems[?@.name=='hosted'].type" equals "external"
     And the JSON at "$.data.stems[?@.name=='hosted'].pid" equals null
     And the JSON at "$.data.stems[?@.name=='api'].state" equals "healthy"
-    And the JSON at "$.data.summary" equals {"healthy": 1, "degraded": 0, "failed": 0, "stopped": 0, "unknown": 1, "starting": 0}
+    And the JSON at "$.data.summary" equals {"healthy": 1, "degraded": 0, "failed": 0, "unhealthy": 0, "stopped": 0, "unknown": 1, "starting": 0}
     When I run "stems status hosted --human"
     Then the command succeeds
     And stdout contains "? unknown"

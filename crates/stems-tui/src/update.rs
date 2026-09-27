@@ -8,11 +8,12 @@ use stems_api::EventKind;
 use stems_core::StemState;
 
 use crate::actions::{Action, Palette, PaletteTarget, ScriptMenu, palette_matches};
+use crate::detail::DetailRow;
 use crate::form::{FormAction, ScriptForm};
 use crate::logs::{LOG_REPLAY, LogJump, LogTarget, PaneAction};
 use crate::model::{
     AttachMode, Cmd, DetailData, EVENT_RING, LogSubscription, Modal, Model, Msg, Outcome,
-    RpcResult, ScriptRun, SignalKind, ViewKind,
+    RpcResult, ScriptActivity, ScriptRun, SignalKind, ViewKind,
 };
 use crate::toast::{Toast, ToastKind};
 
@@ -22,7 +23,7 @@ pub const DETAIL_EVENTS: usize = 10;
 /// Commands to run once at start-up.
 pub fn init(model: &mut Model) -> Vec<Cmd> {
     model.refresh_pending = true;
-    vec![Cmd::LoadDaemon, Cmd::RefreshStatus]
+    vec![Cmd::LoadDaemon, Cmd::RefreshStatus, Cmd::LoadCatalog]
 }
 
 /// Apply `msg` to `model`; returns the effects to run.
@@ -111,6 +112,11 @@ fn step(model: &mut Model, msg: Msg) -> Vec<Cmd> {
     match msg {
         Msg::Key(k) => key(model, k),
         Msg::Mouse(m) => {
+            if model.prefs.mouse
+                && let MouseEventKind::ScrollUp | MouseEventKind::ScrollDown = m.kind
+            {
+                return wheel(model, m.kind == MouseEventKind::ScrollUp, m.row);
+            }
             let left = matches!(m.kind, MouseEventKind::Down(MouseButton::Left));
             if model.prefs.mouse && left && m.row == 0 {
                 if capturing(model) {
@@ -126,6 +132,32 @@ fn step(model: &mut Model, msg: Msg) -> Vec<Cmd> {
                     Some(v) => go_to_view(model, v),
                     None => Vec::new(),
                 };
+            }
+            if model.prefs.mouse
+                && left
+                && matches!(model.view, ViewKind::Detail | ViewKind::Logs)
+                && !capturing(model)
+            {
+                let hit = model
+                    .stem_hits
+                    .borrow()
+                    .iter()
+                    .find(|h| h.row == m.row && (h.start..h.end).contains(&m.column))
+                    .map(|h| h.stem.clone());
+                if let Some(stem) = hit {
+                    return switch_stem(model, &stem);
+                }
+            }
+            if model.prefs.mouse && left && crate::view::has_bar(model) && !capturing(model) {
+                let hit = model
+                    .bar_hits
+                    .borrow()
+                    .iter()
+                    .find(|(_, row, a, b)| *row == m.row && (*a..*b).contains(&m.column))
+                    .map(|h| h.0);
+                if let Some(key) = hit {
+                    return press_bar(model, key);
+                }
             }
             if model.prefs.mouse
                 && model.view == ViewKind::Table
@@ -167,16 +199,39 @@ fn step(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             } else if e.kind == EventKind::DAEMON_STOPPING {
                 model.message = Some("daemon stopping".into());
             } else if e.kind == EventKind::SCRIPT_FINISHED {
+                script_activity(model, &e);
                 script_finished(model, &e);
+            } else if e.kind == EventKind::SCRIPT_QUEUED || e.kind == EventKind::SCRIPT_STARTED {
+                script_activity(model, &e);
             } else if e.kind == EventKind::CONFIG_CHANGED {
                 config_changed(model, &e);
             } else if e.kind == EventKind::CONFIG_APPLIED {
                 model.toasts.clear_config();
+                // Scripts, variants and the shown config may have changed.
+                model.variants.clear();
+                model.variants_pending.clear();
+                cmds.push(Cmd::LoadCatalog);
+                if let Some(d) = &model.detail {
+                    cmds.push(Cmd::LoadStemConfig(d.stem.clone()));
+                }
+                cmds.extend(refresh(model));
+            } else if e.kind == EventKind::TOOLS_CHANGED {
+                cmds.push(Cmd::LoadCatalog);
             } else if matches!(
                 e.kind.as_str(),
                 "watch.paused" | "watch.resumed" | "stem.restarting"
             ) {
                 cmds.extend(refresh(model));
+            }
+            if e.kind.as_str().starts_with("watch.")
+                && let Some(d) = &model.detail
+                && e.stem.as_ref().is_none_or(|s| *s == d.stem)
+                && model
+                    .stems
+                    .iter()
+                    .any(|s| s.name == d.stem && s.watch.is_some())
+            {
+                cmds.push(Cmd::LoadWatch(d.stem.clone()));
             }
             if let Some(d) = model.detail.as_mut()
                 && e.stem.as_deref() == Some(d.stem.as_str())
@@ -208,6 +263,7 @@ fn step(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             fix_selection(model);
             let mut cmds = ensure_graph(model);
             cmds.extend(ensure_detail(model));
+            cmds.extend(ensure_variants(model));
             cmds
         }
         Msg::Rpc(r) => {
@@ -256,6 +312,9 @@ fn step(model: &mut Model, msg: Msg) -> Vec<Cmd> {
                         }
                     }
                     graph_selection(model);
+                    if let Some(stem) = model.pending_restart.take() {
+                        return restart(model, stem);
+                    }
                 }
                 RpcResult::Events(Ok(evs)) => {
                     let mut all: Vec<_> = std::mem::take(&mut model.events).into();
@@ -302,6 +361,21 @@ fn step(model: &mut Model, msg: Msg) -> Vec<Cmd> {
                 RpcResult::Plan(r) => {
                     if let Modal::Plan(p) = &mut model.modal {
                         *p = Some(r);
+                    }
+                }
+                RpcResult::Variants { stem, result } => {
+                    model.variants_pending.remove(&stem);
+                    if let (Modal::VariantPicker { stem: s, selected }, Ok(v)) =
+                        (&mut model.modal, &result)
+                        && *s == stem
+                    {
+                        *selected = v.iter().position(|c| c.active).unwrap_or(0);
+                    }
+                    model.variants.insert(stem, result);
+                }
+                RpcResult::Watch { stem, result } => {
+                    if let Some(d) = model.detail.as_mut().filter(|d| d.stem == stem) {
+                        d.watch = Some(result);
                     }
                 }
                 RpcResult::Failed { what, message } => {
@@ -382,13 +456,42 @@ fn ensure_detail(model: &mut Model) -> Vec<Cmd> {
         .into_iter()
         .cloned()
         .collect();
+    model.detail_scroll = 0;
+    model.detail_row = 0;
     model.detail = Some(DetailData {
         stem: stem.clone(),
         config: None,
         events,
         health: None,
+        watch: None,
     });
-    detail_cmds(&stem)
+    let mut cmds = detail_cmds(&stem);
+    if model
+        .stems
+        .iter()
+        .any(|s| s.name == stem && s.watch.is_some())
+    {
+        cmds.push(Cmd::LoadWatch(stem));
+    }
+    cmds
+}
+
+/// Load the variant choices of every stem that has variants (once; again
+/// after `config.applied` or a switch).
+fn ensure_variants(model: &mut Model) -> Vec<Cmd> {
+    let want: Vec<String> = model
+        .stems
+        .iter()
+        .filter(|s| s.variant.is_some())
+        .map(|s| s.name.clone())
+        .filter(|n| !model.variants.contains_key(n) && !model.variants_pending.contains(n))
+        .collect();
+    want.into_iter()
+        .map(|n| {
+            model.variants_pending.insert(n.clone());
+            Cmd::LoadVariants(n)
+        })
+        .collect()
 }
 
 /// The commands loading the detail view of `stem`.
@@ -534,6 +637,233 @@ fn move_selection(model: &mut Model, delta: isize) -> Vec<Cmd> {
     ensure_detail(model)
 }
 
+/// A page of the Detail view (its visible rows less one, at least 1).
+fn detail_page(model: &Model) -> isize {
+    crate::view::detail_extent(model).map_or(10, |(_, h)| h.saturating_sub(1).max(1)) as isize
+}
+
+/// `j`/`k` in Detail: the next / previous selectable row (scripts,
+/// variants, the watchdog), scrolling to keep it visible; past the last /
+/// first row (or without rows) the view scrolls instead.
+fn detail_move(model: &mut Model, delta: isize) -> Vec<Cmd> {
+    let Some((c, h)) = crate::view::detail_content(model) else {
+        return scroll_detail(model, delta);
+    };
+    let n = c.rows.len();
+    let cur = model.detail_row.min(n.saturating_sub(1)) as isize;
+    let next = cur + delta;
+    if n == 0 || next < 0 || next >= n as isize {
+        return scroll_detail(model, delta);
+    }
+    model.detail_row = next as usize;
+    let line = c.rows[next as usize].1;
+    let max = c.lines.len().saturating_sub(h);
+    let mut off = model.detail_scroll.min(max);
+    if line <= off {
+        // Keep the line above in view too (a section's heading).
+        off = line.saturating_sub(1);
+    } else if line >= off + h {
+        off = line + 1 - h;
+    }
+    model.detail_scroll = off.min(max);
+    Vec::new()
+}
+
+/// `r`: restart the stem; with running hard dependants (from the
+/// dependency graph, loaded first when needed) ask whether to restart them
+/// too (`restart {cascade}`, FR-LC-9).
+fn restart(model: &mut Model, stem: String) -> Vec<Cmd> {
+    if model.graph.layout.is_none() && model.graph.error.is_none() {
+        model.pending_restart = Some(stem);
+        if model.graph.pending {
+            return Vec::new();
+        }
+        let mut names: Vec<String> = model.stems.iter().map(|s| s.name.clone()).collect();
+        names.sort();
+        model.graph.pending = true;
+        model.graph.names = names.clone();
+        return vec![Cmd::LoadGraph(names)];
+    }
+    let dependants: Vec<String> = model
+        .graph
+        .dependants(&stem)
+        .into_iter()
+        .filter(|d| {
+            model
+                .stems
+                .iter()
+                .any(|s| &s.name == d && !matches!(s.state, StemState::Stopped | StemState::Failed))
+        })
+        .collect();
+    if dependants.is_empty() {
+        return act(
+            model,
+            Action::Restart {
+                stem,
+                build: false,
+                cascade: None,
+            },
+        );
+    }
+    model.help = false;
+    model.modal = Modal::RestartConfirm { stem, dependants };
+    Vec::new()
+}
+
+/// `Enter` in Detail: act on the selected row (run the script, switch to
+/// the variant, pause / resume the watchdog).
+fn detail_enter(model: &mut Model) -> Vec<Cmd> {
+    let Some(stem) = model.selected.clone() else {
+        return Vec::new();
+    };
+    let rows = crate::detail::rows(model, &stem);
+    let Some(row) = rows
+        .get(model.detail_row.min(rows.len().saturating_sub(1)))
+        .cloned()
+    else {
+        return Vec::new();
+    };
+    match row {
+        DetailRow::Script(name) => open_script(model, Some(stem), &name),
+        DetailRow::Variant(v) => confirm_switch(model, &stem, &v),
+        DetailRow::Watch => action_key(model, 'p').unwrap_or_default(),
+    }
+}
+
+/// A click on an action bar segment: its key.
+fn press_bar(model: &mut Model, key: char) -> Vec<Cmd> {
+    if key == '?' {
+        model.help = true;
+        return Vec::new();
+    }
+    action_key(model, key).unwrap_or_default()
+}
+
+/// `v`: the variant picker of `stem` (a toast when it has no variants).
+fn open_variant_picker(model: &mut Model, stem: String) -> Vec<Cmd> {
+    let has = model
+        .stems
+        .iter()
+        .any(|s| s.name == stem && s.variant.is_some());
+    if !has {
+        model.toasts.push(Toast::info(
+            format!("{stem} has no variants (declare `variants:` in stems.yaml)"),
+            model.clock_ms,
+        ));
+        return Vec::new();
+    }
+    model.help = false;
+    let selected = model
+        .variant_choices(&stem)
+        .and_then(|v| v.iter().position(|c| c.active))
+        .unwrap_or(0);
+    let mut cmds = Vec::new();
+    if !model.variants.contains_key(&stem) && model.variants_pending.insert(stem.clone()) {
+        cmds.push(Cmd::LoadVariants(stem.clone()));
+    }
+    model.modal = Modal::VariantPicker { stem, selected };
+    cmds
+}
+
+/// Ask before switching `stem` to `variant` (a toast when it is active).
+fn confirm_switch(model: &mut Model, stem: &str, variant: &str) -> Vec<Cmd> {
+    let Some(choice) = model
+        .variant_choices(stem)
+        .and_then(|v| v.iter().find(|c| c.name == variant))
+        .cloned()
+    else {
+        return Vec::new();
+    };
+    if choice.active {
+        model.toasts.push(Toast::info(
+            format!("{stem} is already {variant}"),
+            model.clock_ms,
+        ));
+        return Vec::new();
+    }
+    let st = model.stems.iter().find(|s| s.name == stem);
+    let from = st
+        .and_then(|s| s.variant.clone())
+        .unwrap_or_else(|| "local".into());
+    let running = st.is_some_and(|s| !matches!(s.state, StemState::Stopped | StemState::Failed));
+    model.modal = Modal::SwitchConfirm {
+        stem: stem.to_string(),
+        from,
+        variant: variant.to_string(),
+        kind: choice.kind,
+        running,
+    };
+    Vec::new()
+}
+
+/// Scroll the Detail view by `delta` rows, within its content.
+fn scroll_detail(model: &mut Model, delta: isize) -> Vec<Cmd> {
+    let max = crate::view::detail_extent(model).map_or(0, |(rows, h)| rows.saturating_sub(h));
+    let cur = model.detail_scroll.min(max) as isize;
+    model.detail_scroll = (cur.saturating_add(delta)).clamp(0, max as isize) as usize;
+    Vec::new()
+}
+
+/// Rows (or lines, or events) one wheel notch scrolls.
+pub const WHEEL_STEP: isize = 3;
+
+/// A mouse wheel notch (`mouse = true`): the view under the pointer
+/// scrolls. Logs, and the split log pane when the pointer is over it,
+/// move the selected line (up leaves follow mode, like `k`); Events moves
+/// its selection; Detail scrolls; Table and Graph move the stem selection.
+fn wheel(model: &mut Model, up: bool, row: u16) -> Vec<Cmd> {
+    if model.modal.is_open() || model.help {
+        return Vec::new();
+    }
+    let sign = if up { -1 } else { 1 };
+    let over_pane = crate::view::body_areas(model)
+        .and_then(|(_, p)| p)
+        .is_some_and(|p| row >= p.y && row < p.y + p.height);
+    if model.view == ViewKind::Logs || over_pane {
+        model.log_pane.scroll(sign * WHEEL_STEP);
+        return Vec::new();
+    }
+    match model.view {
+        ViewKind::Events => {
+            model.events_view.step(&model.events, sign * WHEEL_STEP);
+            Vec::new()
+        }
+        ViewKind::Detail => scroll_detail(model, sign * WHEEL_STEP),
+        _ => move_selection(model, sign),
+    }
+}
+
+/// `[` / `]` (and `h`/`l`, `←`/`→` in Detail and Logs): the previous /
+/// next stem in table order, wrapping. The selection is shared, so Detail
+/// reloads (`ensure_detail`), the log pane retargets (`sync_logs`) and the
+/// table / graph highlight follows; in Logs it leaves merged mode.
+pub fn cycle_stem(model: &mut Model, delta: isize) -> Vec<Cmd> {
+    let names: Vec<String> = model.visible().iter().map(|s| s.name.clone()).collect();
+    if names.is_empty() {
+        return Vec::new();
+    }
+    let n = names.len() as isize;
+    let next = match model.selected_index() {
+        None if delta < 0 => n - 1,
+        None => 0,
+        Some(i) => (i as isize + delta).rem_euclid(n),
+    };
+    switch_stem(model, &names[next as usize])
+}
+
+/// Select `stem` from the Detail / Logs stem switcher (keys or a click on
+/// the title strip).
+fn switch_stem(model: &mut Model, stem: &str) -> Vec<Cmd> {
+    model.selected = Some(stem.to_string());
+    model.touched = true;
+    model.log_focus = None;
+    if model.view == ViewKind::Logs {
+        model.log_pane.merged = false;
+        model.log_pane.jump = None;
+    }
+    ensure_detail(model)
+}
+
 fn key(model: &mut Model, k: KeyEvent) -> Vec<Cmd> {
     if k.kind == KeyEventKind::Release {
         return Vec::new();
@@ -647,6 +977,34 @@ fn key(model: &mut Model, k: KeyEvent) -> Vec<Cmd> {
             model.message = None;
             Vec::new()
         }
+        KeyCode::Char('j') | KeyCode::Down if model.view == ViewKind::Detail => {
+            detail_move(model, 1)
+        }
+        KeyCode::Char('k') | KeyCode::Up if model.view == ViewKind::Detail => {
+            detail_move(model, -1)
+        }
+        KeyCode::PageDown if model.view == ViewKind::Detail => {
+            let page = detail_page(model);
+            scroll_detail(model, page)
+        }
+        KeyCode::PageUp if model.view == ViewKind::Detail => {
+            let page = detail_page(model);
+            scroll_detail(model, -page)
+        }
+        KeyCode::Char('g') | KeyCode::Home if model.view == ViewKind::Detail => {
+            scroll_detail(model, isize::MIN / 2)
+        }
+        KeyCode::Char('G') | KeyCode::End if model.view == ViewKind::Detail => {
+            scroll_detail(model, isize::MAX / 2)
+        }
+        KeyCode::Char(']') if !ctrl => cycle_stem(model, 1),
+        KeyCode::Char('[') if !ctrl => cycle_stem(model, -1),
+        KeyCode::Char('l') | KeyCode::Right if !ctrl && model.view == ViewKind::Detail => {
+            cycle_stem(model, 1)
+        }
+        KeyCode::Char('h') | KeyCode::Left if !ctrl && model.view == ViewKind::Detail => {
+            cycle_stem(model, -1)
+        }
         KeyCode::Char('j') | KeyCode::Down => move_selection(model, 1),
         KeyCode::Char('k') | KeyCode::Up => move_selection(model, -1),
         KeyCode::Char('g') | KeyCode::Home => move_selection(model, isize::MIN / 2),
@@ -660,7 +1018,7 @@ fn key(model: &mut Model, k: KeyEvent) -> Vec<Cmd> {
                 };
                 set_view(model, ViewKind::Detail)
             } else {
-                Vec::new()
+                detail_enter(model)
             }
         }
         KeyCode::Tab => {
@@ -696,14 +1054,8 @@ fn logs_key(model: &mut Model, k: KeyEvent) -> Option<Vec<Cmd>> {
                 model.log_pane.jump = None;
                 return Some(Vec::new());
             }
-            KeyCode::Char(']') => {
-                model.log_pane.merged = false;
-                return Some(move_selection(model, 1));
-            }
-            KeyCode::Char('[') => {
-                model.log_pane.merged = false;
-                return Some(move_selection(model, -1));
-            }
+            KeyCode::Char(']' | 'l') | KeyCode::Right => return Some(cycle_stem(model, 1)),
+            KeyCode::Char('[' | 'h') | KeyCode::Left => return Some(cycle_stem(model, -1)),
             _ => {}
         }
     }
@@ -799,7 +1151,7 @@ fn action_key(model: &mut Model, c: char) -> Option<Vec<Cmd>> {
             return Some(Vec::new());
         }
         ':' => return Some(open_menu(model, model.selected.clone())),
-        's' | 'x' | 'X' | 'r' | 'R' | 'p' | 'o' | 'S' => {}
+        's' | 'x' | 'X' | 'r' | 'R' | 'p' | 'o' | 'S' | 'v' => {}
         _ => return None,
     }
     let Some(stem) = model.selected.clone() else {
@@ -824,8 +1176,15 @@ fn action_key(model: &mut Model, c: char) -> Option<Vec<Cmd>> {
                 cascade: true,
             },
         ),
-        'r' => act(model, Action::Restart { stem, build: false }),
-        'R' => act(model, Action::Restart { stem, build: true }),
+        'r' => restart(model, stem),
+        'R' => act(
+            model,
+            Action::Restart {
+                stem,
+                build: true,
+                cascade: None,
+            },
+        ),
         'p' => {
             let pause = !model.watch_paused(&stem);
             act(model, Action::Watch { stem, pause })
@@ -846,6 +1205,7 @@ fn action_key(model: &mut Model, c: char) -> Option<Vec<Cmd>> {
             };
             Vec::new()
         }
+        'v' => open_variant_picker(model, stem),
         _ => Vec::new(),
     })
 }
@@ -932,7 +1292,57 @@ fn action_result(
     if action == Action::ConfigApply {
         model.toasts.clear_config();
     }
-    refresh(model)
+    let mut cmds = Vec::new();
+    if let Action::SwitchVariant { stem, .. } = &action {
+        // The choices' `active` and the stem's config changed.
+        model.variants.remove(stem);
+        model.variants_pending.insert(stem.clone());
+        cmds.push(Cmd::LoadVariants(stem.clone()));
+        if model.detail.as_ref().is_some_and(|d| &d.stem == stem) {
+            cmds.push(Cmd::LoadStemConfig(stem.clone()));
+        }
+    }
+    cmds.extend(refresh(model));
+    cmds
+}
+
+/// Why a finished script failed: `exit 3`, `timed out`, `signal 9`.
+fn failure_text(d: &serde_json::Value) -> String {
+    if d.get("timed_out").and_then(|v| v.as_bool()) == Some(true) {
+        "timed out".to_string()
+    } else if let Some(c) = d.get("exit").and_then(|v| v.as_i64()) {
+        format!("exit {c}")
+    } else if let Some(s) = d.get("signal").and_then(|v| v.as_i64()) {
+        format!("signal {s}")
+    } else {
+        "cancelled".to_string()
+    }
+}
+
+/// Remember the last `script.*` state of a script (any actor), for the
+/// Detail view's Scripts section.
+fn script_activity(model: &mut Model, e: &stems_api::Event) {
+    let d = &e.data;
+    let Some(script) = d.get("script").and_then(|v| v.as_str()) else {
+        return;
+    };
+    let activity = if e.kind == EventKind::SCRIPT_QUEUED {
+        ScriptActivity::Queued
+    } else if e.kind == EventKind::SCRIPT_STARTED {
+        ScriptActivity::Running
+    } else {
+        let ok = d.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+        let text = if ok {
+            let ms = d.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+            format!("{:.1}s", ms as f64 / 1000.0)
+        } else {
+            failure_text(d)
+        };
+        ScriptActivity::Finished { ok, text }
+    };
+    model
+        .script_activity
+        .insert((e.stem.clone(), script.to_string()), activity);
 }
 
 /// `script.finished` of a run started here: `✓ <script> finished in 1.2s`
@@ -968,15 +1378,7 @@ fn script_finished(model: &mut Model, e: &stems_api::Event) {
             .push(Toast::ok(format!("{script} finished in {secs:.1}s"), now));
         return;
     }
-    let why = if d.get("timed_out").and_then(|v| v.as_bool()) == Some(true) {
-        "timed out".to_string()
-    } else if let Some(c) = d.get("exit").and_then(|v| v.as_i64()) {
-        format!("exit {c}")
-    } else if let Some(s) = d.get("signal").and_then(|v| v.as_i64()) {
-        format!("signal {s}")
-    } else {
-        "cancelled".to_string()
-    };
+    let why = failure_text(d);
     model
         .toasts
         .push(Toast::failure(format!("{script} failed: {why}"), now));
@@ -1238,6 +1640,73 @@ fn modal_key(model: &mut Model, k: KeyEvent) -> Vec<Cmd> {
             KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q' | 'e') => Vec::new(),
             _ => {
                 model.modal = Modal::ErrorDetails { title, text };
+                Vec::new()
+            }
+        },
+        Modal::VariantPicker { stem, mut selected } => {
+            let n = model.variant_choices(&stem).map_or(0, <[_]>::len);
+            match k.code {
+                KeyCode::Esc | KeyCode::Char('q' | 'v') => return Vec::new(),
+                KeyCode::Enter => {
+                    let pick = model
+                        .variant_choices(&stem)
+                        .and_then(|v| v.get(selected))
+                        .map(|c| c.name.clone());
+                    if let Some(v) = pick {
+                        return confirm_switch(model, &stem, &v);
+                    }
+                }
+                KeyCode::Down | KeyCode::Tab | KeyCode::Char('j') if n > 0 => {
+                    selected = (selected + 1) % n;
+                }
+                KeyCode::Up | KeyCode::BackTab | KeyCode::Char('k') if n > 0 => {
+                    selected = (selected + n - 1) % n;
+                }
+                _ => {}
+            }
+            model.modal = Modal::VariantPicker { stem, selected };
+            Vec::new()
+        }
+        Modal::RestartConfirm { stem, dependants } => match k.code {
+            KeyCode::Char('y' | 'Y') => act(
+                model,
+                Action::Restart {
+                    stem,
+                    build: false,
+                    cascade: Some(true),
+                },
+            ),
+            KeyCode::Char('n' | 'N') | KeyCode::Enter => act(
+                model,
+                Action::Restart {
+                    stem,
+                    build: false,
+                    cascade: Some(false),
+                },
+            ),
+            KeyCode::Esc => Vec::new(),
+            _ => {
+                model.modal = Modal::RestartConfirm { stem, dependants };
+                Vec::new()
+            }
+        },
+        Modal::SwitchConfirm {
+            stem,
+            from,
+            variant,
+            kind,
+            running,
+        } => match k.code {
+            KeyCode::Char('y' | 'Y') => act(model, Action::SwitchVariant { stem, variant }),
+            KeyCode::Char('n' | 'N') | KeyCode::Esc | KeyCode::Enter => Vec::new(),
+            _ => {
+                model.modal = Modal::SwitchConfirm {
+                    stem,
+                    from,
+                    variant,
+                    kind,
+                    running,
+                };
                 Vec::new()
             }
         },

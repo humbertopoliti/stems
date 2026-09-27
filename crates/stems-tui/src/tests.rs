@@ -116,7 +116,10 @@ fn stem_config() -> Value {
 #[test]
 fn init_loads_daemon_and_status() {
     let mut m = Model::new(AttachMode::Attach, Prefs::default(), None);
-    assert_eq!(init(&mut m), vec![Cmd::LoadDaemon, Cmd::RefreshStatus]);
+    assert_eq!(
+        init(&mut m),
+        vec![Cmd::LoadDaemon, Cmd::RefreshStatus, Cmd::LoadCatalog]
+    );
     assert!(m.refresh_pending);
 }
 
@@ -161,8 +164,9 @@ fn enter_opens_detail_and_loads_it() {
         update(&mut m, k(KeyCode::Enter)).is_empty(),
         "already there"
     );
-    // Moving in the detail view loads the next stem.
-    assert_eq!(update(&mut m, ch('j')), crate::update::detail_cmds("c"));
+    // Switching stems in the detail view loads the next one (j scrolls).
+    assert!(update(&mut m, ch('j')).is_empty());
+    assert_eq!(update(&mut m, ch(']')), crate::update::detail_cmds("c"));
     update(&mut m, k(KeyCode::Esc));
     assert_eq!(m.view, ViewKind::Table);
 }
@@ -1253,4 +1257,428 @@ fn frame_split_layout() {
     crate::assert_frame!(m, "split-detail", 120, 40);
 }
 
+// --- stem switching in Detail / Logs, Detail scrolling, the wheel --------
+
+fn wheel(up: bool, row: u16) -> Msg {
+    Msg::Mouse(MouseEvent {
+        kind: if up {
+            MouseEventKind::ScrollUp
+        } else {
+            MouseEventKind::ScrollDown
+        },
+        column: 5,
+        row,
+        modifiers: KeyModifiers::NONE,
+    })
+}
+
+#[test]
+fn brackets_cycle_the_stems_in_table_order_and_wrap() {
+    let mut m = chain();
+    for want in ["b", "c", "d", "a"] {
+        update(&mut m, ch(']'));
+        assert_eq!(m.selected.as_deref(), Some(want));
+    }
+    update(&mut m, ch('['));
+    assert_eq!(m.selected.as_deref(), Some("d"), "wraps backwards");
+    // Table order: the sort and the filter decide.
+    update(&mut m, ch('O')); // by name: same order here
+    update(&mut m, ch(']'));
+    assert_eq!(m.selected.as_deref(), Some("a"));
+    // Ctrl-] is not a stem key.
+    update(&mut m, ctrl(']'));
+    assert_eq!(m.selected.as_deref(), Some("a"));
+    // h/l do nothing on the table.
+    update(&mut m, ch('l'));
+    assert_eq!(m.selected.as_deref(), Some("a"));
+}
+
+#[test]
+fn detail_switches_stems_with_brackets_h_l_and_arrows() {
+    let mut m = chain();
+    update(&mut m, k(KeyCode::Enter));
+    assert_eq!(m.view, ViewKind::Detail);
+    assert_eq!(update(&mut m, ch(']')), crate::update::detail_cmds("b"));
+    assert_eq!(update(&mut m, ch('l')), crate::update::detail_cmds("c"));
+    assert_eq!(
+        update(&mut m, k(KeyCode::Right)),
+        crate::update::detail_cmds("d")
+    );
+    assert_eq!(
+        update(&mut m, k(KeyCode::Right)),
+        crate::update::detail_cmds("a")
+    );
+    assert_eq!(
+        update(&mut m, k(KeyCode::Left)),
+        crate::update::detail_cmds("d")
+    );
+    assert_eq!(update(&mut m, ch('h')), crate::update::detail_cmds("c"));
+    assert_eq!(update(&mut m, ch('[')), crate::update::detail_cmds("b"));
+    assert_eq!(m.detail.as_ref().map(|d| d.stem.as_str()), Some("b"));
+    // The selection is shared: back on the table, b is highlighted.
+    update(&mut m, k(KeyCode::Esc));
+    assert_eq!(m.view, ViewKind::Table);
+    assert!(render_text(&m, 80, 24).contains("› b"));
+}
+
+#[test]
+fn logs_switch_stems_retarget_and_leave_merged() {
+    let mut m = chain();
+    let cmds = update(&mut m, ch('4'));
+    assert_eq!(cmds, vec![sub(1, &["a"], None)]);
+    assert_eq!(update(&mut m, ch(']')), vec![sub(2, &["b"], None)]);
+    assert_eq!(update(&mut m, ch('l')), vec![sub(3, &["c"], None)]);
+    assert_eq!(update(&mut m, k(KeyCode::Left)), vec![sub(4, &["b"], None)]);
+    assert_eq!(update(&mut m, ch('h')), vec![sub(5, &["a"], None)]);
+    assert_eq!(update(&mut m, ch('[')), vec![sub(6, &["d"], None)], "wraps");
+    // m: every stem; ] leaves merged mode for the next stem.
+    assert_eq!(update(&mut m, ch('m')), vec![sub(7, &[], None)]);
+    assert_eq!(
+        update(&mut m, k(KeyCode::Right)),
+        vec![sub(8, &["a"], None)]
+    );
+    assert!(!m.log_pane.merged);
+    // L (level) is not l.
+    let shift_l = Msg::Key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT));
+    assert!(update(&mut m, shift_l).is_empty());
+    assert_eq!(m.selected.as_deref(), Some("a"));
+}
+
+#[test]
+fn graph_keeps_its_h_l_and_brackets_follow_the_table_order() {
+    let mut m = graph_model();
+    assert_eq!(m.selected.as_deref(), Some("d"));
+    update(&mut m, ch('l'));
+    assert_eq!(m.selected.as_deref(), Some("b"), "graph column move");
+    update(&mut m, ch('h'));
+    assert_eq!(m.selected.as_deref(), Some("d"));
+    update(&mut m, ch(']'));
+    assert_eq!(m.selected.as_deref(), Some("a"), "table order, wrapped");
+    update(&mut m, ch('['));
+    assert_eq!(m.selected.as_deref(), Some("d"));
+}
+
+#[test]
+fn split_pane_follows_brackets() {
+    let mut m = chain();
+    assert_eq!(update(&mut m, ctrl('l')), vec![sub(1, &["a"], None)]);
+    assert_eq!(update(&mut m, ch(']')), vec![sub(2, &["b"], None)]);
+    update(&mut m, k(KeyCode::Enter));
+    assert_eq!(m.view, ViewKind::Detail);
+    let cmds = update(&mut m, ch(']'));
+    assert!(cmds.contains(&sub(3, &["c"], None)), "{cmds:?}");
+}
+
+#[test]
+fn brackets_in_a_text_field_stay_text() {
+    // The table filter.
+    let mut m = chain();
+    for c in "/[".chars() {
+        update(&mut m, ch(c));
+    }
+    assert_eq!(m.filter, "[");
+    assert_eq!(m.selected.as_deref(), None, "no stem matches `[`");
+    // The Logs search.
+    let mut m = chain();
+    update(&mut m, ch('4'));
+    for c in "/]l[h".chars() {
+        update(&mut m, ch(c));
+    }
+    update(&mut m, k(KeyCode::Right));
+    assert_eq!(m.log_pane.search, "]l[h");
+    assert_eq!(m.selected.as_deref(), Some("a"));
+    // The Events filter.
+    let mut m = chain();
+    update(&mut m, ch('5'));
+    for c in "/[]".chars() {
+        update(&mut m, ch(c));
+    }
+    assert_eq!(m.events_view.filter, "[]");
+    assert_eq!(m.selected.as_deref(), Some("a"));
+    // The palette's query.
+    let mut m = chain();
+    update(&mut m, ctrl('p'));
+    update(&mut m, ch(']'));
+    assert_eq!(m.selected.as_deref(), Some("a"));
+    assert!(matches!(&m.modal, Modal::Palette(p) if p.query == "]"));
+}
+
+#[test]
+fn events_view_brackets_move_the_shared_selection() {
+    let mut m = chain();
+    update(&mut m, ch('5'));
+    update(&mut m, ch(']'));
+    assert_eq!(m.selected.as_deref(), Some("b"));
+    assert_eq!(m.view, ViewKind::Events);
+}
+
+/// The stem strip of the title as drawn: each hit's text.
+fn strip_labels(m: &Model, text: &str) -> Vec<(String, String)> {
+    let lines: Vec<Vec<char>> = text.lines().map(|l| l.chars().collect()).collect();
+    m.stem_hits
+        .borrow()
+        .iter()
+        .map(|h| {
+            let row = &lines[h.row as usize];
+            (
+                h.stem.clone(),
+                row[h.start as usize..h.end as usize].iter().collect(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn detail_and_logs_titles_carry_a_clickable_stem_strip() {
+    let mut m = chain();
+    update(&mut m, ch('j'));
+    update(&mut m, k(KeyCode::Enter));
+    let text = render_text(&m, 80, 24);
+    assert_eq!(
+        strip_labels(&m, &text),
+        vec![
+            ("a".into(), "a".into()),
+            ("b".into(), "[b]".into()),
+            ("c".into(), "c".into()),
+            ("d".into(), "d".into()),
+        ]
+    );
+    let title = text.lines().nth(1).unwrap();
+    assert!(title.contains("Detail: b"), "{title}");
+    assert!(
+        title.ends_with(" a  [b]  c  d · [ ] ←/→ switch ┐"),
+        "{title}"
+    );
+    // A click on `d` (mouse = true) selects it and loads its detail.
+    let hit = m.stem_hits.borrow()[3].clone();
+    let click = Msg::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: hit.start,
+        row: hit.row,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert!(update(&mut m, click.clone()).is_empty(), "mouse off");
+    m.prefs.mouse = true;
+    assert_eq!(update(&mut m, click), crate::update::detail_cmds("d"));
+    assert_eq!(m.selected.as_deref(), Some("d"));
+    // Logs: the strip says `m merged`; merged brackets no stem.
+    update(&mut m, ch('4'));
+    let text = render_text(&m, 120, 40);
+    let title = text.lines().nth(1).unwrap();
+    assert!(title.contains("Logs: d · following"), "{title}");
+    assert!(
+        title.contains("a  b  c  [d] · [ ] ←/→ switch · m merged"),
+        "{title}"
+    );
+    update(&mut m, ch('m'));
+    let text = render_text(&m, 120, 40);
+    assert!(
+        strip_labels(&m, &text)
+            .iter()
+            .all(|(_, l)| !l.starts_with('['))
+    );
+    // A click on `b` in the Logs strip leaves merged mode.
+    let hit = m.stem_hits.borrow()[1].clone();
+    let cmds = update(
+        &mut m,
+        Msg::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: hit.end - 1,
+            row: hit.row,
+            modifiers: KeyModifiers::NONE,
+        }),
+    );
+    assert!(!m.log_pane.merged);
+    assert_eq!(m.selected.as_deref(), Some("b"));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::SubscribeLogs(s) if s.stems == ["b"]))
+    );
+    // Other views draw no strip; one stem needs none.
+    update(&mut m, ch('2'));
+    render_text(&m, 80, 24);
+    assert!(m.stem_hits.borrow().is_empty());
+    let mut one = minimal(AttachMode::Attach);
+    update(&mut one, ch('3'));
+    render_text(&one, 80, 24);
+    assert!(one.stem_hits.borrow().is_empty());
+}
+
+#[test]
+fn stem_strip_is_cut_around_the_current_stem() {
+    let mut m = Model::new(AttachMode::Attach, Prefs::default(), Some(ViewKind::Table));
+    update(
+        &mut m,
+        Msg::Status(Box::new(status(
+            (0..12)
+                .map(|i| stem(&format!("stem-{i:02}"), "healthy", "healthy", None, 1, None))
+                .collect(),
+        ))),
+    );
+    for _ in 0..6 {
+        update(&mut m, ch('j'));
+    }
+    update(&mut m, ch('3'));
+    let text = render_text(&m, 80, 24);
+    let title = text.lines().nth(1).unwrap();
+    assert!(title.contains("Detail: stem-06"), "{title}");
+    assert!(title.contains("…  stem-05  [stem-06]  stem-07"), "{title}");
+    assert!(title.ends_with("  … ┐"), "{title}");
+    assert!(!title.contains("switch"), "no room for the hint: {title}");
+    let labels = strip_labels(&m, &text);
+    assert!(
+        labels
+            .iter()
+            .any(|(s, l)| s == "stem-06" && l == "[stem-06]")
+    );
+    assert!(!labels.iter().any(|(s, _)| s == "stem-00"));
+    // ASCII ellipsis.
+    m.ascii = true;
+    let text = render_text(&m, 80, 24);
+    assert!(
+        text.lines().nth(1).unwrap().contains("...  stem-"),
+        "{text}"
+    );
+}
+
+#[test]
+fn detail_scrolls_within_its_content() {
+    let mut m = detail_model();
+    m.size = (80, 14);
+    let (rows, h) = crate::view::detail_extent(&m).unwrap();
+    assert!(rows > h, "{rows} rows in {h}");
+    let max = rows - h;
+    update(&mut m, ch('j'));
+    assert_eq!(m.detail_scroll, 1);
+    update(&mut m, k(KeyCode::Down));
+    update(&mut m, ch('k'));
+    update(&mut m, k(KeyCode::Up));
+    update(&mut m, k(KeyCode::Up));
+    assert_eq!(m.detail_scroll, 0, "not above the top");
+    update(&mut m, k(KeyCode::PageDown));
+    assert_eq!(m.detail_scroll, (h - 1).min(max));
+    update(&mut m, ch('G'));
+    assert_eq!(m.detail_scroll, max);
+    update(&mut m, ch('j'));
+    update(&mut m, k(KeyCode::PageDown));
+    assert_eq!(m.detail_scroll, max, "not below the end");
+    assert_eq!(m.selected.as_deref(), Some("b"), "j/k scroll, not select");
+    update(&mut m, k(KeyCode::PageUp));
+    assert_eq!(m.detail_scroll, max.saturating_sub(h - 1));
+    update(&mut m, ch('g'));
+    assert_eq!(m.detail_scroll, 0);
+    update(&mut m, k(KeyCode::End));
+    assert_eq!(m.detail_scroll, max);
+    // The title says which rows show.
+    let text = render_text(&m, 80, 14);
+    assert!(
+        text.contains(&format!("lines {}-{rows}/{rows}", max + 1)),
+        "{text}"
+    );
+    // Another stem starts at the top.
+    update(&mut m, ch(']'));
+    assert_eq!(m.detail_scroll, 0);
+    // Content that fits: no scrolling, no indicator.
+    let mut m = detail_model();
+    m.size = (120, 40);
+    update(&mut m, ch('j'));
+    assert_eq!(m.detail_scroll, 0);
+    assert!(!render_text(&m, 120, 40).contains("lines "));
+}
+
+#[test]
+fn frame_detail_scrolled() {
+    let mut m = detail_model();
+    m.size = (80, 14);
+    update(&mut m, k(KeyCode::PageDown));
+    crate::assert_frame!(m, "detail-scrolled", 80, 14);
+}
+
+#[test]
+fn mouse_wheel_scrolls_every_view() {
+    // Off by default.
+    let mut m = chain();
+    update(&mut m, wheel(false, 3));
+    assert_eq!(m.selected.as_deref(), Some("a"));
+    // Table (and Graph): the selection.
+    m.prefs.mouse = true;
+    update(&mut m, wheel(false, 3));
+    assert_eq!(m.selected.as_deref(), Some("b"));
+    update(&mut m, wheel(true, 3));
+    update(&mut m, wheel(true, 3));
+    assert_eq!(m.selected.as_deref(), Some("a"));
+    let mut g = graph_model();
+    g.prefs.mouse = true;
+    update(&mut g, wheel(true, 3));
+    assert_eq!(g.selected.as_deref(), Some("c"), "table order: d -> c");
+    // Detail: scrolls three rows.
+    let mut m = detail_model();
+    m.prefs.mouse = true;
+    m.size = (80, 14);
+    update(&mut m, wheel(false, 5));
+    assert_eq!(m.detail_scroll, 3);
+    update(&mut m, wheel(true, 5));
+    update(&mut m, wheel(true, 5));
+    assert_eq!(m.detail_scroll, 0);
+    assert_eq!(m.selected.as_deref(), Some("b"));
+    // Logs: up leaves follow mode, down to the newest follows again.
+    let mut m = logs_model();
+    m.prefs.mouse = true;
+    update(&mut m, wheel(true, 5));
+    assert!(!m.log_pane.follow);
+    assert_eq!(
+        m.log_pane.selected_line().unwrap().record.text,
+        "INFO chaos log line 2"
+    );
+    update(&mut m, wheel(false, 5));
+    assert!(m.log_pane.follow);
+    // Events: the selection.
+    let mut m = events_model();
+    m.prefs.mouse = true;
+    update(&mut m, Msg::SetView(ViewKind::Events));
+    update(&mut m, wheel(true, 5));
+    assert_eq!(m.events_view.selected_event(&m.events).unwrap().seq, 1);
+    // A dialog takes the wheel.
+    update(&mut m, ctrl('p'));
+    update(&mut m, wheel(false, 5));
+    assert_eq!(m.events_view.selected_event(&m.events).unwrap().seq, 1);
+}
+
+#[test]
+fn mouse_wheel_over_the_split_pane_scrolls_the_pane() {
+    let mut m = chain();
+    m.prefs.mouse = true;
+    update(&mut m, ctrl('l'));
+    let (main, pane) = crate::view::body_areas(&m).unwrap();
+    let pane = pane.unwrap();
+    // Over the table: the selection moves (the pane follows it).
+    update(&mut m, wheel(false, main.y + 1));
+    assert_eq!(m.selected.as_deref(), Some("b"));
+    update(&mut m, wheel(true, main.y + 1));
+    assert_eq!(m.selected.as_deref(), Some("a"));
+    for i in 0..5 {
+        feed(&mut m, log("a", i * 10, None, &format!("line {i}")));
+    }
+    // Over the pane: its lines scroll, the selection stays.
+    update(&mut m, wheel(true, pane.y + 2));
+    assert_eq!(m.selected.as_deref(), Some("a"));
+    assert!(!m.log_pane.follow);
+    assert_eq!(m.log_pane.selected_line().unwrap().record.text, "line 1");
+}
+
+#[test]
+fn page_keys_parse_in_scripts() {
+    use crate::script::{Token, parse};
+    let toks = parse("PageDown;PageUp;PgDn").unwrap();
+    assert_eq!(
+        toks,
+        vec![
+            Token::Key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE)),
+            Token::Key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE)),
+            Token::Key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE)),
+        ]
+    );
+}
+
 mod actions;
+mod sections;

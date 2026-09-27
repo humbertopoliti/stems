@@ -1,0 +1,60 @@
+# variants-demo — stem variants (FR-ST-8, docs/config.md#variants;
+# tests/features/variants/). `api` is examples/repos/shop-api run as a local
+# process; `stems switch api <variant>` picks one of its variants:
+#
+# - `slow`: still a process, with SHOP_SLEEP_START=1 (switchable without
+#   Docker);
+# - `docker`: the same codebase built from its Dockerfile and run as a
+#   container (`type` changes, so the base's `command` is dropped; `env`,
+#   `ports`, `health`, `depends_on` are kept). The container listens on
+#   8080 (the image sets HOST=0.0.0.0; stems rewrites PORT to the container
+#   port) and is published on the api's host port.
+#
+# The e2e harness remaps ports through a generated stems.local.yaml that
+# replaces `stems.api.ports`; a replacing entry keeps the replaced entry's
+# `container_port` by port name, so the container still listens on 8080.
+# `web` depends on `api`.
+schema_version: 1
+name: variants-demo
+
+stems:
+  api:
+    type: process
+    description: shop-api, as a local process or a docker container
+    codebase: ../../../../examples/repos/shop-api
+    command: python3 app.py
+    env: { SHOP_CHAOS: "1" }
+    ports: [{ name: http, port: 18651 }]
+    health:
+      type: http
+      url: "http://127.0.0.1:${stem.api.port}/healthz"
+      interval: 200ms
+      timeout: 150ms
+      retries: 5
+      start_timeout: 10s
+    stop_grace: 1s
+    variants:
+      slow:
+        env: { SHOP_SLEEP_START: "1" }
+      docker:
+        type: docker
+        build: { context: "${codebase}" }
+        ports: [{ name: http, port: 18651, container_port: 8080 }]
+        health: { start_timeout: 180s }
+        stop_grace: 2s
+  web:
+    type: process
+    codebase: ../../../../examples/repos/shop-web
+    command: python3 serve.py
+    depends_on: [api]
+    env:
+      API_URL: "http://127.0.0.1:${stem.api.port}"
+    ports: [{ name: http, port: 18652 }]
+    health:
+      type: http
+      url: "http://127.0.0.1:${stem.web.port}/"
+      interval: 200ms
+      timeout: 150ms
+      retries: 5
+      start_timeout: 10s
+    stop_grace: 1s

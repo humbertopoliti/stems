@@ -2,8 +2,9 @@
 //!
 //! JSON: `data: { stems: [ { name, type, state, glyph, reason, pid, pgid,
 //! ports: [{name, port, auto}], uptime_s, started_at, restarts, health,
-//! error } ], summary: { healthy, degraded, failed, stopped, unknown,
-//! starting } }`. With `-v`/`--verbose` each running stem also has `env`:
+//! error } ], summary: { healthy, degraded, failed, unhealthy, stopped,
+//! unknown, starting } }` (`unhealthy`: running, health check failing;
+//! counted apart from `failed`). With `-v`/`--verbose` each running stem also has `env`:
 //! the resolved environment its process was started with (for debugging
 //! substitution).
 //!
@@ -26,7 +27,7 @@ use std::time::Duration;
 
 use serde_json::json;
 use stems_api::client::Client;
-use stems_api::{Method, StatusParams, StatusResult, StemStatus};
+use stems_api::{Method, StatusParams, StatusResult, StatusSummary, StemStatus};
 use stems_core::{Error, Errors};
 
 use crate::cli::StatusArgs;
@@ -309,13 +310,37 @@ pub fn table(st: &StatusResult, style: &Style) -> String {
         out.push_str(line.trim_end());
         out.push('\n');
     }
-    let m = &st.summary;
     out.push('\n');
-    out.push_str(&format!(
-        "{} healthy, {} degraded, {} failed, {} starting, {} stopped, {} unknown\n",
-        m.healthy, m.degraded, m.failed, m.starting, m.stopped, m.unknown
-    ));
+    out.push_str(&summary_line(&st.summary, style.width));
+    out.push('\n');
     out
+}
+
+/// `1 healthy, 0 degraded, 0 failed, 0 unhealthy, 0 starting, 0 stopped,
+/// 0 unknown`; when that is wider than `width`, only the non-zero counts.
+fn summary_line(m: &StatusSummary, width: Option<usize>) -> String {
+    let parts = [
+        (m.healthy, "healthy"),
+        (m.degraded, "degraded"),
+        (m.failed, "failed"),
+        (m.unhealthy, "unhealthy"),
+        (m.starting, "starting"),
+        (m.stopped, "stopped"),
+        (m.unknown, "unknown"),
+    ];
+    let join = |all: bool| {
+        parts
+            .iter()
+            .filter(|(n, _)| all || *n > 0)
+            .map(|(n, what)| format!("{n} {what}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let full = join(true);
+    match width {
+        Some(w) if full.chars().count() > w && parts.iter().any(|(n, _)| *n > 0) => join(false),
+        _ => full,
+    }
 }
 
 #[cfg(test)]
@@ -351,6 +376,8 @@ mod tests {
             env: None,
             outputs: Default::default(),
             watch: None,
+            variant: None,
+            cascade: None,
         };
         let mut hosted = stem("hosted", StemState::Unknown, None, None);
         hosted.kind = "external".into();
@@ -397,6 +424,8 @@ mod tests {
             env: None,
             outputs: Default::default(),
             watch: None,
+            variant: None,
+            cascade: None,
         }];
         StatusResult {
             summary: StatusSummary::of(&stems),

@@ -53,6 +53,14 @@ fn golden_rm() {
 }
 
 #[test]
+fn golden_down_project() {
+    insta::assert_snapshot!(
+        "cmd_down_project",
+        show(ComposeCommand::down_project("stems-hello-shop"))
+    );
+}
+
+#[test]
 fn golden_ps() {
     insta::assert_snapshot!("cmd_ps", show(ComposeCommand::ps(&target())));
 }
@@ -558,8 +566,18 @@ async fn compose_live_roundtrip() {
     assert!(!rt.is_alive(&h).await);
     rt.remove(&h).await.unwrap();
     assert!(rt.project_ps(&spec.project_name).await.unwrap().is_empty());
-    // Leave nothing behind: compose's default network.
-    let _ = std::process::Command::new("docker")
+    // The emptied (owned) project was `down`ed: no `<project>_default`.
+    let net = std::process::Command::new(crate::docker::docker_program())
+        .args([
+            "network",
+            "inspect",
+            &format!("{}_default", spec.project_name),
+        ])
+        .output()
+        .unwrap();
+    // Leave nothing behind even when the assertion below fails.
+    let _ = std::process::Command::new(crate::docker::docker_program())
         .args(["compose", "-p", &spec.project_name, "down"])
-        .status();
+        .output();
+    assert!(!net.status.success(), "the project network was left behind");
 }

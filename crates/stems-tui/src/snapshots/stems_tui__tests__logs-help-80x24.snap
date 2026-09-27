@@ -1,28 +1,29 @@
 ---
 source: crates/stems-tui/src/tests.rs
+assertion_line: 1096
 expression: text
 ---
  stems · minimal                 1 Graph  2 Table  3 Detail  4 [Logs]  5 Events
 ┌ Logs: echo-svc · scrolled · level warn+ ─────────────────────────────────────┐
 │›* 12:00:00.010 ERROR chaos log line 1                                        │
-│   12:00:00.030 ERROR chaos log line 3                                        │
 │   12┌ Help ────────────────────────────────────────────────────────────┐     │
-│     │ Space           pause / resume following                         │     │
+│   12│ Space           pause / resume following                         │     │
 │     │ /  n / N        search (Enter keeps) · next / previous match     │     │
 │     │ L               level: all, info+, warn+, error                  │     │
 │     │ s               show / hide script output lines                  │     │
 │     │ m               merged: every stem, with prefixes                │     │
-│     │ [ / ]           previous / next stem                             │     │
+│     │ [ ] h/l ←/→     previous / next stem (wraps; leaves m)           │     │
 │     │ j / k, g / G    move · top / bottom (follows)                    │     │
+│     │ PgUp / PgDn     move a page                                      │     │
+│     │ wheel           scroll (up leaves follow; mouse = true)          │     │
 │     │ Enter           expand the fields of a structured line           │     │
 │     │ V, y            visual range · copy line or range                │     │
 │     │ w / t           wrap long lines / timestamps (UTC)               │     │
 │     │ Tab, Ctrl-L     next view · split pane elsewhere                 │     │
 │     │ 1-5, click      go to a view (header number or tab)              │     │
+│     │ click           a stem in the title strip (mouse = true)         │     │
 │     │ q               quit                                             │     │
 │     └──────────────────────────────────────────────────────────────────┘     │
-│                                                                              │
-│                                                                              │
 │ /line 1 · 1 match · 1/1 (n/N)                                                │
 └──────────────────────────────────────────────────────────────────────────────┘
- minimal · profile - · daemon pid 4242 · ✓1 !0 ✗0 ·0 ?0 ↻0 Space pause · ? help…
+ minimal · profile - · daemon pid 4242 · ✓1 !0 ✗0 ↯0 ·0 ?0 ↻0 Space pause · j/k…

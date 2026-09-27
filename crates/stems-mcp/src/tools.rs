@@ -284,7 +284,7 @@ pub const CORE_TOOLS: &[CoreTool] = &[
     },
     CoreTool {
         name: "restart",
-        description: "Restart stems keeping their ports; with build, run each stem's build script between stop and start.",
+        description: "Restart stems keeping their ports; with build, run each stem's build script between stop and start. cascade: true also restarts their running hard dependants (transitively, in dependency order) once they are healthy again, false never does; omitted, each stem's restart.cascade decides. The result's cascade lists the restarted dependants per layer.",
         kind: Kind::Write,
         schema: input_schema::<RestartParams>,
     },

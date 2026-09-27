@@ -15,6 +15,7 @@ stems:
       backoff: { initial: 500ms, max: 30s, factor: 2 }
       on_unhealthy: false     # also restart a stem that stays unhealthy
       unhealthy_grace: 10s    # ... for this long
+      cascade: false          # also restart its dependants (see below)
 ```
 
 Everything shown is the default; `stems show --effective` lists the defaults.
@@ -127,11 +128,105 @@ the `build` script first (a docker/compose stem is stopped and started
 instead, which rebuilds its image). A crash after a watchdog restart is
 handled by the policy as usual. See [watchdogs.md](watchdogs.md).
 
+## Cascading restarts (FR-LC-9)
+
+Restarting a stem can also restart the stems that depend on it: after a
+code change in `api`, `web` (which caches `api`'s responses, or holds
+connections to it) usually needs a restart too.
+
+```console
+$ stems restart api --cascade      # api, then everything that depends on it
+$ stems restart api --no-cascade   # only api, even with restart.cascade: true
+```
+
+```yaml
+stems:
+  api:
+    restart: { cascade: true }     # every restart of api cascades
+    watch:
+      - paths: ["*.py"]
+        cascade: true              # this rule cascades (overrides restart.cascade)
+```
+
+**What is restarted.** The *dependants* of the restarted stem(s): every
+enabled stem that depends on it through **hard** `depends_on` edges,
+transitively. Soft edges (`soft: true`) never cascade. Only dependants
+that run (`starting`, `healthy`, `unhealthy`) are restarted; the others are
+reported as `skipped` (the stems below them are still restarted), and
+external stems are never touched. With several stems (`stems restart a b
+--cascade`) the dependants are the union of their dependants, ordered once;
+a stem you named is never restarted again as a dependant.
+
+**Order.** The restarted stem (the *origin*) restarts first, through its
+usual path, and must become healthy again (bounded by its
+`health.start_timeout`). Then the dependants restart **layer by layer**, in
+`start_order` restricted to them: a layer's stems restart in parallel, and
+the next layer starts once they are all healthy again (their `post_start`
+done), so every dependency edge's condition holds as it does for `up`. In a
+diamond (`b` and `c` depend on `a`, `d` on `b` and `c`) that is `a`, then
+`b` and `c`, then `d` **once**.
+
+**How a dependant restarts.** Like a watchdog restart (the policy
+*bypass*): `pre_stop`, the stop, `post_stop`, `pre_start`, the start,
+`post_start`; never `setup`/`seed`; ports, overlays and a docker container
+are kept; `restarts` and `restart.max` do not count it. Its
+`stem.restarting` has `reason: "cascade from <origin>"`, `counted: false`
+and `cascade: <id>`; the actor is whoever caused the cascade (`cli:<user>`,
+`mcp:<client>`, `watchdog`, or `daemon` for a policy restart).
+
+**Failures.** If the origin does not become healthy the cascade stops
+(`cascade.aborted {id, origin, stem, error}`): no dependant is touched and
+`restart` fails with the origin's error. A dependant that fails to come
+back is listed in `failed` (exit 3 for `restart`), and the stems depending
+on it are `skipped`; the others continue.
+
+**Who cascades.**
+
+| trigger | cascades when |
+|---|---|
+| `stems restart` / MCP `restart` / TUI | `--cascade` (`cascade: true`); else the stem's `restart.cascade`; `--no-cascade` never |
+| a watch rule (`restart`, `rebuild`) | the rule's `cascade`, else the stem's `restart.cascade` |
+| the restart policy (a crash, `on_unhealthy`) | `restart.cascade: true`, once the origin is healthy again |
+| `stems config apply` | never: it restarts changed stems in its own dependency order ([config.md](config.md#reload-on-change-fr-wd-3)) |
+
+**Loop guards.** Hard dependency cycles are validation errors, so the
+closure is finite; on top of that, a cascade can never feed itself:
+
+1. A restart caused by a cascade never starts one: a dependant that
+   crashes during the cascade is restarted by its policy, but that restart
+   does not cascade even with `restart.cascade: true`.
+2. No stem is restarted twice within one cascade (`visited`), whatever the
+   shape of the graph.
+3. The origin is never one of its own dependants (a soft edge back to it
+   is ignored).
+4. Watchdog triggers of the stems a cascade is restarting (origin and
+   dependants) are **dropped**, not queued: a change that restarts `api`
+   with a cascade also fires `web`'s rule on the same files, and `web` is
+   restarted by the cascade anyway. The daemon log records each dropped
+   trigger (`watch trigger dropped`).
+
+**One at a time.** A daemon runs one cascade at a time, under the same
+lock as `up`, `down` and `restart`. A cascade asked for while another runs
+waits (`cascade.queued {id, origin, behind}`) and starts after the first
+finished: two cascades never nest. A policy-triggered cascade whose origin
+is not running when its turn comes (it crashed again while queued) is
+aborted (`cascade.aborted`); its next policy restart asks for a new one.
+
+**Output.** `stems restart --cascade --json` adds `data.cascade: {id,
+origin, origins, restarted: [[layer 1…], [layer 2…]], failed, skipped,
+aborted}`; the human output prints one line per dependant (`restarted b
+(layer 1)`). While a cascade runs, `stems status --json` shows `cascade:
+{id, origin}` on each of its stems.
+
 ## Events
 
 | kind | when | data |
 |---|---|---|
-| `stem.restarting` | a restart is scheduled (after the stem went `starting`) | `attempt`, `delay_ms`, `reason` (`exit`, `unhealthy`, or a watchdog's reason), `exit_code`/`signal` (exits), `counted` |
+| `stem.restarting` | a restart is scheduled (after the stem went `starting`) | `attempt`, `delay_ms`, `reason` (`exit`, `unhealthy`, a watchdog's reason, or `cascade from <origin>`), `exit_code`/`signal` (exits), `counted`, `cascade` (the cascade's id, for a dependant's restart) |
+| `cascade.started` | a cascading restart begins (before the origin's own restart) | `id`, `origin`, `origins`, `reason` (`restart`, `policy`, or the watchdog's reason), `stems` (the dependants' layers) |
+| `cascade.queued` | a cascade waits for the running one | `id`, `origin`, `origins`, `reason`, `behind` (the running cascade's id) |
+| `cascade.finished` | every layer was handled | `id`, `origin`, `restarted` (names), `layers`, `failed`, `skipped`, `ok` |
+| `cascade.aborted` | the origin did not become healthy; dependants untouched | `id`, `origin`, `stem`, `error` |
 | `stem.gave_up` | `max` restarts in the window were used up | `stem`, `attempts`, `max`, `window_ms`, `reason`, `exit_code`/`signal` |
 | `process.exited` | before either, for an exit | `pid`, `code`, `signal` |
 

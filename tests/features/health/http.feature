@@ -33,7 +33,8 @@ Feature: HTTP health probes drive healthy and unhealthy
     When I run "stems status --json"
     Then the JSON at "$.data.stems[0].glyph" equals "failed"
     And the JSON at "$.data.stems[0].reason" contains "HTTP 503"
-    And the JSON at "$.data.summary.failed" equals 1
+    And the JSON at "$.data.summary.unhealthy" equals 1
+    And the JSON at "$.data.summary.failed" equals 0
     And within 4s the stem "echo-svc" is "healthy"
     And there are exactly 2 events matching {"kind": "stem.health", "stem": "echo-svc"}
     And the events stream contains {"kind": "stem.health", "stem": "echo-svc", "from": "healthy", "to": "unhealthy"} before {"kind": "stem.health", "stem": "echo-svc", "from": "unhealthy", "to": "healthy"}

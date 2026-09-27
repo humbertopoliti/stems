@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use stems_api::client::Client;
 use stems_api::{
     ConfigDiffResult, DaemonStatus, EventsResult, Method, ScriptCatalogResult, StatusParams,
-    StatusResult,
+    StatusResult, SwitchVariantResult, WatchStatusResult,
 };
 use stems_core::{Error, ErrorCode};
 use tokio::sync::mpsc;
@@ -68,6 +68,27 @@ pub async fn exec(client: &Client, cmd: &Cmd) -> Option<Msg> {
                 .map(|d| plan_lines(&d))
                 .map_err(|e| e.message),
         )),
+        Cmd::LoadVariants(stem) => Msg::Rpc(RpcResult::Variants {
+            stem: stem.clone(),
+            result: client
+                .call::<SwitchVariantResult>(Method::SWITCH_VARIANT, json!({ "stem": stem }))
+                .await
+                .map(|r| r.variants)
+                .map_err(|e| e.message),
+        }),
+        Cmd::LoadWatch(stem) => Msg::Rpc(RpcResult::Watch {
+            stem: stem.clone(),
+            result: client
+                .call::<WatchStatusResult>(Method::WATCH_STATUS, json!({ "stems": [stem] }))
+                .await
+                .map_err(|e| e.message)
+                .and_then(|r| {
+                    r.stems
+                        .into_iter()
+                        .find(|s| &s.name == stem)
+                        .ok_or_else(|| format!("{stem} has no watch rules"))
+                }),
+        }),
         Cmd::LoadEvents => Msg::Rpc(RpcResult::Events(
             client
                 .call::<EventsResult>(Method::EVENTS, json!({}))

@@ -9,8 +9,16 @@
 //! - `STEMS_E2E_SELFTEST=1`: run only `@harness-selftest` and succeed iff every
 //!   such scenario failed with a `LEAK:` message.
 //! - `STEMS_E2E_SCENARIO_TIMEOUT` (seconds, default 60), `STEMS_E2E_BIN`,
-//!   `STEMS_E2E_TMPDIR`, `STEMS_E2E_CONCURRENCY` (default 4),
+//!   `STEMS_E2E_TMPDIR`, `STEMS_E2E_CONCURRENCY` (default 8),
 //!   `STEMS_E2E_BLESS=1` (write goldens).
+//! - `STEMS_E2E_SLOT`, `STEMS_E2E_PORT_START`: exported by
+//!   `scripts/e2e_slot.sh` (port range and temp-dir prefix of this run).
+//!
+//! Scheduling: `@docker` scenarios are Serial (one at a time, never
+//! alongside a Concurrent one); the rest run up to the concurrency limit.
+//! `@slow` scenarios are queued after the others ([`SlowLast`]) so their
+//! timing assertions see less contention; this is an ordering, not a
+//! barrier (the tail of the fast queue may still overlap them).
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -209,7 +217,7 @@ fn config() -> Result<Config, String> {
         concurrency: std::env::var("STEMS_E2E_CONCURRENCY")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(4),
+            .unwrap_or(8),
     })
 }
 
@@ -224,6 +232,57 @@ fn all_tags<'a>(
         .chain(s.tags.iter())
         .map(String::as_str)
         .collect()
+}
+
+fn is_slow(tags: &[String]) -> bool {
+    tags.iter().any(|t| t == "slow")
+}
+
+/// Stable-sorts `@slow` scenarios to the back of `scenarios`.
+fn slow_to_back(scenarios: &mut [gherkin::Scenario]) {
+    scenarios.sort_by_key(|s| is_slow(&s.tags));
+}
+
+/// Whether any scenario of `f` is `@slow` (feature, rule or scenario tag).
+fn has_slow(f: &gherkin::Feature) -> bool {
+    is_slow(&f.tags)
+        || f.scenarios.iter().any(|s| is_slow(&s.tags))
+        || f.rules
+            .iter()
+            .any(|r| is_slow(&r.tags) || r.scenarios.iter().any(|s| is_slow(&s.tags)))
+}
+
+/// The default parser, reordered so that `@slow` work is queued last:
+/// features without `@slow` scenarios first (in path order), then the ones
+/// with any, each with its `@slow` scenarios moved to its end. cucumber's
+/// runner drains its Concurrent queue in insertion order, so this makes slow
+/// scenarios start after the fast ones.
+#[derive(Debug, Default, Clone)]
+pub struct SlowLast(parser::Basic);
+
+impl<I: AsRef<std::path::Path>> parser::Parser<I> for SlowLast {
+    type Cli = <parser::Basic as parser::Parser<I>>::Cli;
+    type Output = futures::stream::Iter<std::vec::IntoIter<parser::Result<gherkin::Feature>>>;
+
+    fn parse(self, input: I, cli: Self::Cli) -> Self::Output {
+        use futures::{FutureExt as _, StreamExt as _};
+        // The basic parser's stream is a ready `stream::iter`, so collecting
+        // it never waits.
+        let mut all: Vec<_> = self
+            .0
+            .parse(input, cli)
+            .collect::<Vec<_>>()
+            .now_or_never()
+            .unwrap_or_default();
+        for f in all.iter_mut().flatten() {
+            slow_to_back(&mut f.scenarios);
+            for r in &mut f.rules {
+                slow_to_back(&mut r.scenarios);
+            }
+        }
+        all.sort_by_key(|r| r.as_ref().is_ok_and(has_slow));
+        futures::stream::iter(all)
+    }
 }
 
 /// Synchronous entry point used by `tests/e2e.rs`.
@@ -268,7 +327,7 @@ async fn run() -> ExitCode {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = entries.clone();
     if !cfg.selftest {
-        let _ = std::fs::remove_dir_all(hooks::failures_dir());
+        hooks::clean_failures();
     }
 
     let (selftest, docker, tags) = (cfg.selftest, cfg.docker, cfg.tags.clone());
@@ -285,15 +344,18 @@ async fn run() -> ExitCode {
     };
 
     println!(
-        "stems-e2e: binary {} | features {} | concurrency {} | docker {} | selftest {}",
+        "stems-e2e: binary {} | features {} | concurrency {} | docker {} | selftest {} | slot {} (ports from {})",
         bin.display(),
         cfg.input.display(),
         cfg.concurrency,
         cfg.docker,
-        cfg.selftest
+        cfg.selftest,
+        crate::world::slot().map_or_else(|| String::from("none"), |i| i.to_string()),
+        crate::world::port_start()
     );
 
-    cucumber::Cucumber::<E2eWorld, _, _, _, _>::new()
+    cucumber::Cucumber::<E2eWorld, _, PathBuf, _, _>::new()
+        .with_parser(SlowLast::default())
         .steps(steps::collection())
         .max_concurrent_scenarios(cfg.concurrency)
         .which_scenario(|f, r, s| {
@@ -433,5 +495,31 @@ fn selftest_verdict(results: &BTreeMap<Key, Outcome>) -> ExitCode {
             "stems-e2e selftest: FAILED — expected every @harness-selftest scenario to fail with LEAK:"
         );
         ExitCode::FAILURE
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn feature(text: &str) -> gherkin::Feature {
+        gherkin::Feature::parse(text, gherkin::GherkinEnv::default()).expect("feature")
+    }
+
+    #[test]
+    fn slow_scenarios_move_to_the_back() {
+        let mut f = feature(
+            "Feature: f\n  @slow\n  Scenario: a\n    Given x\n  Scenario: b\n    Given x\n  Scenario: c\n    Given x\n",
+        );
+        assert!(has_slow(&f));
+        slow_to_back(&mut f.scenarios);
+        let names: Vec<_> = f.scenarios.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["b", "c", "a"]);
+        assert!(!has_slow(&feature(
+            "Feature: g\n  Scenario: a\n    Given x\n"
+        )));
+        assert!(has_slow(&feature(
+            "@slow\nFeature: h\n  Scenario: a\n    Given x\n"
+        )));
     }
 }

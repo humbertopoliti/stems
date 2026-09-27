@@ -786,6 +786,20 @@
             }
           ]
         },
+        "variant": {
+          "description": "Active variant (FR-ST-8): the name of one of `variants`, or `local`\n(the base definition, same as leaving it unset). Usually set in\n`stems.local.yaml`, e.g. by `stems switch <stem> <variant>`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "variants": {
+          "description": "Named alternative definitions of this stem (FR-ST-8): partial stem\ndefinitions deep-merged over the base when active (`variant:`). A\nvariant that changes `type` drops the base's type-specific fields.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Stem"
+          }
+        },
         "cwd": {
           "description": "(process) Working directory, relative to the codebase.",
           "type": [
@@ -1425,6 +1439,13 @@
               "type": "null"
             }
           ]
+        },
+        "cascade": {
+          "description": "Cascade a `restart`/`rebuild` to the stem's hard dependants\n(default: the stem's `restart.cascade`).",
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "additionalProperties": false
@@ -1511,6 +1532,13 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "cascade": {
+          "description": "Cascading restarts: when this stem is restarted (by you, a watchdog\nor this policy), also restart its running hard dependants,\ntransitively, in dependency order (default `false`).",
+          "type": [
+            "boolean",
+            "null"
           ]
         }
       },

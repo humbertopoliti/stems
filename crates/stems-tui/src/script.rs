@@ -6,7 +6,7 @@
 //! | token | effect |
 //! |---|---|
 //! | `j`, `q`, `?` (one character) | that key |
-//! | `Enter`, `Esc`, `Tab`, `BackTab`, `Up`, `Down`, `Left`, `Right`, `Home`, `End`, `Backspace`, `Space`, `Ctrl-C`, `Ctrl-L` | a named key |
+//! | `Enter`, `Esc`, `Tab`, `BackTab`, `Up`, `Down`, `Left`, `Right`, `Home`, `End`, `PageUp`, `PageDown`, `Backspace`, `Space`, `Ctrl-C`, `Ctrl-L` | a named key |
 //! | `/api<Enter>` (anything else) | typed character by character; `<Name>` inside is a named key |
 //! | `wait:<state>` | poll until every stem is in `<state>` (a state or glyph name) |
 //! | `wait:stem=<name>:<state>` | poll until that stem is in `<state>` |
@@ -73,6 +73,8 @@ fn named(name: &str) -> Option<KeyEvent> {
         "right" => k(KeyCode::Right),
         "home" => k(KeyCode::Home),
         "end" => k(KeyCode::End),
+        "pageup" | "pgup" => k(KeyCode::PageUp),
+        "pagedown" | "pgdn" => k(KeyCode::PageDown),
         "backspace" => k(KeyCode::Backspace),
         "space" => k(KeyCode::Char(' ')),
         other => {

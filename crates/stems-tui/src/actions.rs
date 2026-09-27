@@ -26,12 +26,15 @@ pub enum Action {
         /// Stop running dependants first.
         cascade: bool,
     },
-    /// `restart {stems: [stem], build}` (`r`, `R`).
+    /// `restart {stems: [stem], build, cascade?}` (`r`, `R`).
     Restart {
         /// The stem.
         stem: String,
         /// Run `build` first (rebuild + restart).
         build: bool,
+        /// Restart its running hard dependants too (FR-LC-9); `None`: the
+        /// stem's `restart.cascade` decides.
+        cascade: Option<bool>,
     },
     /// `watch_pause` / `watch_resume {stems: [stem]}` (`p`).
     Watch {
@@ -60,6 +63,15 @@ pub enum Action {
     },
     /// `config_apply {yes: true}` (the config-changed toast's `a`, 33).
     ConfigApply,
+    /// `switch_variant {stem, variant}` (the variant picker, `v`; FR-ST-8):
+    /// the daemon edits `stems.local.yaml` and restarts the stem in its new
+    /// form.
+    SwitchVariant {
+        /// The stem.
+        stem: String,
+        /// The variant (`local`: the base definition).
+        variant: String,
+    },
 }
 
 /// The log "stem" of workspace scripts' output (the daemon's
@@ -83,6 +95,7 @@ impl Action {
             Action::DownAll => Method::DOWN,
             Action::RunScript { .. } => Method::RUN_SCRIPT,
             Action::ConfigApply => Method::CONFIG_APPLY,
+            Action::SwitchVariant { .. } => Method::SWITCH_VARIANT,
         }
     }
 
@@ -91,7 +104,16 @@ impl Action {
         match self {
             Action::Start(s) => json!({ "stems": [s] }),
             Action::Stop { stem, cascade } => json!({ "stems": [stem], "cascade": cascade }),
-            Action::Restart { stem, build } => json!({ "stems": [stem], "build": build }),
+            Action::Restart {
+                stem,
+                build,
+                cascade: None,
+            } => json!({ "stems": [stem], "build": build }),
+            Action::Restart {
+                stem,
+                build,
+                cascade: Some(c),
+            } => json!({ "stems": [stem], "build": build, "cascade": c }),
             Action::Watch { stem, .. } => json!({ "stems": [stem] }),
             Action::Reset(s) => json!({ "stems": [s] }),
             Action::UpAll { profile } => match profile {
@@ -103,6 +125,9 @@ impl Action {
                 "stem": stem, "name": script, "args": args, "wait": false
             }),
             Action::ConfigApply => json!({ "yes": true }),
+            Action::SwitchVariant { stem, variant } => {
+                json!({ "stem": stem, "variant": variant })
+            }
         }
     }
 
@@ -118,8 +143,17 @@ impl Action {
                 stem,
                 cascade: true,
             } => format!("stop {stem} (cascade)"),
-            Action::Restart { stem, build: false } => format!("restart {stem}"),
-            Action::Restart { stem, build: true } => format!("rebuild {stem}"),
+            Action::Restart {
+                stem,
+                build: false,
+                cascade: Some(true),
+            } => format!("restart {stem} (cascade)"),
+            Action::Restart {
+                stem, build: false, ..
+            } => format!("restart {stem}"),
+            Action::Restart {
+                stem, build: true, ..
+            } => format!("rebuild {stem}"),
             Action::Watch { stem, pause: true } => format!("pause watch {stem}"),
             Action::Watch { stem, pause: false } => format!("resume watch {stem}"),
             Action::Reset(s) => format!("reset {s}"),
@@ -131,6 +165,7 @@ impl Action {
                 None => format!("run {script} (workspace)"),
             },
             Action::ConfigApply => "config apply".into(),
+            Action::SwitchVariant { stem, variant } => format!("switch {stem} to {variant}"),
         }
     }
 
@@ -153,8 +188,35 @@ impl Action {
                 Some(l) => format!("stopped {l}"),
                 None => "nothing to stop".into(),
             },
-            Action::Restart { stem, build: false } => format!("restarted {stem}"),
-            Action::Restart { stem, build: true } => format!("rebuilt and restarted {stem}"),
+            Action::Restart {
+                stem,
+                build: false,
+                cascade: Some(true),
+            } => {
+                let n = v
+                    .pointer("/cascade/restarted")
+                    .and_then(Value::as_array)
+                    .map_or(0, |layers| {
+                        layers
+                            .iter()
+                            .map(|l| l.as_array().map_or(0, Vec::len))
+                            .sum()
+                    });
+                if n > 0 {
+                    format!(
+                        "restarted {stem} and {n} dependant{}",
+                        if n == 1 { "" } else { "s" }
+                    )
+                } else {
+                    format!("restarted {stem} (cascade)")
+                }
+            }
+            Action::Restart {
+                stem, build: false, ..
+            } => format!("restarted {stem}"),
+            Action::Restart {
+                stem, build: true, ..
+            } => format!("rebuilt and restarted {stem}"),
             Action::Watch { stem, pause: true } => format!("watch paused: {stem}"),
             Action::Watch { stem, pause: false } => format!("watch resumed: {stem}"),
             Action::Reset(s) => format!("reset {s}"),
@@ -173,6 +235,19 @@ impl Action {
                     "config applied ({n} change{})",
                     if n == 1 { "" } else { "s" }
                 )
+            }
+            Action::SwitchVariant { stem, variant } => {
+                let from = v.get("from").and_then(Value::as_str).unwrap_or("?");
+                let result = v
+                    .pointer("/applied/applied/0/result")
+                    .and_then(Value::as_str)
+                    .map(|r| format!(" ({r})"))
+                    .unwrap_or_default();
+                if from == variant {
+                    format!("{stem}: already {variant}{result}")
+                } else {
+                    format!("{stem}: {from} -> {variant}{result}")
+                }
             }
         }
     }
@@ -313,6 +388,7 @@ pub const STEM_ACTIONS: &[(&str, char)] = &[
     ("open {} in $EDITOR", 'o'),
     ("reset {}", 'S'),
     ("scripts of {}", ':'),
+    ("switch variant of {}", 'v'),
 ];
 
 /// Every palette item for the model: per-stem actions, logs, scripts
@@ -321,6 +397,9 @@ pub fn palette_items(model: &Model) -> Vec<PaletteItem> {
     let mut out = Vec::new();
     for s in &model.stems {
         for (label, key) in STEM_ACTIONS {
+            if *key == 'v' && s.variant.is_none() {
+                continue;
+            }
             let label = match *key {
                 'p' if s.watch.as_ref().is_some_and(|w| w.paused) => "resume watch {}",
                 _ => label,
@@ -409,6 +488,7 @@ mod tests {
         let a = Action::Restart {
             stem: "b".into(),
             build: true,
+            cascade: None,
         };
         assert_eq!(a.params(), json!({"stems": ["b"], "build": true}));
         assert_eq!(a.describe(), "rebuild b");

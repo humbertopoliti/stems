@@ -59,7 +59,12 @@ build:
 # run and may fail ("PENDING (expected)") but must not pass.
 #   make e2e FEATURE=tests/features/foo.feature   one file or directory
 #   make e2e TAGS='@FR-LC-5 and not @slow'        a tag expression
-E2E_RUN = scripts/with_lock.sh $(CARGO) test -p stems-e2e --test e2e --
+# Runs go through scripts/e2e_slot.sh: up to STEMS_E2E_SLOTS (default 4)
+# concurrent runs per machine, each with its own port range and temp-dir
+# prefix; STEMS_E2E_CONCURRENCY (default 8) scenarios in parallel per run.
+E2E_RUN = scripts/e2e_slot.sh $(CARGO) test -p stems-e2e --test e2e --
+# The Docker tier holds every slot: compose projects are machine-global.
+E2E_RUN_EXCLUSIVE = scripts/e2e_slot.sh --exclusive $(CARGO) test -p stems-e2e --test e2e --
 
 # Fast tier: everything except @docker and @harness-selftest.
 e2e:
@@ -71,7 +76,7 @@ e2e:
 # STEMS_E2E_SCENARIO_TIMEOUT says otherwise (see docs/docker.md).
 e2e-docker:
 	$(CARGO) build -p stems-cli
-	$(E2E_ENV) STEMS_E2E_DOCKER=1 STEMS_E2E_SCENARIO_TIMEOUT=$${STEMS_E2E_SCENARIO_TIMEOUT:-300} $(E2E_RUN)
+	$(E2E_ENV) STEMS_E2E_DOCKER=1 STEMS_E2E_SCENARIO_TIMEOUT=$${STEMS_E2E_SCENARIO_TIMEOUT:-300} $(E2E_RUN_EXCLUSIVE)
 
 # Harness self-test: runs only @harness-selftest and passes iff the After
 # hook reported LEAK: (it then kills the stray process itself).

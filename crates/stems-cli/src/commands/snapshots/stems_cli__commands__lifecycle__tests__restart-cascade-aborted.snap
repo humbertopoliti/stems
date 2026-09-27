@@ -1,0 +1,5 @@
+---
+source: crates/stems-cli/src/commands/lifecycle.rs
+expression: cascade_human(c)
+---
+cascade from a: aborted, a did not become healthy; dependants not restarted

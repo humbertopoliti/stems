@@ -5,8 +5,10 @@
 # file is the primary documentation for the config format, alongside
 # REQUIREMENTS.md §6.6 (the sketch this was adapted from).
 #
-# NOTE (phase 0): `stems` itself does not exist yet. This workspace will not
-# validate or run until deliverables 05/06 land. See examples/README.md.
+# Needs only Docker (Desktop, Colima, ...) and python3 on the host: every
+# postgres/redis interaction goes through the containers (`docker exec`),
+# so no host `psql`, `pg_isready` or `redis-cli` is required.
+# See examples/README.md.
 
 schema_version: 1
 name: hello-shop
@@ -61,8 +63,8 @@ scripts:
 stems:
   # -------------------------------------------------------------------------
   # postgres — type: docker
-  # Demonstrates: image, ports, volumes, env, command health check,
-  # `reset` and `seed`/`seed-large` scripts.
+  # Demonstrates: image, ports, volumes, env, command health check (run
+  # inside the container), `reset` and `seed`/`seed-large` scripts.
   # -------------------------------------------------------------------------
   postgres:
     type: docker
@@ -74,13 +76,20 @@ stems:
       POSTGRES_PASSWORD: local
       POSTGRES_DB: shop
     volumes: ["hello-shop-pgdata:/var/lib/postgresql/data"]
+    # A `command` probe of a docker/compose stem runs inside the container
+    # (`docker exec <id> sh -c ...`), so pg_isready comes from the image and
+    # the port is the container's 5432. `-h 127.0.0.1` matters: on first
+    # start the image runs a temporary socket-only server for its init
+    # scripts, then restarts; probing over TCP waits for the real server, so
+    # `seed` never races that restart.
     health:
       type: command
-      command: "pg_isready -U ${var.pg_user}"
+      command: "pg_isready -h 127.0.0.1 -U ${var.pg_user} -d shop"
       interval: 400ms
-      timeout: 300ms
+      timeout: 2s
       retries: 5
       start_period: 1s
+      start_timeout: 120s
     stop_grace: 2s
     scripts:
       # Named volumes are prefixed `<ws>_` by stems (`hello-shop-pgdata` →
@@ -97,7 +106,8 @@ stems:
 
   # -------------------------------------------------------------------------
   # redis — type: compose
-  # Demonstrates: wrapping an existing docker-compose file.
+  # Demonstrates: wrapping an existing docker-compose file; the command
+  # health check runs inside the service's container (container port 6379).
   # -------------------------------------------------------------------------
   redis:
     type: compose
@@ -112,9 +122,9 @@ stems:
     ports: [{ name: redis, port: 16379, container_port: 6379 }]
     health:
       type: command
-      command: "redis-cli -p 16379 ping"
+      command: "redis-cli ping"
       interval: 400ms
-      timeout: 300ms
+      timeout: 2s
       retries: 5
       start_period: 1s
     stop_grace: 2s
@@ -123,7 +133,8 @@ stems:
   # shop-api — type: process
   # Demonstrates: git-free local codebase path, `setup` with stamps and
   # `inputs`, env files, an overlay, http health, a watchdog restart, custom
-  # scripts with args, depends_on postgres (healthy) + redis (healthy).
+  # scripts with args, depends_on postgres (healthy) + redis (healthy), and a
+  # `docker` variant (FR-ST-8, `stems switch shop-api docker`).
   # -------------------------------------------------------------------------
   shop-api:
     type: process
@@ -137,6 +148,9 @@ stems:
       PORT: "18080"
       HOST: "0.0.0.0"
       DATABASE_URL: "postgres://${var.pg_user}:local@localhost:${stem.postgres.port}/shop"
+      # shop-api reads /products with psql; run it inside the postgres
+      # container so the host needs no psql client.
+      SHOP_PSQL: "docker exec hello-shop-postgres psql -U ${var.pg_user} -d shop"
       REDIS_URL: "redis://localhost:${stem.redis.port}"
       SHOP_CONFIG: "${codebase}/config/local.ini"
       SHOP_CHAOS: "1"
@@ -166,6 +180,20 @@ stems:
           - { name: role, type: enum, values: [admin, user], default: admin, description: "Role to grant" }
     watch:
       - { paths: ["*.py"], action: restart, debounce: 800ms }
+    # `stems switch shop-api docker` runs the same codebase as a container
+    # (built from its Dockerfile); `stems switch shop-api local` goes back.
+    variants:
+      docker:
+        type: docker
+        build: { context: "${codebase}" }
+        ports: [{ name: http, port: 18080, container_port: 8080 }]
+        volumes: ["${codebase}/config:/app/config:ro"]
+        env:
+          PORT: "8080"
+          DATABASE_URL: "postgres://${var.pg_user}:local@host.docker.internal:${stem.postgres.port}/shop"
+          SHOP_PSQL: ""
+          SHOP_CONFIG: /app/config/local.ini
+        health: { start_timeout: 3m }
 
   # -------------------------------------------------------------------------
   # shop-worker — type: process
@@ -238,5 +266,6 @@ stems:
       type: http
       url: "https://httpbin.org/get"
       interval: 500ms
-      timeout: 400ms
+      # A fresh TLS handshake to a public host takes ~0.5 s from Europe.
+      timeout: 2s
       retries: 3

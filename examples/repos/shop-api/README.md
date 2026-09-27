@@ -19,7 +19,7 @@ Stop it with Ctrl-C or SIGTERM.
 | Route | Result |
 |---|---|
 | `GET /healthz` | `200 {"status":"ok"}`, or `503` while chaos-unhealthy |
-| `GET /products` | JSON list. Reads the `products` table through `psql` when `DATABASE_URL` is set and `psql` is on `PATH`. Otherwise, or if the database is unreachable, it logs a `WARN` and serves the in-memory list |
+| `GET /products` | JSON list. Reads the `products` table through `$SHOP_PSQL`, or through `psql` when `DATABASE_URL` is set and `psql` is on `PATH`. Otherwise, or if the database is unreachable, it logs a `WARN` and serves the in-memory list |
 | `POST /users` | body `{"email": "...", "role": "..."}`. Returns `201` with the user and logs `INFO created user <email> role <role>` |
 
 `migrations/001_init.sql` creates and seeds the `products` table.
@@ -31,6 +31,7 @@ Stop it with Ctrl-C or SIGTERM.
 | `PORT` | `8080` | Port to listen on (`0` means pick any free port. The chosen port is logged) |
 | `HOST` | `127.0.0.1` | Address to bind |
 | `DATABASE_URL` | unset | Postgres URL. Optional |
+| `SHOP_PSQL` | unset | psql command line used instead of `psql $DATABASE_URL`, carrying its own connection (hello-shop: `docker exec hello-shop-postgres psql -U shop -d shop`, so no host `psql` is needed). Optional |
 | `REDIS_URL` | unset | Accepted for parity with the workspace. Not used by the API itself |
 | `SHOP_CHAOS` | unset | `1` enables the `/__chaos/*` endpoints (404 otherwise) |
 | `SHOP_SLEEP_START` | `0` | Seconds (float) to sleep **before** binding the port |

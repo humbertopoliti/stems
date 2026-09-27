@@ -1,30 +1,33 @@
 ---
 source: crates/stems-tui/src/tests.rs
+assertion_line: 712
 expression: text
 ---
  stems · process-chain                                                   1 Graph  2 [Table]  3 Detail  4 Logs  5 Events
-  STEM TYPE     STATUS       REASON                        PID     PORTS          UPTIME  RESTARTS CPU        MEM
-› a    process  ✓ healthy    ready (tcp)                   101     http:18301     9s      0
-  b    process  ✓ healthy    ready (tcp)                   102     http:18302     8s      0
-  c    process  ↻ starting   -                             103     http:18303     1s      0
-  d    process  · stopped    -                             -       http:18304     -       0
-
-                          ┌ Help ────────────────────────────────────────────────────────────┐
-                          │ j/k ↓/↑         move the selection                               │
-                          │ h/l ←/→         graph: across columns                            │
+  STEM TYPE     STATUS       REASON            PID     PORTS        UPTIME  RESTARTS CPU    MEM    SCRIPTS VARIANT WATCH
+› a    process  ✓ healthy    ready (tcp)       101     http:18301   9s      0                      -       -       -
+  b    process  ✓ healthy    ready (tcp)       102     http:18302   8s      0                      -       -       -
+  c    process  ↻ starting   -                 103     http:18303   1s      0                      -       -       -
+  d    process  · stopped ┌ Help ────────────────────────────────────────────────────────────┐     -       -       -
+                          │ j/k ↓/↑         move · detail: rows (scroll)                     │
+                          │ PgUp PgDn       detail: scroll a page                            │
+                          │ g / G           first / last · top / end                         │
+                          │ [ / ]           prev / next stem (wraps)                         │
+                          │ h/l ←/→         graph cols · detail stem                         │
                           │ f e + -         graph: focus labels zoom                         │
-                          │ g / G           first / last stem                                │
-                          │ Enter           open the detail view                             │
+                          │ Enter           detail · run/switch/pause row                    │
                           │ Tab S-Tab       next / previous view                             │
                           │ 1-5             go to a view (header #)                          │
                           │ /               filter stems by name                             │
                           │ O               cycle the sort order                             │
                           │ Ctrl-L          split: logs below                                │
-                          │ click           row / tab (mouse = true)                         │
+                          │ click           row/tab/strip/bar (mouse)                        │
+                          │ wheel           scroll / move (mouse)                            │
                           │ s               start the stem                                   │
                           │ x / X           stop / with dependants                           │
                           │ r / R           restart / rebuild                                │
                           │ p               pause/resume watchdog                            │
+                          │ v               switch variant (picker)                          │
                           │ o               open code in $EDITOR                             │
                           │ S               reset (type `reset`)                             │
                           │ :               script menu                                      │
@@ -38,7 +41,5 @@ expression: text
 
 
 
-
-
-
- process-chain · profile - · daemon pid 4242 · ✓2 !0 ✗0 ·1 ?0 ↻1                                        ? help · q quit
+ ■ x stop  ↻ r restart  : scripts  o editor  ? more
+ process-chain · profile - · daemon pid 4242 · ✓2 !0 ✗0 ↯0 ·1 ?0 ↻1                                     ? help · q quit

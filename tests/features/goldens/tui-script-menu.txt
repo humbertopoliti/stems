@@ -20,5 +20,5 @@
     └──────────────────────────────────────────────────────────────────────┘
 
 
-
- run-scripts · profile - · daemon pid * · ✓1 !0 ✗0 ·0 ?0 ↻0
+ ■ x stop  ↻ r restart  : scripts (8)  o editor  ? more
+ run-scripts · profile - · daemon pid * · ✓1 !0 ✗0 ↯0 ·0 ?0 ↻0
