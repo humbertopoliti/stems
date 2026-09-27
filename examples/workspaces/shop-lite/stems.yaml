@@ -10,7 +10,7 @@ vars:
   api_port: "18080"
 
 profiles:
-  default: [shop-api, shop-web, shop-worker]
+  default: [shop-api, shop-web, shop-worker, redis]
   api-only: [shop-api]
 
 stems:
@@ -54,14 +54,27 @@ stems:
     scripts:
       start: python3 serve.py
 
+  redis:
+    # shop-lite does not run redis for you (that is what hello-shop's compose stem does).
+    # It is declared as an EXTERNAL stem so the dependency shows on the graph and in
+    # status: unhealthy until something listens on 16379, e.g.
+    #   docker run --rm -p 16379:6379 redis:7      or      brew services start redis
+    type: external
+    description: Redis on localhost:16379, provided by you (not started by stems)
+    ports: [{ name: redis, port: 16379 }]
+    health: { type: tcp, port: 16379, interval: 1s, timeout: 500ms, retries: 2 }
+
   shop-worker:
     type: process
-    description: Queue consumer; without redis it just retries and heartbeats, but its chaos port lets you crash it
+    description: Queue consumer; keeps retrying while redis is down, and its chaos port lets you crash it
     codebase: ../../repos/shop-worker
+    depends_on:
+      # soft: drawn on the graph, but shop-worker starts even when redis is unhealthy
+      - { stem: redis, condition: healthy, soft: true, protocol: tcp }
     env:
       SHOP_CHAOS: "1"
       SHOP_CONTROL_PORT: "18081"
-      REDIS_URL: "redis://localhost:16379"  # nothing listens here in shop-lite; the worker logs WARN and retries
+      REDIS_URL: "redis://localhost:${stem.redis.port}"
     ports: [{ name: control, port: 18081 }]
     health: { type: tcp, port: 18081, interval: 500ms, timeout: 400ms, retries: 3 }
     stop_grace: 2s
