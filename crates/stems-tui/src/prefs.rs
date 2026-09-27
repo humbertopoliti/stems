@@ -2,7 +2,7 @@
 //!
 //! ```toml
 //! theme = "dark"          # dark | light
-//! mouse = false           # click selects rows
+//! mouse = false           # click selects rows and header tabs
 //! default_view = "table"  # table | detail | graph | logs | events
 //! refresh_ms = 250        # tick interval (status refresh every ~1 s)
 //! split_logs = false      # Ctrl-L: the log pane under Table/Graph/Detail (29; Ctrl-L saves it)
@@ -52,7 +52,7 @@ pub enum Clipboard {
 pub struct Prefs {
     /// `dark` (default) or `light`.
     pub theme: Theme,
-    /// Mouse clicks select table rows (default off).
+    /// Mouse clicks select table rows and switch header tabs (default off).
     pub mouse: bool,
     /// The view the dashboard opens in (default: table).
     pub default_view: Option<ViewKind>,

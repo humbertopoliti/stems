@@ -111,6 +111,22 @@ fn step(model: &mut Model, msg: Msg) -> Vec<Cmd> {
     match msg {
         Msg::Key(k) => key(model, k),
         Msg::Mouse(m) => {
+            let left = matches!(m.kind, MouseEventKind::Down(MouseButton::Left));
+            if model.prefs.mouse && left && m.row == 0 {
+                if capturing(model) {
+                    return Vec::new();
+                }
+                let hit = model
+                    .tab_hits
+                    .borrow()
+                    .iter()
+                    .find(|(_, a, b)| (*a..*b).contains(&m.column))
+                    .map(|h| h.0);
+                return match hit {
+                    Some(v) => go_to_view(model, v),
+                    None => Vec::new(),
+                };
+            }
             if model.prefs.mouse
                 && model.view == ViewKind::Table
                 && matches!(m.kind, MouseEventKind::Down(MouseButton::Left))
@@ -384,6 +400,30 @@ pub fn detail_cmds(stem: &str) -> Vec<Cmd> {
     ]
 }
 
+/// A text field, modal or overlay has the input: view keys (`Tab`, `1`-`5`)
+/// and header clicks do nothing.
+fn capturing(model: &Model) -> bool {
+    model.modal.is_open()
+        || model.help
+        || model.filter_editing
+        || (model.view == ViewKind::Logs && model.log_pane.search_editing)
+        || (model.view == ViewKind::Events && model.events_view.editing)
+}
+
+/// `1`-`5` or a header click: switch to `v`. Detail remembers where `Esc`
+/// goes back to (as `Enter` does) and selects the first stem when none is.
+fn go_to_view(model: &mut Model, v: ViewKind) -> Vec<Cmd> {
+    if v == ViewKind::Detail && model.view != ViewKind::Detail {
+        if matches!(model.view, ViewKind::Table | ViewKind::Graph) {
+            model.return_view = model.view;
+        }
+        if model.selected.is_none() {
+            model.selected = model.visible().first().map(|s| s.name.clone());
+        }
+    }
+    set_view(model, v)
+}
+
 fn set_view(model: &mut Model, v: ViewKind) -> Vec<Cmd> {
     model.view = v;
     let mut cmds = ensure_graph(model);
@@ -630,6 +670,10 @@ fn key(model: &mut Model, k: KeyEvent) -> Vec<Cmd> {
         KeyCode::BackTab => {
             let v = model.view.prev();
             set_view(model, v)
+        }
+        KeyCode::Char(c) if !ctrl && ViewKind::from_digit(c).is_some() => {
+            let v = ViewKind::from_digit(c).expect("checked");
+            go_to_view(model, v)
         }
         KeyCode::Char('/') => {
             model.filter_editing = true;

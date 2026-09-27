@@ -1,4 +1,4 @@
- stems · minimal                            Graph [Table] Detail  Logs  Events
+ stems · minimal                 1 Graph  2 [Table]  3 Detail  4 Logs  5 Events
   STEM     TYPE    STATUS     REASON   PID    PORTS  UPTIME RESTARTS CPU   MEM
 › echo-svc process ✓ healthy  -        *      18090  *      0
 

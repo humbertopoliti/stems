@@ -2,7 +2,7 @@
 source: crates/stems-tui/src/tests.rs
 expression: text
 ---
- stems · minimal                                                                    Graph  Table  Detail [Logs] Events
+ stems · minimal                                                         1 Graph  2 Table  3 Detail  4 [Logs]  5 Events
 ┌ Logs: echo-svc · following ──────────────────────────────────────────────────────────────────────────────────────────┐
 │   12:00:00.000 INFO chaos log line 0                                                                                 │
 │   12:00:00.010 ERROR chaos log line 1                                                                                │

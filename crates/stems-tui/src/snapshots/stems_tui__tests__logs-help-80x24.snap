@@ -2,12 +2,11 @@
 source: crates/stems-tui/src/tests.rs
 expression: text
 ---
- stems · minimal                            Graph  Table  Detail [Logs] Events
+ stems · minimal                 1 Graph  2 Table  3 Detail  4 [Logs]  5 Events
 ┌ Logs: echo-svc · scrolled · level warn+ ─────────────────────────────────────┐
 │›* 12:00:00.010 ERROR chaos log line 1                                        │
 │   12:00:00.030 ERROR chaos log line 3                                        │
-│   12:00:00.050 ERROR chaos log line 5                                        │
-│     ┌ Help ────────────────────────────────────────────────────────────┐     │
+│   12┌ Help ────────────────────────────────────────────────────────────┐     │
 │     │ Space           pause / resume following                         │     │
 │     │ /  n / N        search (Enter keeps) · next / previous match     │     │
 │     │ L               level: all, info+, warn+, error                  │     │
@@ -19,6 +18,7 @@ expression: text
 │     │ V, y            visual range · copy line or range                │     │
 │     │ w / t           wrap long lines / timestamps (UTC)               │     │
 │     │ Tab, Ctrl-L     next view · split pane elsewhere                 │     │
+│     │ 1-5, click      go to a view (header number or tab)              │     │
 │     │ q               quit                                             │     │
 │     └──────────────────────────────────────────────────────────────────┘     │
 │                                                                              │

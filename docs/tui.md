@@ -27,14 +27,18 @@ stop everything in attached `up` and just leave in `attach`. A plain
 ## Layout
 
 ```
- stems · minimal                            Graph [Table] Detail  Logs  Events
+ stems · minimal                 1 Graph  2 [Table]  3 Detail  4 Logs  5 Events
   STEM     TYPE    STATUS     REASON   PID    PORTS  UPTIME RESTARTS CPU   MEM
 › echo-svc process ✓ healthy  -        12345  18090  42s    0
 
  minimal · profile - · daemon pid 4242 · ✓1 !0 ✗0 ·0 ?0 ↻0     ? help · q quit
 ```
 
-* Title bar: workspace and the views; the current one is in brackets.
+* Title bar: workspace and the views; the current one is in brackets, each
+  numbered with its key (`1`-`5`). When the line is too narrow for the
+  numbers (under 56 columns) the tabs are shown without them
+  (` Graph [Table] Detail  Logs  Events`). With `mouse = true` a click on
+  a tab switches to that view.
 * Body: the current view.
 * Status bar: workspace, profile, daemon pid, counts per glyph (healthy,
   degraded, failed, stopped, unknown, transitioning), the filter (`/b`),
@@ -58,7 +62,9 @@ stop everything in attached `up` and just leave in `attach`. A plain
   (below).
 * **Events**: the daemon's event stream as a table (below).
 
-`Tab` cycles Graph → Table → Detail → Logs → Events.
+`Tab` cycles Graph → Table → Detail → Logs → Events; `1`-`5` jump straight
+to one (in every view, except while typing a filter or search or with a
+dialog open, where the digit is typed).
 
 Terminals smaller than 40x10 show "terminal too small" instead.
 
@@ -71,7 +77,7 @@ the rest of the file is kept), so the next session starts split.
 ### The graph view (28)
 
 ```
- stems · process-chain                     [Graph] Table  Detail  Logs  Events
+ stems · process-chain           1 [Graph]  2 Table  3 Detail  4 Logs  5 Events
              ┌─────┐
          ╭──▶│ b ✓ ├──╮
 ┌─────┐  │   └─────┘  │   ┌─────┐
@@ -180,6 +186,7 @@ its own line (and never runs a clipboard command). The status bar says
 | `g` / `G`, `Home` / `End` | first / last stem |
 | `Enter` | open the detail view (`Esc` goes back to the graph or table) |
 | `Tab` / `Shift-Tab` | next / previous view |
+| `1` `2` `3` `4` `5` | Graph / Table / Detail / Logs / Events, from any view (not while typing into a filter, search or dialog). `3` with no stem selected selects the first one; `Esc` in Detail goes back to the Table or Graph it came from |
 | `/` | filter by name: type, `Enter` keeps it, `Esc` clears it |
 | `O` | cycle the sort: config order, name, state (failed first), uptime (was `s` before 30) |
 | `Esc` | dismiss the toasts, close the help / dialog, back from Detail, clear the filter |
@@ -187,7 +194,7 @@ its own line (and never runs a clipboard command). The status bar says
 | `q`, `Ctrl-C` | quit (see above) |
 | `Ctrl-L` | split layout: the selected stem's log pane under Table/Graph/Detail (saved in `ui.toml`) |
 | `Ctrl-P` | the command palette (any view; below) |
-| mouse click | select a table row (`mouse = true`) |
+| mouse click | select a table row; a view tab in the title bar switches to it (`mouse = true`) |
 
 In the Logs view:
 
@@ -207,7 +214,9 @@ In the Logs view:
 | `Esc` | leave the range, clear the search |
 
 In the Events view: `j`/`k`, `g`/`G` move, `/` filters, `Enter` jumps to
-the logs, `Esc` clears the filter. `?` shows the keys of the current view.
+the logs, `Esc` clears the filter. In both views `Tab` and `1`-`5` switch
+views (not while typing a search or filter). `?` shows the keys of the
+current view.
 
 ## Actions (30, FR-UI-2)
 
@@ -310,7 +319,7 @@ dependants}`, `DownConfirm`, `ResetTyped {stem, buffer}`, `ScriptMenu`,
 
 ```toml
 theme = "dark"          # dark | light (accent colours)
-mouse = false           # clicking a table row selects it
+mouse = false           # clicking a table row selects it, a header tab switches view
 default_view = "graph"  # table | detail | graph | logs | events (unset: graph for >1 stem, else table)
 refresh_ms = 250        # tick interval, 50..5000; status refreshes about every second
 split_logs = false      # the split log pane (Ctrl-L toggles and saves it)

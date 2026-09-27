@@ -1,4 +1,5 @@
-//! Rendering: `view(&Model, &mut Frame)`, a pure function of the model.
+//! Rendering: `view(&Model, &mut Frame)`, a function of the model (it only
+//! records the header tabs' columns in `Model::tab_hits` for mouse clicks).
 //!
 //! Layout: a title line (workspace + view tabs, the current one in
 //! brackets), the body (the current view), a status bar (workspace,
@@ -33,6 +34,7 @@ pub const COLUMNS: [&str; 10] = [
 /// Render the whole dashboard.
 pub fn view(model: &Model, f: &mut Frame) {
     let area = f.area();
+    model.tab_hits.borrow_mut().clear();
     if area.width < MIN_SIZE.0 || area.height < MIN_SIZE.1 {
         too_small(f, area);
         return;
@@ -156,21 +158,58 @@ fn too_small(f: &mut Frame, area: Rect) {
     f.render_widget(Paragraph::new(msg).centered(), r);
 }
 
-fn title_bar(model: &Model, f: &mut Frame, area: Rect) {
-    let mut tabs: Vec<Span> = Vec::new();
-    for v in ViewKind::ALL {
-        if v == model.view {
-            tabs.push(Span::styled(
-                format!("[{}]", v.title()),
-                Style::default()
-                    .fg(accent(model))
-                    .add_modifier(Modifier::BOLD),
+/// The header's view tabs, `1 Graph  2 [Table]  3 Detail  4 Logs  5 Events`
+/// (the digit is the view's direct key; the current view in brackets), or
+/// the plain ` Graph [Table] Detail ` when the header is too narrow for the
+/// digits. `None` segments are the gaps between tabs.
+fn tab_segments(model: &Model, width: u16) -> Vec<(Option<ViewKind>, Vec<Span<'static>>)> {
+    const GAP: &str = "  ";
+    let titles: u16 = ViewKind::ALL
+        .iter()
+        .map(|v| v.title().chars().count() as u16)
+        .sum();
+    let n = ViewKind::ALL.len() as u16;
+    // digit + space per tab, the brackets, the gaps, a leading space.
+    let numbered_w = titles + 2 * n + 2 + GAP.len() as u16 * (n - 1) + 1;
+    // Keep room for " stems ·" on the left (and the right margin).
+    let numbered = width > numbered_w + 8;
+    let current = Style::default()
+        .fg(accent(model))
+        .add_modifier(Modifier::BOLD);
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let mut out = Vec::new();
+    if numbered {
+        out.push((None, vec![Span::raw(" ")]));
+    }
+    for (i, v) in ViewKind::ALL.into_iter().enumerate() {
+        let active = v == model.view;
+        let label = if active {
+            Span::styled(format!("[{}]", v.title()), current)
+        } else if numbered {
+            Span::raw(v.title())
+        } else {
+            Span::raw(format!(" {} ", v.title()))
+        };
+        if numbered {
+            if i > 0 {
+                out.push((None, vec![Span::raw(GAP)]));
+            }
+            let digit = if active { current } else { dim };
+            out.push((
+                Some(v),
+                vec![Span::styled(format!("{} ", v.digit()), digit), label],
             ));
         } else {
-            tabs.push(Span::raw(format!(" {} ", v.title())));
+            out.push((Some(v), vec![label]));
         }
     }
-    let tabs_w: u16 = tabs.iter().map(|s| s.width() as u16).sum::<u16>() + 1;
+    out
+}
+
+fn title_bar(model: &Model, f: &mut Frame, area: Rect) {
+    let segs = tab_segments(model, area.width);
+    let width = |spans: &[Span]| spans.iter().map(|s| s.width() as u16).sum::<u16>();
+    let tabs_w: u16 = segs.iter().map(|(_, s)| width(s)).sum::<u16>() + 1;
     let [left, right] =
         Layout::horizontal([Constraint::Fill(1), Constraint::Length(tabs_w)]).areas(area);
     let ws = if model.workspace.is_empty() {
@@ -185,7 +224,23 @@ fn title_bar(model: &Model, f: &mut Frame, area: Rect) {
         ])),
         left,
     );
-    f.render_widget(Paragraph::new(Line::from(tabs)), right);
+    // Record where each tab landed: a mouse click on it switches views.
+    let end = right.x + right.width;
+    let mut x = right.x;
+    let mut hits = Vec::new();
+    let mut spans = Vec::new();
+    for (v, s) in segs {
+        let w = width(&s);
+        if let Some(v) = v
+            && x < end
+        {
+            hits.push((v, x, (x + w).min(end)));
+        }
+        x += w;
+        spans.extend(s);
+    }
+    *model.tab_hits.borrow_mut() = hits;
+    f.render_widget(Paragraph::new(Line::from(spans)), right);
 }
 
 fn status_bar(model: &Model, f: &mut Frame, area: Rect) {
@@ -568,9 +623,11 @@ pub const HELP: &[(&str, &str)] = &[
     ("g / G", "first / last stem"),
     ("Enter", "open the detail view"),
     ("Tab S-Tab", "next / previous view"),
+    ("1-5", "go to a view (header #)"),
     ("/", "filter stems by name"),
     ("O", "cycle the sort order"),
     ("Ctrl-L", "split: logs below"),
+    ("click", "row / tab (mouse = true)"),
     ("s", "start the stem"),
     ("x / X", "stop / with dependants"),
     ("r / R", "restart / rebuild"),
@@ -599,6 +656,7 @@ pub const LOGS_HELP: &[(&str, &str)] = &[
     ("V, y", "visual range · copy line or range"),
     ("w / t", "wrap long lines / timestamps (UTC)"),
     ("Tab, Ctrl-L", "next view · split pane elsewhere"),
+    ("1-5, click", "go to a view (header number or tab)"),
     ("q", "quit"),
 ];
 
@@ -608,7 +666,7 @@ pub const EVENTS_HELP: &[(&str, &str)] = &[
     ("/", "filter by stem, kind, state or reason"),
     ("Enter", "the stem's logs at the event time"),
     ("Esc", "clear the filter"),
-    ("Tab", "next view"),
+    ("Tab, 1-5", "next view · go to a view"),
     ("?", "toggle this help"),
     ("q", "quit"),
 ];

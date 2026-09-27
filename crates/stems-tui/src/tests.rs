@@ -168,6 +168,196 @@ fn enter_opens_detail_and_loads_it() {
 }
 
 #[test]
+fn number_keys_go_to_views() {
+    let mut m = chain();
+    assert_eq!(
+        update(&mut m, ch('1')),
+        vec![Cmd::LoadGraph(vec![
+            "a".into(),
+            "b".into(),
+            "c".into(),
+            "d".into()
+        ])]
+    );
+    assert_eq!(m.view, ViewKind::Graph);
+    update(&mut m, ch('2'));
+    assert_eq!(m.view, ViewKind::Table);
+    assert_eq!(update(&mut m, ch('3')), crate::update::detail_cmds("a"));
+    assert_eq!(m.view, ViewKind::Detail);
+    assert_eq!(m.return_view, ViewKind::Table, "Esc goes back to the table");
+    update(&mut m, ch('4'));
+    assert_eq!(m.view, ViewKind::Logs);
+    assert_eq!(update(&mut m, ch('5')), vec![Cmd::LoadEvents]);
+    assert_eq!(m.view, ViewKind::Events);
+    for c in ['0', '6', '9'] {
+        update(&mut m, ch(c));
+        assert_eq!(m.view, ViewKind::Events, "{c} is not a view key");
+    }
+    update(&mut m, ctrl('1'));
+    assert_eq!(m.view, ViewKind::Events, "Ctrl-1 is not a view key");
+    // From the graph, Esc in Detail returns to the graph.
+    update(&mut m, ch('1'));
+    update(&mut m, ch('3'));
+    assert_eq!(m.return_view, ViewKind::Graph);
+    update(&mut m, k(KeyCode::Esc));
+    assert_eq!(m.view, ViewKind::Graph);
+}
+
+#[test]
+fn three_selects_the_first_stem_when_none_is() {
+    let mut m = chain();
+    m.selected = None;
+    assert_eq!(update(&mut m, ch('3')), crate::update::detail_cmds("a"));
+    assert_eq!(m.view, ViewKind::Detail);
+    assert_eq!(m.selected.as_deref(), Some("a"));
+    // An existing selection is kept.
+    let mut m = chain();
+    update(&mut m, ch('j'));
+    update(&mut m, ch('3'));
+    assert_eq!(m.selected.as_deref(), Some("b"));
+}
+
+#[test]
+fn number_keys_do_not_steal_typed_text() {
+    // The table filter.
+    let mut m = chain();
+    update(&mut m, ch('/'));
+    update(&mut m, ch('1'));
+    assert_eq!(m.view, ViewKind::Table);
+    assert_eq!(m.filter, "1");
+    update(&mut m, k(KeyCode::Enter));
+    update(&mut m, ch('4'));
+    assert_eq!(m.view, ViewKind::Logs, "after Enter the keys work again");
+    // The Logs search.
+    update(&mut m, ch('/'));
+    update(&mut m, ch('2'));
+    assert_eq!(m.view, ViewKind::Logs);
+    assert_eq!(m.log_pane.search, "2");
+    update(&mut m, k(KeyCode::Esc));
+    // The Events filter.
+    update(&mut m, ch('5'));
+    update(&mut m, ch('/'));
+    update(&mut m, ch('3'));
+    assert_eq!(m.view, ViewKind::Events);
+    assert_eq!(m.events_view.filter, "3");
+    update(&mut m, k(KeyCode::Esc));
+    // The help overlay and a modal (the palette's query).
+    update(&mut m, ch('?'));
+    update(&mut m, ch('1'));
+    assert_eq!(m.view, ViewKind::Events);
+    update(&mut m, ch('?'));
+    update(&mut m, ctrl('p'));
+    update(&mut m, ch('1'));
+    assert_eq!(m.view, ViewKind::Events);
+    assert!(m.modal.is_open());
+}
+
+#[test]
+fn header_tab_columns_follow_the_render() {
+    let mut m = chain();
+    let text = render_text(&m, 80, 24);
+    let header: Vec<char> = text.lines().next().expect("header").chars().collect();
+    let hits = m.tab_hits.borrow().clone();
+    let labels: Vec<(ViewKind, String)> = hits
+        .iter()
+        .map(|&(v, a, b)| (v, header[a as usize..b as usize].iter().collect()))
+        .collect();
+    assert_eq!(
+        labels,
+        vec![
+            (ViewKind::Graph, "1 Graph".to_string()),
+            (ViewKind::Table, "2 [Table]".to_string()),
+            (ViewKind::Detail, "3 Detail".to_string()),
+            (ViewKind::Logs, "4 Logs".to_string()),
+            (ViewKind::Events, "5 Events".to_string()),
+        ]
+    );
+    assert_eq!(
+        hits.last().map(|h| h.2),
+        Some(79),
+        "right-aligned, 1 margin"
+    );
+    // Narrow: no digits, the plain tabs.
+    let text = render_text(&m, 40, 10);
+    let header: Vec<char> = format!("{:<40}", text.lines().next().expect("header"))
+        .chars()
+        .collect();
+    let hits = m.tab_hits.borrow().clone();
+    let labels: Vec<String> = hits
+        .iter()
+        .map(|&(_, a, b)| header[a as usize..b as usize].iter().collect())
+        .collect();
+    assert_eq!(
+        labels,
+        [" Graph ", "[Table]", " Detail ", " Logs ", " Events "]
+    );
+    // Too small: no header, no tabs.
+    render_text(&m, 39, 9);
+    assert!(m.tab_hits.borrow().is_empty());
+    // The digits are the view keys.
+    update(&mut m, ch('4'));
+    render_text(&m, 80, 24);
+    assert!(m.tab_hits.borrow().iter().any(|h| h.0 == ViewKind::Logs));
+}
+
+#[test]
+fn clicking_a_header_tab_switches_views() {
+    let click = |column, row| {
+        Msg::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
+    };
+    let mut m = chain();
+    render_text(&m, 80, 24);
+    let col = |m: &Model, v| {
+        let h = m.tab_hits.borrow();
+        h.iter().find(|h| h.0 == v).map(|h| h.1).expect("tab")
+    };
+    let logs = col(&m, ViewKind::Logs);
+    update(&mut m, click(logs, 0));
+    assert_eq!(m.view, ViewKind::Table, "mouse off by default");
+    m.prefs.mouse = true;
+    update(&mut m, click(logs + 2, 0));
+    assert_eq!(m.view, ViewKind::Logs);
+    render_text(&m, 80, 24);
+    // Not on a tab: the workspace name, or a gap.
+    update(&mut m, click(3, 0));
+    assert_eq!(m.view, ViewKind::Logs);
+    let gap = col(&m, ViewKind::Detail) - 1;
+    update(&mut m, click(gap, 0));
+    assert_eq!(m.view, ViewKind::Logs);
+    // Detail selects the first stem when none is.
+    m.selected = None;
+    let detail = col(&m, ViewKind::Detail);
+    assert_eq!(
+        update(&mut m, click(detail, 0)),
+        crate::update::detail_cmds("a")
+    );
+    assert_eq!(m.view, ViewKind::Detail);
+    // Not while a modal is open.
+    render_text(&m, 80, 24);
+    update(&mut m, ctrl('p'));
+    let graph = col(&m, ViewKind::Graph);
+    update(&mut m, click(graph, 0));
+    assert_eq!(m.view, ViewKind::Detail);
+    update(&mut m, k(KeyCode::Esc));
+    // A right click does nothing.
+    let right = Msg::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Right),
+        column: col(&m, ViewKind::Graph),
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    });
+    update(&mut m, right);
+    assert_eq!(m.view, ViewKind::Detail);
+    update(&mut m, click(graph, 0));
+    assert_eq!(m.view, ViewKind::Graph);
+}
+
+#[test]
 fn tab_cycles_views() {
     let mut m = chain();
     let mut seen = vec![m.view];

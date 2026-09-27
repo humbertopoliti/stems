@@ -3,8 +3,11 @@
 //! Elm-style: [`crate::update`] is a pure reducer `(&mut Model, Msg) ->
 //! Vec<Cmd>`; [`crate::view`] renders a `&Model`; the runners
 //! ([`crate::runner`]) execute the [`Cmd`]s against the daemon and feed the
-//! results back as [`Msg`]s.
+//! results back as [`Msg`]s. The one exception to "view only reads":
+//! [`Model::tab_hits`], the header tabs' columns as last drawn, which the
+//! view records for mouse hit-testing.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 
@@ -60,6 +63,18 @@ impl ViewKind {
             ViewKind::Logs => "Logs",
             ViewKind::Events => "Events",
         }
+    }
+
+    /// The view's direct key (`1`-`5`, in `Tab` order).
+    pub fn digit(self) -> char {
+        let i = ViewKind::ALL.iter().position(|v| *v == self).unwrap_or(0);
+        char::from(b'1' + i as u8)
+    }
+
+    /// The view of a direct key (`1`-`5`).
+    pub fn from_digit(c: char) -> Option<ViewKind> {
+        let i = c.to_digit(10)?.checked_sub(1)?;
+        ViewKind::ALL.get(i as usize).copied()
     }
 
     /// Parse `table`, `detail`, ... (case-insensitive).
@@ -317,6 +332,10 @@ pub struct Model {
     /// The split pane follows this log stem instead of the selection (a
     /// workspace script's `_workspace` output) until the selection moves.
     pub log_focus: Option<String>,
+    /// The header's view tabs as last drawn: `(view, first column, end
+    /// column exclusive)` on row 0. Written by [`crate::view::view`] (the
+    /// only render-time state), read by the mouse handler.
+    pub tab_hits: RefCell<Vec<(ViewKind, u16, u16)>>,
 }
 
 /// A script run started from the dashboard.
@@ -376,6 +395,7 @@ impl Model {
             editor: None,
             script_runs: Vec::new(),
             log_focus: None,
+            tab_hits: RefCell::new(Vec::new()),
         }
     }
 

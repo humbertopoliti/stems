@@ -2,7 +2,7 @@
 source: crates/stems-tui/src/tests.rs
 expression: text
 ---
- stems · minimal                                                                    Graph  Table  Detail  Logs [Events]
+ stems · minimal                                                         1 Graph  2 Table  3 Detail  4 Logs  5 [Events]
 ┌ Events · 4 ──────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │  TIME     KIND                 STEM             FROM→TO                 REASON                         ACTOR         │
 │  12:00:01 stem.state           echo-svc         stopped→starting        -                              daemon        │
