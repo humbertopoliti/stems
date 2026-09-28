@@ -103,8 +103,11 @@ stems:
       seed: python3 seed.py
 ```
 
-Worked examples to try, from the smallest to one that uses every feature, are
-in [`examples/`](examples/README.md).
+To onboard a real system step by step (infrastructure, services, the
+dependency graph, scripts, variants, profiles and handing it to your team),
+follow [Getting started](docs/getting-started.md). Worked examples to try,
+from the smallest to one that uses every feature, are in
+[`examples/`](examples/README.md).
 
 ## Everyday commands
 
@@ -127,6 +130,7 @@ Every command takes `--json`. The full reference is
 
 ## Documentation
 
+- [Getting started: onboard your system](docs/getting-started.md)
 - [Configuration](docs/config.md)
 - [Lifecycle](docs/lifecycle.md), [process model](docs/process-model.md) and
   [recovery](docs/recovery.md)
