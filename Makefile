@@ -1,6 +1,7 @@
 # stems — single entry point for local checks and CI.
 # `make check` is the full local suite (process tests, e2e, example services);
-# `make ci` is the regression subset CI runs: no processes, no examples, no Docker.
+# `make ci` is the regression subset CI runs: lint, plus the tests of the crates
+# that don't supervise real processes (no daemon/runtime/mcp), no examples, no Docker.
 
 SHELL := /bin/sh
 CARGO ?= cargo
@@ -34,13 +35,17 @@ clippy:
 test:
 	$(CARGO) test --workspace --all-features
 
-# Unit and in-process tests only (CI). cargo-nextest enforces a per-test
-# timeout (.config/nextest.toml); it doesn't run doctests, so those run
-# separately. NEXTEST_PROFILE=ci for verbose per-test output.
+# Tests of the crates that don't start, signal or detach real processes (CI).
+# stems-daemon, stems-runtime and stems-mcp (which auto-starts a detached
+# daemon) run locally in `make test`: they supervise real processes, and the
+# full suite took GitHub's Linux runner down. cargo-nextest enforces a per-test timeout (.config/nextest.toml);
+# it doesn't run doctests, so those run separately. NEXTEST_PROFILE=ci for
+# verbose per-test output.
 NEXTEST_PROFILE ?= default
+CI_PACKAGES ?= -p stems-api -p stems-cli -p stems-config -p stems-core -p stems-tui
 test-unit:
-	$(CARGO) nextest run --workspace --profile $(NEXTEST_PROFILE)
-	$(CARGO) test --workspace --doc
+	$(CARGO) nextest run $(CI_PACKAGES) --profile $(NEXTEST_PROFILE)
+	$(CARGO) test $(CI_PACKAGES) --doc
 
 # Python unit tests for the example service repos (deliverable 02+).
 test-python:

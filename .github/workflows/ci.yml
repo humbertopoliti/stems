@@ -11,31 +11,17 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: -D warnings
+  # No RUSTFLAGS: clippy's -D warnings already fails on rustc warnings, and a
+  # RUSTFLAGS env replaces .cargo/config.toml, and changing it rebuilds every
+  # dependency (and churns the rust-cache).
   RUSTDOCFLAGS: -D warnings
 
-# CI is the regression subset (`make ci`): fmt, clippy, unit and in-process
-# tests, YAML lint, release packaging checks. Tests that start processes, the
-# example services, the e2e suite and Docker run locally (`make check`).
+# CI is the regression subset (`make ci`), on Linux only: fmt, clippy, the
+# tests of the crates that don't supervise processes (see CI_PACKAGES in the
+# Makefile), YAML lint, release packaging checks. stems-daemon, stems-runtime
+# and stems-mcp tests, the example services, the e2e suite and Docker run
+# locally (`make check`). release-checks still builds on macOS.
 jobs:
-  check-macos:
-    runs-on: macos-latest
-    # Backstop; nextest kills a hung test after 120 s (.config/nextest.toml).
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-      - name: Install toolchain (from rust-toolchain.toml)
-        run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
-        with:
-          # Save even when the run fails: a red run still warms the next.
-          cache-on-failure: true
-      - uses: taiki-e/install-action@nextest
-      - run: make ci NEXTEST_PROFILE=ci
-
   check-linux:
     runs-on: ubuntu-latest
     # Backstop; nextest kills a hung test after 120 s (.config/nextest.toml).

@@ -24,15 +24,17 @@ You need:
   everything else runs without it.
 
 ```sh
-make ci      # what CI runs: fmt, clippy, unit and in-process tests, yaml lint
+make ci      # what CI runs: fmt, clippy, tests of the non-process crates, yaml lint
 make check   # the full local suite: also process tests, example services, e2e
 make build   # release build: target/release/stems
 make docs    # regenerate docs/cli.md after changing CLI flags or help text
 ```
 
-CI runs only the regression subset (`make ci`): nothing that starts processes,
-the example services or Docker. Run `make check` locally before opening a PR
-that touches the runtime, daemon or lifecycle. End-to-end scenarios live in
+CI runs only the regression subset (`make ci`), on Linux: fmt and clippy over
+the workspace, plus the tests of the crates that don't supervise processes
+(`CI_PACKAGES` in the Makefile). The stems-daemon, stems-runtime and stems-mcp
+tests, the example services and Docker run only locally: run `make check`
+before opening a PR that touches the runtime, daemon, MCP server or lifecycle. End-to-end scenarios live in
 `tests/features/` (cucumber); run one file with
 `make e2e FEATURE=tests/features/foo.feature`.
 
