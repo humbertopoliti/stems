@@ -14,11 +14,6 @@ binary: `stems daemon`). Releases are built by
 Windows is out of scope. `<org>` below is the GitHub owner of the stems
 repository (`humbertopoliti` today).
 
-> **Status:** the pipeline is configured and verified locally
-> (`dist plan`, `make smoke`, `make size`) but has not published a release
-> yet: the repository has no GitHub remote. The commands below are what users
-> run once `v0.1.0-rc.1`/`v0.1.0` exist.
-
 ## Homebrew (macOS, recommended)
 
 ```sh

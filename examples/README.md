@@ -21,12 +21,13 @@ Only Python 3 is needed for `minimal` and for `shop-lite --profile local`.
 `shop-lite`'s default profile adds one container (redis), and `hello-shop`
 needs Docker (Docker Desktop, Colima or OrbStack) with the compose v2 plugin.
 
-## 0. Build the binary
+## 0. Get the binary
 
-There is no published release yet, so build from source (Rust 1.96):
+Install a release (`brew install humbertopoliti/tap/stems`, or see
+[`docs/install.md`](../docs/install.md)), or build from source (Rust 1.96):
 
 ```sh
-git clone <this-repo> && cd stems
+git clone https://github.com/humbertopoliti/stems && cd stems
 cargo build --release -p stems-cli
 export PATH="$PWD/target/release:$PATH"   # or copy target/release/stems somewhere on PATH
 stems --version
