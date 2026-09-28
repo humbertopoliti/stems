@@ -249,6 +249,9 @@ async fn full_lifecycle_over_the_socket() {
     client.shutdown().await.unwrap();
     let stopping = next_of(&mut sub, EventKind::DAEMON_STOPPING).await;
     assert_eq!(stopping.actor, "cli:test");
+    // the sleeper's exit is reported before daemon.stopped, never after it
+    let exited = next_of(&mut sub, EventKind::PROCESS_EXITED).await;
+    assert_eq!(exited.data["pid"], json!(sleeper.pid()));
     next_of(&mut sub, EventKind::DAEMON_STOPPED).await;
     let end = tokio::time::timeout(T, sub.next()).await.unwrap();
     assert!(end.is_none(), "stream should end after daemon.stopped");
