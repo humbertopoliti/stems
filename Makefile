@@ -116,7 +116,7 @@ smoke:
 	release/smoke.sh $(if $(BIN),$(BIN),target/release/stems)
 
 # Binary size budget: the release binary must stay under 25 MB
-# (strip + thin LTO in [profile.release]).
+# (strip, fat LTO and codegen-units = 1 in [profile.release]).
 SIZE_BUDGET_BYTES ?= 26214400
 size:
 	$(CARGO) build --release -p stems-cli
