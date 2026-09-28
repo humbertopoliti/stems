@@ -37,6 +37,14 @@ flate2 = { workspace = true }
 regex.workspace = true
 reqwest = { workspace = true }
 
+[features]
+# Integration tests that start real processes (local only; CI runs `make ci`).
+process-tests = []
+
+[[test]]
+name = "daemon_rpc"
+required-features = ["process-tests"]
+
 [dev-dependencies]
 insta = { workspace = true, features = ["json"] }
 tempfile = { workspace = true }

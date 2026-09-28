@@ -22,13 +22,16 @@ You need:
   everything else runs without it.
 
 ```sh
-make check   # fmt, clippy -D warnings, unit tests, python tests, yaml lint, e2e
+make ci      # what CI runs: fmt, clippy, unit and in-process tests, yaml lint
+make check   # the full local suite: also process tests, example services, e2e
 make build   # release build: target/release/stems
 make docs    # regenerate docs/cli.md after changing CLI flags or help text
 ```
 
-`make check` is what CI runs; a PR is ready when it passes locally.
-End-to-end scenarios live in `tests/features/` (cucumber); run one file with
+CI runs only the regression subset (`make ci`): nothing that starts processes,
+the example services or Docker. Run `make check` locally before opening a PR
+that touches the runtime, daemon or lifecycle. End-to-end scenarios live in
+`tests/features/` (cucumber); run one file with
 `make e2e FEATURE=tests/features/foo.feature`.
 
 ## Pull requests

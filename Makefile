@@ -1,5 +1,6 @@
 # stems — single entry point for local checks and CI.
-# `make check` is the definition of green for every deliverable.
+# `make check` is the full local suite (process tests, e2e, example services);
+# `make ci` is the regression subset CI runs: no processes, no examples, no Docker.
 
 SHELL := /bin/sh
 CARGO ?= cargo
@@ -10,13 +11,15 @@ FEATURE ?=
 TAGS ?=
 E2E_ENV = STEMS_E2E_FEATURE="$(FEATURE)" STEMS_E2E_TAGS="$(TAGS)"
 
-.PHONY: check check-docker fmt fmt-check clippy test test-python lint-yaml \
+.PHONY: check check-docker ci fmt fmt-check clippy test test-unit test-python lint-yaml \
         build e2e e2e-docker e2e-selftest trace docs \
         test-release smoke size dist-plan
 
 check: fmt-check clippy test test-python test-release lint-yaml e2e e2e-selftest trace
 
 check-docker: check e2e-docker
+
+ci: fmt-check clippy test-unit test-release lint-yaml trace
 
 fmt:
 	$(CARGO) fmt --all
@@ -25,9 +28,14 @@ fmt-check:
 	$(CARGO) fmt --all -- --check
 
 clippy:
-	$(CARGO) clippy --workspace --all-targets -- -D warnings
+	$(CARGO) clippy --workspace --all-targets --all-features -- -D warnings
 
+# Everything, including the integration tests that start real processes.
 test:
+	$(CARGO) test --workspace --all-features
+
+# Unit and in-process tests only (CI).
+test-unit:
 	$(CARGO) test --workspace
 
 # Python unit tests for the example service repos (deliverable 02+).

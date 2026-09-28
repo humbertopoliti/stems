@@ -10,6 +10,7 @@ import json
 import os
 import signal
 import socket
+import socketserver
 import sys
 import threading
 import time
@@ -170,9 +171,17 @@ def start_control_server(host, port):
 
         do_POST = do_GET
 
-    ThreadingHTTPServer.daemon_threads = True
-    ThreadingHTTPServer.allow_reuse_address = True
-    server = ThreadingHTTPServer((host, port), Control)
+    class Server(ThreadingHTTPServer):
+        daemon_threads = True
+        allow_reuse_address = True
+
+        def server_bind(self):
+            # Skip HTTPServer's reverse-DNS lookup of the bind address
+            # (socket.getfqdn): some resolvers stall it for 30+ s.
+            socketserver.TCPServer.server_bind(self)
+            self.server_name, self.server_port = self.server_address[:2]
+
+    server = Server((host, port), Control)
     threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.2}, daemon=True).start()
     log("INFO", "control listening on %s:%d" % (host, server.server_address[1]))
 
