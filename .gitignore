@@ -11,3 +11,6 @@ __pycache__/
 /REQUIREMENTS.md
 /plan/
 /.claude/
+
+# Rendered by stems overlays while example workspaces are up.
+/examples/repos/shop-api/config/local.ini
