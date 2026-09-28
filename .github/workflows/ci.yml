@@ -25,6 +25,9 @@ jobs:
       - name: Install toolchain (from rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Save even when make check fails: a red run still warms the next.
+          cache-on-failure: true
       - run: make check
       - name: Upload e2e failure artefacts
         if: failure()
@@ -47,6 +50,9 @@ jobs:
       - name: Install toolchain (from rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Save even when make check fails: a red run still warms the next.
+          cache-on-failure: true
       - run: make check
       - name: Upload e2e failure artefacts
         if: failure()
@@ -69,6 +75,9 @@ jobs:
       - name: Install toolchain (from rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Save even when make check fails: a red run still warms the next.
+          cache-on-failure: true
       - name: Docker info
         run: docker version && docker compose version
       - run: make check-docker
@@ -96,6 +105,9 @@ jobs:
       - name: Install toolchain (from rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Save even when make check fails: a red run still warms the next.
+          cache-on-failure: true
       - run: make test-release
       - run: make size
       - run: STEMS_BIN=target/release/stems release/build-extras.sh
