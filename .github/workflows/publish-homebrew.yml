@@ -27,7 +27,7 @@ jobs:
       TAG: ${{ fromJson(inputs.plan).announcement_tag }}
       PRERELEASE: ${{ fromJson(inputs.plan).announcement_is_prerelease }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Fetch the released artifacts
@@ -43,7 +43,7 @@ jobs:
             --homepage "https://github.com/${{ github.repository }}" \
             --out "$RUNNER_TEMP/stems.rb"
           cat "$RUNNER_TEMP/stems.rb"
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           repository: ${{ env.TAP_REPO }}
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
