@@ -15,6 +15,10 @@ env:
   # RUSTFLAGS env replaces .cargo/config.toml, and changing it rebuilds every
   # dependency (and churns the rust-cache).
   RUSTDOCFLAGS: -D warnings
+  # No debug info: a full debug build of the workspace with it outgrows the
+  # runner's free disk, and a runner with a full disk dies without a log.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
 
 # CI is the regression subset (`make ci`), on Linux only: fmt, clippy, the
 # tests of the crates that don't supervise processes (see CI_PACKAGES in the
@@ -38,7 +42,12 @@ jobs:
           # Save even when the run fails: a red run still warms the next.
           cache-on-failure: true
       - uses: taiki-e/install-action@nextest
-      - run: make ci NEXTEST_PROFILE=ci
+      - name: make ci (printing disk and memory every 20 s)
+        run: |
+          ( while sleep 20; do
+              echo "[resources] disk: $(df -h / | awk 'NR==2{print $3" used, "$4" free"}'); mem: $(free -m | awk 'NR==2{print $3"M used of "$2"M"}')"
+            done ) &
+          make ci NEXTEST_PROFILE=ci
 
   # Release packaging (deliverable 32): binary size budget (< 25 MB),
   # formula template golden, completions/man generation, cargo-dist config.
