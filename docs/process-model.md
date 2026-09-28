@@ -1,7 +1,7 @@
 # Process model
 
-How `stems_runtime::ProcessRuntime` starts, observes and stops native processes
-(REQUIREMENTS §6.5, FR-LC-5, FR-CR-1/2). Code: `crates/stems-runtime/src/{process,os,output}.rs`.
+How `stems_runtime::ProcessRuntime` starts, observes and stops native processes.
+Code: `crates/stems-runtime/src/{process,os,output}.rs`.
 
 ## Sessions and process groups
 

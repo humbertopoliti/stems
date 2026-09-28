@@ -1,7 +1,7 @@
 # Lifecycle: up, down, start, stop, restart, status
 
 The workspace daemon supervises every stem through a small state machine,
-ordered by the dependency graph (REQUIREMENTS §4.5, §6.4). This page
+ordered by the dependency graph. This page
 describes what each command does, the states, how a stem's environment is
 built, and the attached/detached rules. Wire shapes: [protocol.md](protocol.md).
 

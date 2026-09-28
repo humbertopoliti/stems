@@ -2,8 +2,7 @@
 
 stems samples CPU, memory and process counts of every running stem, keeps
 a history for the session, turns `limits:` into `degraded` warnings and
-shows it all in `stems metrics`, `stems status --json` and the TUI
-(REQUIREMENTS.md FR-MT-1..4, FR-HS-4; deliverable 25).
+shows it all in `stems metrics`, `stems status --json` and the TUI.
 
 ```sh
 stems metrics                      # table with sparklines and a TOTAL row

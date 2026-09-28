@@ -6,3 +6,8 @@ __pycache__/
 *.pyc
 .DS_Store
 *.pending-snap
+
+# Private planning material: kept locally, never published.
+/REQUIREMENTS.md
+/plan/
+/.claude/

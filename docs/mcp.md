@@ -61,7 +61,7 @@ restarted behind the server's back is picked up.
 
 Every result is JSON text (one text content block, pretty-printed). A failure
 is a tool result with `isError: true` whose text is the stems error:
-`{code, message, hint, path, details}` (error catalogue in REQUIREMENTS §7.5).
+`{code, message, hint, path, details}`.
 Calls that ran but failed (`ok: false`: a script that exited non-zero, an `up`
 where a stem failed) are also `isError: true`, with the full result as text.
 

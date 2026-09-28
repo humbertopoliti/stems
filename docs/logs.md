@@ -1,8 +1,8 @@
 # Logs
 
 Every line a stem (or a script run for it) prints is captured by the daemon,
-timestamped, parsed, kept in memory and appended to a per-stem rotating file
-(REQUIREMENTS §4.8, FR-LG-1/2/4/5). `stems logs` queries and follows it;
+timestamped, parsed, kept in memory and appended to a per-stem rotating file.
+`stems logs` queries and follows it;
 `stems logs --export` bundles it for a bug report. Wire shapes of the RPCs:
 [protocol.md](protocol.md).
 

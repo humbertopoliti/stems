@@ -1,7 +1,7 @@
 # Local API protocol
 
 How the CLI (and later the TUI and MCP server) talk to `stemsd`, the per-workspace
-daemon (REQUIREMENTS FR-CR-5/6, FR-CL-4, FR-DS-2, NFR-4). Code:
+daemon. Code:
 `crates/stems-api` (wire types + client), `crates/stems-daemon` (server).
 
 ## Where the daemon lives

@@ -1,7 +1,7 @@
 # stems examples
 
 This folder is both a worked example for new users and the fixture set the
-test suite validates against (REQUIREMENTS.md §7.1).
+test suite validates against.
 
 ```
 examples/

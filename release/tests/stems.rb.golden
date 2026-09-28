@@ -5,7 +5,7 @@ class Stems < Formula
   desc "Local environment management toolkit for multi-process systems"
   homepage "https://github.com/acme/stems"
   version "0.1.0-rc.1"
-  license any_of: ["MIT", "Apache-2.0"]
+  license "MIT"
 
   on_macos do
     on_arm do

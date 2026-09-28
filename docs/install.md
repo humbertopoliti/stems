@@ -84,7 +84,7 @@ cargo install --locked --git https://github.com/<org>/stems stems-cli
 ```
 
 (The crate is not on crates.io yet; the name `stems` was free there on
-2026-09-26, see REQUIREMENTS.md §11 Q1.)
+2026-09-26.)
 
 ## Upgrading
 

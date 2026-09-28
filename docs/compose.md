@@ -107,7 +107,7 @@ decides (`project_decision`):
 | yes | no | yes | start (adopt; the marker is then written) |
 | yes | no | no | `COMPOSE_PROJECT_IN_USE` |
 
-This answers REQUIREMENTS §11 Q2: **refuse by default, adopt with `adopt: true`**.
+The policy: **refuse by default, adopt with `adopt: true`**.
 Adopting means stems co-manages the project from then on: `up -d --no-deps`
 leaves an up-to-date running container untouched, and `down` removes the
 stem's service container.

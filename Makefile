@@ -84,10 +84,16 @@ e2e-selftest:
 	$(CARGO) build -p stems-cli
 	$(E2E_ENV) STEMS_E2E_SELFTEST=1 $(E2E_RUN)
 
-# Requirement traceability (REQUIREMENTS.md 7.4) plus its unit tests.
+# Requirement traceability plus its unit tests. The requirements and plan
+# files are maintainer-local (not in the repo); without them only the unit
+# tests run.
 trace:
 	$(PYTHON) -m unittest discover -s scripts/tests
-	$(PYTHON) scripts/trace.py --quiet
+	@if [ -f REQUIREMENTS.md ] && [ -d plan ]; then \
+		$(PYTHON) scripts/trace.py --quiet; \
+	else \
+		echo "trace: REQUIREMENTS.md/plan/ not present, skipping the traceability check"; \
+	fi
 
 # API docs, plus docs/cli.md generated from the clap tree (`stems __docs`);
 # crates/stems-cli/tests/docs.rs fails when docs/cli.md drifts.

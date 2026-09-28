@@ -9,18 +9,15 @@ Early development. `stems --version` is the only command so far.
 ## Install
 
 ```sh
-brew install <org>/tap/stems          # macOS (Apple Silicon and Intel): binary, completions, man pages
+brew install humbertopoliti/tap/stems          # macOS (Apple Silicon and Intel): binary, completions, man pages
 curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/<org>/stems/releases/latest/download/stems-cli-installer.sh | sh   # macOS/Linux
+  https://github.com/humbertopoliti/stems/releases/latest/download/stems-cli-installer.sh | sh   # macOS/Linux
 stems upgrade                         # later: brew upgrade, or the installer command
 ```
 
-No release has been published yet (the pipeline is configured but the repo has no GitHub remote). Tarballs, uninstalling and what the release smoke test checks: [`docs/install.md`](docs/install.md). Maintainers: [`release/RELEASING.md`](release/RELEASING.md).
+No release has been published yet. Tarballs, uninstalling and what the release smoke test checks: [`docs/install.md`](docs/install.md). Maintainers: [`release/RELEASING.md`](release/RELEASING.md).
 
 ## Development
-
-- Requirements and architecture: [`REQUIREMENTS.md`](REQUIREMENTS.md)
-- Delivery plan and agent workflow: [`plan/README.md`](plan/README.md) (conventions in [`plan/DECISIONS.md`](plan/DECISIONS.md))
 
 ```sh
 make check   # fmt, clippy -D warnings, tests, python tests, yaml lint, e2e, trace
