@@ -18,17 +18,24 @@ You need:
 - Rust: the toolchain is pinned in `rust-toolchain.toml`; `rustup` installs it
   on first use.
 - Python 3 (example services, YAML lint, test tooling).
+- [cargo-nextest](https://nexte.st) for `make ci` / `make test-unit`
+  (`cargo install --locked cargo-nextest`, or `brew install cargo-nextest`).
 - Docker with compose v2 only for the Docker tier (`make check-docker`);
   everything else runs without it.
 
 ```sh
-make check   # fmt, clippy -D warnings, unit tests, python tests, yaml lint, e2e
+make ci      # what CI runs: fmt, clippy, tests of the non-process crates, yaml lint
+make check   # the full local suite: also process tests, example services, e2e
 make build   # release build: target/release/stems
 make docs    # regenerate docs/cli.md after changing CLI flags or help text
 ```
 
-`make check` is what CI runs; a PR is ready when it passes locally.
-End-to-end scenarios live in `tests/features/` (cucumber); run one file with
+CI runs only the regression subset (`make ci`), on macOS and Linux: fmt and
+clippy over the workspace, plus the tests of the crates that don't supervise
+processes (`CI_PACKAGES` in the Makefile). The stems-daemon, stems-runtime and stems-mcp
+tests, the example services and Docker run only locally: run `make check`
+before opening a PR that touches the runtime, daemon, MCP server or lifecycle. End-to-end scenarios live in
+`tests/features/` (cucumber); run one file with
 `make e2e FEATURE=tests/features/foo.feature`.
 
 ## Pull requests

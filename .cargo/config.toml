@@ -1,0 +1,6 @@
+# Intel Macs: ld64 doesn't sign x86_64 binaries (arm64 is always linker-signed),
+# and exec of an unsigned binary waits on taskgated (seconds per exec). nextest
+# runs one process per test, so an unsigned test binary makes `make ci` crawl.
+# RUSTFLAGS in the environment (as in CI) replaces this.
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-Wl,-adhoc_codesign"]

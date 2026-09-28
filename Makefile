@@ -1,5 +1,7 @@
 # stems — single entry point for local checks and CI.
-# `make check` is the definition of green for every deliverable.
+# `make check` is the full local suite (process tests, e2e, example services);
+# `make ci` is the regression subset CI runs: lint, plus the tests of the crates
+# that don't supervise real processes (no daemon/runtime/mcp), no examples, no Docker.
 
 SHELL := /bin/sh
 CARGO ?= cargo
@@ -10,13 +12,15 @@ FEATURE ?=
 TAGS ?=
 E2E_ENV = STEMS_E2E_FEATURE="$(FEATURE)" STEMS_E2E_TAGS="$(TAGS)"
 
-.PHONY: check check-docker fmt fmt-check clippy test test-python lint-yaml \
+.PHONY: check check-docker ci fmt fmt-check clippy test test-unit test-python lint-yaml \
         build e2e e2e-docker e2e-selftest trace docs \
         test-release smoke size dist-plan
 
 check: fmt-check clippy test test-python test-release lint-yaml e2e e2e-selftest trace
 
 check-docker: check e2e-docker
+
+ci: fmt-check clippy test-unit test-release lint-yaml trace
 
 fmt:
 	$(CARGO) fmt --all
@@ -25,10 +29,23 @@ fmt-check:
 	$(CARGO) fmt --all -- --check
 
 clippy:
-	$(CARGO) clippy --workspace --all-targets -- -D warnings
+	$(CARGO) clippy --workspace --all-targets --all-features -- -D warnings
 
+# Everything, including the integration tests that start real processes.
 test:
-	$(CARGO) test --workspace
+	$(CARGO) test --workspace --all-features
+
+# Tests of the crates that don't start, signal or detach real processes (CI).
+# stems-daemon, stems-runtime and stems-mcp (which auto-starts a detached
+# daemon) run locally in `make test`: they supervise real processes, and the
+# full suite took GitHub's Linux runner down. cargo-nextest enforces a per-test timeout (.config/nextest.toml);
+# it doesn't run doctests, so those run separately. NEXTEST_PROFILE=ci for
+# verbose per-test output.
+NEXTEST_PROFILE ?= default
+CI_PACKAGES ?= -p stems-api -p stems-cli -p stems-config -p stems-core -p stems-tui
+test-unit:
+	$(CARGO) nextest run $(CI_PACKAGES) --profile $(NEXTEST_PROFILE)
+	$(CARGO) test $(CI_PACKAGES) --doc
 
 # Python unit tests for the example service repos (deliverable 02+).
 test-python:
@@ -116,7 +133,7 @@ smoke:
 	release/smoke.sh $(if $(BIN),$(BIN),target/release/stems)
 
 # Binary size budget: the release binary must stay under 25 MB
-# (strip + thin LTO in [profile.release]).
+# (strip, fat LTO and codegen-units = 1 in [profile.release]).
 SIZE_BUDGET_BYTES ?= 26214400
 size:
 	$(CARGO) build --release -p stems-cli

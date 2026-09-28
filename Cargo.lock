@@ -3458,6 +3458,7 @@ dependencies = [
  "globset",
  "indexmap",
  "insta",
+ "nix 0.31.3",
  "petgraph",
  "regex",
  "schemars",

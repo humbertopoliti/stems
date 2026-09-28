@@ -11,12 +11,24 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: -D warnings
+  # No RUSTFLAGS: clippy's -D warnings already fails on rustc warnings, and a
+  # RUSTFLAGS env replaces .cargo/config.toml, and changing it rebuilds every
+  # dependency (and churns the rust-cache).
   RUSTDOCFLAGS: -D warnings
+  # No debug info: smaller target/ and rust-cache, faster links.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
 
+# CI is the regression subset (`make ci`) on macOS and Linux: fmt, clippy, the
+# tests of the crates that don't supervise processes (see CI_PACKAGES in the
+# Makefile), YAML lint, release packaging checks. stems-daemon, stems-runtime
+# and stems-mcp tests, the example services, the e2e suite and Docker run
+# locally (`make check`).
 jobs:
   check-macos:
     runs-on: macos-latest
+    # Backstop; nextest kills a hung test after 120 s (.config/nextest.toml).
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -25,20 +37,16 @@ jobs:
       - name: Install toolchain (from rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
-      - run: make check
-      - name: Upload e2e failure artefacts
-        if: failure()
-        uses: actions/upload-artifact@v4
         with:
-          name: e2e-failures-macos
-          # Failing scenarios' temp dirs (workspace copy, STEMS_HOME with
-          # daemon logs/state, harness-report.txt), copied by the harness.
-          path: target/e2e-failures/
-          if-no-files-found: ignore
-          retention-days: 7
+          # Save even when the run fails: a red run still warms the next.
+          cache-on-failure: true
+      - uses: taiki-e/install-action@nextest
+      - run: make ci NEXTEST_PROFILE=ci
 
   check-linux:
     runs-on: ubuntu-latest
+    # Backstop; nextest kills a hung test after 120 s (.config/nextest.toml).
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -47,61 +55,33 @@ jobs:
       - name: Install toolchain (from rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
-      - run: make check
-      - name: Upload e2e failure artefacts
-        if: failure()
-        uses: actions/upload-artifact@v4
         with:
-          name: e2e-failures-linux
-          # Failing scenarios' temp dirs (workspace copy, STEMS_HOME with
-          # daemon logs/state, harness-report.txt), copied by the harness.
-          path: target/e2e-failures/
-          if-no-files-found: ignore
-          retention-days: 7
-
-  check-linux-docker:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-      - name: Install toolchain (from rust-toolchain.toml)
-        run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
-      - name: Docker info
-        run: docker version && docker compose version
-      - run: make check-docker
-      - name: Upload e2e failure artefacts
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e-failures-linux-docker
-          # Failing scenarios' temp dirs (workspace copy, STEMS_HOME with
-          # daemon logs/state, harness-report.txt), copied by the harness.
-          path: target/e2e-failures/
-          if-no-files-found: ignore
-          retention-days: 7
+          # Save even when the run fails: a red run still warms the next.
+          cache-on-failure: true
+      - uses: taiki-e/install-action@nextest
+      - run: make ci NEXTEST_PROFILE=ci
 
   # Release packaging (deliverable 32): binary size budget (< 25 MB),
   # formula template golden, completions/man generation, cargo-dist config.
+# The installed-binary smoke test runs in the release pipeline (release-smoke.yml).
   release-checks:
     strategy:
       fail-fast: false
       matrix:
         os: [macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Install toolchain (from rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Save even when the run fails: a red run still warms the next.
+          cache-on-failure: true
       - run: make test-release
       - run: make size
       - run: STEMS_BIN=target/release/stems release/build-extras.sh
-      - run: release/smoke.sh target/release/stems
-        env:
-          SMOKE_STRICT_LEAKS: "1"
       - name: cargo-dist plan
         run: |
           curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.32.0/cargo-dist-installer.sh | sh

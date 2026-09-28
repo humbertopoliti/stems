@@ -29,6 +29,14 @@ semver = { workspace = true }
 [target.'cfg(target_os = "macos")'.dependencies]
 libproc = { workspace = true }
 
+[features]
+# Integration tests that start real processes (local only; CI runs `make ci`).
+process-tests = []
+
+[[test]]
+name = "process_runtime"
+required-features = ["process-tests"]
+
 [dev-dependencies]
 insta.workspace = true
 serde_json = { workspace = true }

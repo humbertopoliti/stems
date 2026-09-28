@@ -56,19 +56,22 @@ async fn poll_until<T>(what: &str, mut f: impl AsyncFnMut() -> Option<T>) -> T {
 
 /// Read lines until one satisfies `pred`; returns it.
 async fn wait_line(out: &mut OutputStream, pred: impl Fn(&str) -> bool) -> String {
-    tokio::time::timeout(TIMEOUT, async {
+    let mut seen = Vec::new();
+    let found = tokio::time::timeout(TIMEOUT, async {
         loop {
-            let line = out
-                .recv()
-                .await
-                .expect("output closed before expected line");
+            let line = out.recv().await?;
             if pred(&line.text) {
-                return line.text;
+                return Some(line.text);
             }
+            seen.push(line.text);
         }
     })
-    .await
-    .expect("timed out waiting for output line")
+    .await;
+    match found {
+        Ok(Some(line)) => line,
+        Ok(None) => panic!("output closed before expected line; saw: {seen:#?}"),
+        Err(_) => panic!("timed out waiting for output line; saw: {seen:#?}"),
+    }
 }
 
 async fn collect_all(out: &mut OutputStream) -> Vec<(OutputStreamKind, String)> {

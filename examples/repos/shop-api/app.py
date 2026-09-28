@@ -11,6 +11,7 @@ import os
 import shlex
 import shutil
 import signal
+import socketserver
 import subprocess
 import sys
 import threading
@@ -294,9 +295,17 @@ def main():
     signal.signal(signal.SIGTERM, _on_sigterm)
     host = os.environ.get("HOST") or "127.0.0.1"
     port = int(os.environ.get("PORT") or 8080)
-    ThreadingHTTPServer.daemon_threads = True
-    ThreadingHTTPServer.allow_reuse_address = True
-    server = ThreadingHTTPServer((host, port), Handler)
+    class Server(ThreadingHTTPServer):
+        daemon_threads = True
+        allow_reuse_address = True
+
+        def server_bind(self):
+            # Skip HTTPServer's reverse-DNS lookup of the bind address
+            # (socket.getfqdn): some resolvers stall it for 30+ s.
+            socketserver.TCPServer.server_bind(self)
+            self.server_name, self.server_port = self.server_address[:2]
+
+    server = Server((host, port), Handler)
     log("INFO", "listening on %s:%d" % (host, server.server_address[1]))
     if CHAOS:
         log("WARN", "chaos endpoints enabled under /__chaos/")

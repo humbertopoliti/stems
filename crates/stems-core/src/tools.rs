@@ -180,13 +180,17 @@ fn run_with_timeout(command: &str, timeout: Duration) -> Result<Output, String> 
             Ok(Some(s)) => break s.code(),
             Ok(None) if Instant::now() >= deadline => {
                 // The command runs in its own process group: kill all of it
-                // so no grandchild keeps the pipes open.
-                let _ = Command::new("kill")
-                    .arg("-KILL")
-                    .arg(format!("-{}", child.id()))
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
+                // so no grandchild keeps the pipes open. killpg, not the
+                // `kill` binary: Linux's procps `kill` parses `-KILL -<pgid>`
+                // differently from BSD's.
+                if let Ok(pgid) = i32::try_from(child.id())
+                    && pgid > 1
+                {
+                    let _ = nix::sys::signal::killpg(
+                        nix::unistd::Pid::from_raw(pgid),
+                        nix::sys::signal::Signal::SIGKILL,
+                    );
+                }
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(format!(

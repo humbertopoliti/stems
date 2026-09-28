@@ -12,6 +12,7 @@ chrono = { workspace = true }
 clap = { workspace = true, features = ["string"] }
 globset = { workspace = true }
 indexmap = { workspace = true }
+nix = { workspace = true }
 petgraph = { workspace = true }
 regex = { workspace = true }
 schemars = { workspace = true }

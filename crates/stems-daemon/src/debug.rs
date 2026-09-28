@@ -24,10 +24,16 @@ pub const ENV_DEBUG_RPC: &str = "STEMS_DEBUG_RPC";
 /// Default stop grace for `_debug.stop_raw` and shutdown.
 const DEFAULT_GRACE: Duration = Duration::from_secs(2);
 
+/// How long shutdown waits for exit watchers (each waits up to 1 s for
+/// buffered output) so `process.exited` lands before `daemon.stopped`.
+const WATCHER_DEADLINE: Duration = Duration::from_secs(3);
+
 pub(crate) struct DebugRpc {
     runtime: Arc<ProcessRuntime>,
     handles: Arc<Mutex<HashMap<HandleId, Handle>>>,
     events: Arc<EventBus>,
+    /// Exit-watcher tasks, one per started process.
+    watchers: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
 #[derive(Deserialize)]
@@ -73,6 +79,7 @@ impl DebugRpc {
             runtime: Arc::new(ProcessRuntime::new()),
             handles: Arc::new(Mutex::new(HashMap::new())),
             events,
+            watchers: Mutex::new(Vec::new()),
         }
     }
 
@@ -145,7 +152,7 @@ impl DebugRpc {
         let handles = self.handles.clone();
         let actor = ctx.actor.clone();
         let hh = h.clone();
-        tokio::spawn(async move {
+        let watcher = tokio::spawn(async move {
             let status = runtime.wait(&hh).await;
             if let Some(o) = output {
                 // Let buffered output land before the exit event.
@@ -172,6 +179,11 @@ impl DebugRpc {
                 .remove(&hh.id());
             runtime.release(&hh);
         });
+        {
+            let mut ws = self.watchers.lock().unwrap_or_else(|e| e.into_inner());
+            ws.retain(|w| !w.is_finished());
+            ws.push(watcher);
+        }
         serde_json::to_value(&h).map_err(|e| Error::internal(e.to_string()))
     }
 
@@ -200,6 +212,14 @@ impl DebugRpc {
         let stops = hs.iter().map(|h| self.runtime.stop(h, DEFAULT_GRACE));
         for (h, r) in hs.iter().zip(futures::future::join_all(stops).await) {
             tracing::info!(handle = h.id().0, pid = h.pid(), outcome = ?r.ok(), "debug process stopped on shutdown");
+        }
+        let watchers: Vec<_> =
+            std::mem::take(&mut *self.watchers.lock().unwrap_or_else(|e| e.into_inner()));
+        if tokio::time::timeout(WATCHER_DEADLINE, futures::future::join_all(watchers))
+            .await
+            .is_err()
+        {
+            tracing::warn!("debug exit watchers exceeded their shutdown deadline");
         }
     }
 }

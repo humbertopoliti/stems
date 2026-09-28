@@ -72,7 +72,10 @@ reqwest = { version = "0.13.2", default-features = false, features = ["rustls"] 
 rmcp = { version = "3.4.1", default-features = false }
 
 [profile.release]
-lto = "thin"
+# Fat LTO + one codegen unit: ~25% smaller binary (size budget: `make size`),
+# at the cost of slower release builds.
+lto = "fat"
+codegen-units = 1
 strip = true
 
 # cargo-dist builds release artifacts with this profile (deliverable 32).
