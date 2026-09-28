@@ -4,8 +4,7 @@
 #   git cliff -o CHANGELOG.md                       # everything, unreleased on top
 #   git cliff --tag v0.1.0-rc.1 -o CHANGELOG.md     # before tagging a release
 #
-# The release workflow (.github/workflows/release-changelog.yml) regenerates
-# and commits it after each stable release. cargo-dist reads the section of
+# It is committed with the version bump, before the tag. cargo-dist reads the section of
 # the version being released for the GitHub Release notes.
 
 [changelog]

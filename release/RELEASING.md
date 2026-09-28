@@ -15,7 +15,6 @@ install docs: [`docs/install.md`](../docs/install.md).
 | `release/build-extras.sh` | completions + man pages (`stems __man`) into `target/dist-extras/` (packed by `include`) |
 | `.github/workflows/release-smoke.yml` | gate before the GitHub Release: brew smoke on both Macs, installer.sh smoke on Linux |
 | `.github/workflows/publish-homebrew.yml` | after the release: render and push `Formula/stems.rb` to the tap |
-| `.github/workflows/release-changelog.yml` | after the announcement: regenerate and commit `CHANGELOG.md` |
 | `release/formula/stems.rb.tmpl`, `release/render_formula.py` | the formula (golden: `release/tests/`) |
 | `release/smoke.sh` | the smoke test (`make smoke`) |
 | `release/set-version.sh` | bump the workspace version before tagging |
@@ -28,7 +27,7 @@ plan → build-local-artifacts (4 native runners: build-extras.sh, dist build)
      → build-global-artifacts (installer.sh, sha256.sum)   ┐
      → custom-release-smoke (brew ×2 macOS, installer.sh Linux) ┘→ host (GitHub Release)
      → custom-publish-homebrew (tap: default branch, or `rc` for prereleases)
-     → announce → custom-release-changelog (stable only)
+     → announce
 ```
 
 ## One-time setup
@@ -44,9 +43,12 @@ plan → build-local-artifacts (4 native runners: build-extras.sh, dist build)
    only; store it as the repository secret `HOMEBREW_TAP_TOKEN`.
 4. Optional: repository variable `HOMEBREW_TAP_REPO` if the tap is not
    `<owner>/homebrew-tap` (the only place the tap is named).
-5. Settings → Actions → General → Workflow permissions: *Read and write* (the
-   changelog job pushes to the default branch; allow it through branch
-   protection or drop that job).
+5. Settings → Actions → General → Workflow permissions: *Read and write*
+   (the release job creates the GitHub Release).
+
+`main` is protected by a ruleset (PRs, required CI checks, linear history);
+repository admins bypass it, so the release commit below can be pushed
+directly. `v*` tags cannot be moved or deleted except by admins.
 
 ## Cutting `v0.1.0-rc.1`
 
@@ -84,12 +86,11 @@ git -C "$(brew --repository <org>/tap)" checkout main
 ## Cutting `v0.1.0` (stable)
 
 Same as above with `release/set-version.sh 0.1.0` and the tag `v0.1.0`: the formula lands on the tap's default
-branch, so `brew install <org>/tap/stems` gets it, and the changelog job
-commits the regenerated `CHANGELOG.md`.
+branch, so `brew install <org>/tap/stems` gets it.
 
 ## Changing the pipeline
 
-- Edit `dist-workspace.toml` or the three custom workflows, then
+- Edit `dist-workspace.toml` or the two custom workflows, then
   `dist generate` (CI's `release.yml` is checked by `dist plan`; a stale one
   fails the plan job).
 - Formula change: edit `release/formula/stems.rb.tmpl`, then

@@ -41,5 +41,3 @@ publish-jobs = ["./publish-homebrew"]
 # `-rc` tags also run the publish job; it pushes prereleases to the tap's
 # `rc` branch, so the stable formula on the default branch is untouched.
 publish-prereleases = true
-# After the announcement: regenerate CHANGELOG.md with git-cliff and commit it.
-post-announce-jobs = ["./release-changelog"]
