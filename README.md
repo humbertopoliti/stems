@@ -1,6 +1,21 @@
+<div align="center">
+
 # stems
 
-**Your whole local environment as one versioned file.**
+**Your whole local environment as one versioned file, operable by you and by your AI agents.**
+
+[![CI](https://github.com/humbertopoliti/stems/actions/workflows/ci.yml/badge.svg)](https://github.com/humbertopoliti/stems/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/humbertopoliti/stems?sort=semver)](https://github.com/humbertopoliti/stems/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![MCP server](https://img.shields.io/badge/MCP-server-8A2BE2)](docs/mcp.md)
+![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
+![Written in Rust](https://img.shields.io/badge/written%20in-Rust-orange)
+
+[Install](#install) · [Quick start](#quick-start) · [MCP for agents](#built-for-ai-agents-stems-mcp) · [Commands](#everyday-commands) · [Docs](#documentation)
+
+</div>
+
+---
 
 Working on a large system usually means running five to twenty things at
 once: databases in containers, a message broker, several backend services, a
@@ -16,9 +31,71 @@ stems up      # start everything, in dependency order, and open the dashboard
 stems down    # stop everything
 ```
 
-Everything the dashboard shows is also available as JSON, over a socket
-protocol and as an MCP server, so AI agents can operate the environment the
-same way you do.
+```
+ stems · shop                     1 Graph  2 [Table]  3 Detail  4 Logs  5 Events
+  STEM      TYPE     STATUS     REASON  PID    PORTS  UPTIME  RESTARTS  CPU   MEM
+  postgres  docker   ✓ healthy  -       -      15432  3m12s   0
+› api       process  ✓ healthy  -       41822  8080   3m04s   0
+
+ ■ x stop  ↻ r restart  : scripts (0)  o editor  ? more
+ shop · profile - · daemon pid 4242 · ✓2 !0 ✗0 ↯0 ·0 ?0 ↻0         ? help · q quit
+```
+
+## Built for AI agents: `stems mcp`
+
+> [!TIP]
+> **stems ships a first-class [Model Context Protocol](https://modelcontextprotocol.io) server.**
+> Claude Code, Cursor, Claude Desktop and any other MCP client can start,
+> stop, inspect, debug and script your environment through the same runtime
+> you use, with guardrails you control.
+
+One command connects Claude Code to a workspace:
+
+```sh
+claude mcp add stems -- stems mcp --workspace "$PWD" --auto-start
+```
+
+Or, for any MCP client (`.mcp.json`, `.cursor/mcp.json`, Claude Desktop):
+
+```json
+{
+  "mcpServers": {
+    "stems": {
+      "command": "stems",
+      "args": ["mcp", "--workspace", "/path/to/integration-repo", "--auto-start"]
+    }
+  }
+}
+```
+
+Then ask your agent things like *"bring up the backend profile and tell me
+what's unhealthy"* or *"the api keeps restarting, find out why"*.
+
+What the agent gets:
+
+| | |
+|---|---|
+| **Runtime control** | `up`, `down`, `start`, `stop`, `restart` (with cascade), `watch_pause` / `watch_resume` |
+| **Observability** | `get_status`, `get_health`, `get_logs` (filtered, paginated), `get_metrics`, `get_events`, `get_graph` |
+| **Your scripts as tools** | every custom script becomes a typed tool, e.g. `shop_api__create_test_user`, with its arguments as the input schema |
+| **Resources** | `stems://workspace`, `stems://graph`, `stems://<stem>/config`, `stems://<stem>/logs` |
+| **Prompts** | `diagnose_stem` and `bring_up_and_report`, ready-made investigation flows |
+
+And what keeps it safe:
+
+- **Destructive actions are double-gated.** `reset`, `up --fresh`, `down`
+  with volumes and `doctor --fix` need both `confirm: true` from the agent
+  *and* `agent.allow_destructive: true` in the workspace, which is off by
+  default.
+- **You choose the toolset.** `agent.allowed_tools` / `agent.denied_tools`
+  globs hide tools from agents entirely.
+- **Every action is audited.** Agent requests carry the actor
+  `mcp:<client>` (`mcp:claude-code`, `mcp:cursor`, …) into the event log, so
+  `stems events` and the dashboard show exactly what an agent did.
+- **Secrets never leave.** Config, outputs and connection strings are
+  redacted before an agent sees them.
+
+The full tool catalogue, schemas and limits: [`docs/mcp.md`](docs/mcp.md).
 
 ## Features
 
@@ -41,9 +118,8 @@ same way you do.
   `stems.local.yaml`.
 - **A terminal dashboard:** status, graph, logs and events, with every
   action one key away.
-- **Agent-ready:** `--json` on every command, a daemon protocol, and
-  `stems mcp`, which exposes the workspace to Claude Code, Cursor and other
-  MCP clients.
+- **Automation-friendly:** `--json` on every command, a documented
+  [daemon protocol](docs/protocol.md), and the [MCP server](#built-for-ai-agents-stems-mcp).
 
 ## Install
 
@@ -130,36 +206,35 @@ Every command takes `--json`. The full reference is
 
 ## Documentation
 
-- [Getting started: onboard your system](docs/getting-started.md)
-- [Configuration](docs/config.md)
-- [Lifecycle](docs/lifecycle.md), [process model](docs/process-model.md) and
-  [recovery](docs/recovery.md)
-- [Health checks](docs/health.md), [restart policies](docs/restart.md) and
-  [watchdogs](docs/watchdogs.md)
-- [Scripts](docs/scripts.md), [overlays](docs/overlays.md) and
-  [repositories](docs/repos.md)
-- [Docker](docs/docker.md) and [Compose](docs/compose.md)
-- [Logs](docs/logs.md) and [metrics](docs/metrics.md)
-- [The dashboard](docs/tui.md)
-- [MCP server](docs/mcp.md) and [daemon protocol](docs/protocol.md)
-- [Doctor](docs/doctor.md)
+| Topic | Pages |
+|---|---|
+| **Start here** | [Getting started: onboard your system](docs/getting-started.md) · [Install](docs/install.md) · [Configuration](docs/config.md) |
+| **Running** | [Lifecycle](docs/lifecycle.md) · [Process model](docs/process-model.md) · [Recovery](docs/recovery.md) |
+| **Supervision** | [Health checks](docs/health.md) · [Restart policies](docs/restart.md) · [Watchdogs](docs/watchdogs.md) |
+| **Workflows** | [Scripts](docs/scripts.md) · [Overlays](docs/overlays.md) · [Repositories](docs/repos.md) |
+| **Containers** | [Docker](docs/docker.md) · [Compose](docs/compose.md) |
+| **Observability** | [Logs](docs/logs.md) · [Metrics](docs/metrics.md) · [The dashboard](docs/tui.md) · [Doctor](docs/doctor.md) |
+| **Agents & integration** | [MCP server](docs/mcp.md) · [Daemon protocol](docs/protocol.md) · [CLI reference](docs/cli.md) |
 
 ## Status
 
 Early: 0.x releases, and the config format may still change between minor
 versions (`schema_version` guards it). Runs on macOS and Linux; Windows is out
-of scope.
+of scope. Changes are tracked in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Contributing
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md). In short:
+Contributions are welcome. See [`CONTRIBUTING.md`](CONTRIBUTING.md) and the
+[code of conduct](CODE_OF_CONDUCT.md). In short:
 
 ```sh
 make ci      # what CI runs
 make check   # the full local suite, including process and e2e tests
 ```
 
-Maintainers cutting a release: [`release/RELEASING.md`](release/RELEASING.md).
+Security issues: please follow [`SECURITY.md`](SECURITY.md) rather than
+opening a public issue. Maintainers cutting a release:
+[`release/RELEASING.md`](release/RELEASING.md).
 
 ## License
 
