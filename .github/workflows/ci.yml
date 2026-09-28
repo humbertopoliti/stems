@@ -20,6 +20,8 @@ env:
 jobs:
   check-macos:
     runs-on: macos-latest
+    # Backstop; nextest kills a hung test after 120 s (.config/nextest.toml).
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -31,10 +33,13 @@ jobs:
         with:
           # Save even when the run fails: a red run still warms the next.
           cache-on-failure: true
-      - run: make ci
+      - uses: taiki-e/install-action@nextest
+      - run: make ci NEXTEST_PROFILE=ci
 
   check-linux:
     runs-on: ubuntu-latest
+    # Backstop; nextest kills a hung test after 120 s (.config/nextest.toml).
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -46,7 +51,8 @@ jobs:
         with:
           # Save even when the run fails: a red run still warms the next.
           cache-on-failure: true
-      - run: make ci
+      - uses: taiki-e/install-action@nextest
+      - run: make ci NEXTEST_PROFILE=ci
 
   # Release packaging (deliverable 32): binary size budget (< 25 MB),
   # formula template golden, completions/man generation, cargo-dist config.
@@ -57,6 +63,7 @@ jobs:
       matrix:
         os: [macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Install toolchain (from rust-toolchain.toml)

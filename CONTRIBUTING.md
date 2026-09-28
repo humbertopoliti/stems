@@ -18,6 +18,8 @@ You need:
 - Rust: the toolchain is pinned in `rust-toolchain.toml`; `rustup` installs it
   on first use.
 - Python 3 (example services, YAML lint, test tooling).
+- [cargo-nextest](https://nexte.st) for `make ci` / `make test-unit`
+  (`cargo install --locked cargo-nextest`, or `brew install cargo-nextest`).
 - Docker with compose v2 only for the Docker tier (`make check-docker`);
   everything else runs without it.
 

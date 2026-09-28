@@ -34,9 +34,13 @@ clippy:
 test:
 	$(CARGO) test --workspace --all-features
 
-# Unit and in-process tests only (CI).
+# Unit and in-process tests only (CI). cargo-nextest enforces a per-test
+# timeout (.config/nextest.toml); it doesn't run doctests, so those run
+# separately. NEXTEST_PROFILE=ci for verbose per-test output.
+NEXTEST_PROFILE ?= default
 test-unit:
-	$(CARGO) test --workspace
+	$(CARGO) nextest run --workspace --profile $(NEXTEST_PROFILE)
+	$(CARGO) test --workspace --doc
 
 # Python unit tests for the example service repos (deliverable 02+).
 test-python:
