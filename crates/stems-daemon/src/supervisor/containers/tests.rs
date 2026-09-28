@@ -118,6 +118,28 @@ fn hello_shop_postgres_container_spec_golden() {
 }
 
 #[test]
+fn the_pull_policy_reaches_the_container_spec() {
+    let r = hello_shop();
+    let ws = &r.workspace;
+    let env = env_of(&r, "postgres");
+    let ports = [("pg".to_string(), 15432)];
+    let mut stem = ws.stem("postgres").unwrap().clone();
+    let spec = container_spec(ws, &stem, "RUN", &env, &ports).unwrap();
+    assert_eq!(spec.pull, ImagePull::Missing, "the default");
+    for (policy, want) in [
+        (PullPolicy::Always, ImagePull::Always),
+        (PullPolicy::Never, ImagePull::Never),
+    ] {
+        let StemRuntime::Docker(d) = &mut stem.runtime else {
+            panic!("postgres is a docker stem")
+        };
+        d.pull = policy;
+        let spec = container_spec(ws, &stem, "RUN", &env, &ports).unwrap();
+        assert_eq!(spec.pull, want);
+    }
+}
+
+#[test]
 fn hello_shop_redis_compose_spec_golden() {
     let r = hello_shop();
     let ws = &r.workspace;
@@ -611,4 +633,35 @@ fn shutdown_removes_containers_of_failed_stems_only() {
     ]);
     assert_eq!(sel, ["db", "redis"]);
     assert!(failed_selection([("x".to_string(), S::Stopped)]).is_empty());
+}
+
+#[test]
+fn pull_errors_name_the_pull_not_a_start() {
+    let e = pull_error(
+        "db",
+        "postgres:16",
+        RuntimeError::DockerUnavailable {
+            hint: "start Docker Desktop".into(),
+        },
+    );
+    assert_eq!(e.code, ErrorCode::DockerUnavailable);
+    assert_eq!(
+        e.message,
+        "cannot pull `postgres:16` for `db`: the Docker daemon is not reachable"
+    );
+    assert_eq!(e.details["image"], "postgres:16");
+    let e = pull_error(
+        "db",
+        "postgres:16",
+        RuntimeError::ImagePullFailed {
+            image: "postgres:16".into(),
+            message: "denied".into(),
+        },
+    );
+    assert_eq!(e.code, ErrorCode::ImagePullFailed);
+    assert!(
+        e.message
+            .starts_with("pulling `postgres:16` for `db` failed")
+    );
+    assert!(e.hint.as_deref().unwrap().contains("docker.credentials"));
 }

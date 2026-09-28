@@ -1,0 +1,50 @@
+---
+source: crates/stems-cli/tests/help.rs
+expression: help
+---
+Pull the images of docker stems now (a moved tag such as `latest` included).
+
+Default: every enabled docker stem with an `image`, except `pull: never` ones (pulled only when
+named). Uses the same registry credentials as `docker pull` (`docker login`, credential helpers).
+Running stems keep their old image until restarted; `--restart` restarts those whose image changed.
+
+Usage: stems pull [OPTIONS] [STEMS]...
+
+Arguments:
+  [STEMS]...
+          Only these stems (default: every enabled docker stem with an `image`)
+
+Options:
+      --restart
+          Restart the running stems whose image changed
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Global options:
+      --workspace <PATH>
+          Workspace directory or stems.yaml path (default: $STEMS_WORKSPACE, else walk up from the
+          current directory)
+
+      --json
+          Emit the JSON envelope (the default when stdout is not a terminal)
+
+      --human
+          Emit human text even when stdout is not a terminal
+
+      --no-color
+          Disable colours in human output
+          
+          [env: STEMS_NO_COLOR]
+
+  -q, --quiet
+          Print only errors in human mode
+
+  -v, --verbose...
+          More detail (repeat for more: -vv)
+
+      --home <PATH>
+          Root for daemon state, sockets, locks and logs (default: ~/Library/Application
+          Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
+          
+          [env: STEMS_HOME]

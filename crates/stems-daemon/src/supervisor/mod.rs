@@ -18,6 +18,7 @@ pub mod cascade;
 pub mod containers;
 pub mod env;
 pub mod hooks;
+pub mod images;
 pub mod metrics;
 pub mod outputs;
 pub mod overlays;
@@ -77,6 +78,8 @@ pub struct RuntimeRegistry {
     by_type: HashMap<StemType, Arc<dyn Runtime>>,
     /// Lazily connected docker/compose runtimes (14/15), when registered.
     containers: Option<Arc<containers::Containers>>,
+    /// What `stems pull` pulls with (the containers, or a test fake).
+    puller: Option<Arc<dyn containers::ImagePuller>>,
 }
 
 impl Default for RuntimeRegistry {
@@ -86,6 +89,7 @@ impl Default for RuntimeRegistry {
         Self {
             by_type,
             containers: None,
+            puller: None,
         }
     }
 }
@@ -107,8 +111,20 @@ impl RuntimeRegistry {
                 Arc::new(containers::LazyRuntime::new(c.clone(), kind)),
             );
         }
+        self.puller = Some(c.clone());
         self.containers = Some(c);
         self
+    }
+
+    /// Pull images with `p` (tests).
+    pub fn with_puller(mut self, p: Arc<dyn containers::ImagePuller>) -> Self {
+        self.puller = Some(p);
+        self
+    }
+
+    /// What `stems pull` pulls with, if registered.
+    pub fn puller(&self) -> Option<&Arc<dyn containers::ImagePuller>> {
+        self.puller.as_ref()
     }
 
     /// The docker/compose runtimes, if registered.
@@ -1375,6 +1391,10 @@ impl SupervisorHooks for Supervisor {
             m if m == Method::ADOPT_ORPHANS => self.adopt_orphans(p, actor).await,
             m if m == Method::BUILD => match params(m, p) {
                 Ok(p) => self.build(p, actor).await.and_then(to_value),
+                Err(e) => Err(e),
+            },
+            m if m == Method::PULL => match params(m, p) {
+                Ok(p) => self.pull(p, actor).await.and_then(to_value),
                 Err(e) => Err(e),
             },
             m if m == Method::RESET => match params(m, p) {

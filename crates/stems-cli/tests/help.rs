@@ -34,6 +34,7 @@ fn every_later_command_is_a_stub_with_help() {
         "stems shell",
         "stems reset",
         "stems build",
+        "stems pull",
         "stems stamps",
         "stems overlays",
         "stems doctor",

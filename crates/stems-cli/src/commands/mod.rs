@@ -18,6 +18,7 @@ pub mod orphans;
 pub mod outputs;
 pub mod overlays;
 pub mod profiles;
+pub mod pull;
 pub mod repos;
 pub mod run;
 pub mod scripts;
@@ -93,6 +94,7 @@ pub fn dispatch(cmd: Command, ctx: &Ctx, mode: Mode, stdout: &mut dyn Write) -> 
         Command::Stop(a) => lifecycle::stop(ctx, &a),
         Command::Restart(a) => lifecycle::restart(ctx, &a),
         Command::Build(a) => scripts::build(ctx, &a),
+        Command::Pull(a) => pull::run(ctx, &a, mode, stdout),
         Command::Reset(a) => scripts::reset(ctx, &a),
         Command::Stamps(a) => scripts::stamps(ctx, &a),
         Command::Repos(crate::cli::ReposCommand::Sync(a)) => repos::sync(ctx, &a),

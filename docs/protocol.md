@@ -144,6 +144,7 @@ the connection stays usable. For a stream:
 | `subscribe_logs` | `{stems?, since?, grep?, level?, script?, tail?}` | ack `{subscribed: true, replay: n}`, then `log` notifications (see below) |
 | `export_logs` | `{path, since?}` (`path` absolute) | `{path, entries: [name], bytes}` — writes the `.tar.gz` bundle ([logs.md](logs.md#export-bundle)) |
 | `adopt_orphans` | `{orphans: [{stem, pid}]}` | `{adopted: [{stem, pid, pgid}], failed: [{stem, pid, error}]}` — registers running processes found by the orphan scan as their stems (`stem.adopted`); see [recovery.md](recovery.md) |
+| `pull` | `PullParams {stems?, restart?}` | `PullResult {ok, pulled: [{stem, image, before, after, changed, duration_ms}], skipped: [{stem, reason}], failed: [{stem, error}], restarted?: UpResult}` — pulls docker stems' images now, progress as `docker.pull` events ([docker.md](docker.md#stems-pull)) |
 | `build` | `BuildParams {stems?}` | `BuildResult {ok, built: [{stem, script, exit, duration_ms}], skipped, failed: [{stem, error}]}` — runs `build` scripts ([scripts.md](scripts.md)) |
 | `reset` | `ResetParams {stems?}` | `ResetResult {ok, stopped, reset: [{stem, script, exit, duration_ms}], cleared, failed}` — stops the stems, runs `reset`, clears their stamps |
 | `stamps` | `StampsParams {stem?, clear?}` | `StampsResult {stamps: [{stem, script, hash, computed_at, inputs}], cleared}` |

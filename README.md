@@ -198,6 +198,7 @@ from the smallest to one that uses every feature, are in
 | `stems graph` | The dependency graph |
 | `stems run <stem> <script>` | Run a stem's script (`--ws` for a workspace script) |
 | `stems exec` / `stems shell <stem>` | Run a command or open a shell in a stem's environment |
+| `stems pull [stems…] [--restart]` | Pull docker stems' images now (any registry, your `docker login` credentials) |
 | `stems doctor` | Diagnose the machine and the workspace |
 | `stems mcp` | Serve the workspace to MCP clients |
 

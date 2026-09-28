@@ -215,6 +215,20 @@ fn spec_hash_is_stable_and_ignores_run_id_and_grace() {
     assert!(!needs_recreate(Some(&labels), &b));
     assert!(needs_recreate(Some(&labels), &c));
     assert!(needs_recreate(None, &a));
+
+    // The pull policy is not part of the container: changing it alone
+    // restarts in place.
+    let mut g = postgres();
+    g.pull = PullPolicy::Always;
+    assert_eq!(a.spec_hash(), g.spec_hash());
+}
+
+#[test]
+fn a_newer_local_image_forces_a_recreate() {
+    assert!(image_differs(Some("sha256:old"), Some("sha256:new")));
+    assert!(!image_differs(Some("sha256:same"), Some("sha256:same")));
+    assert!(!image_differs(None, Some("sha256:new")));
+    assert!(!image_differs(Some("sha256:old"), None));
 }
 
 fn inspect(v: Value) -> ContainerInspectResponse {
@@ -795,4 +809,15 @@ fn network_gone_is_recognised() {
     assert!(!is_network_gone(&RuntimeError::Unsupported(
         "network not found".into()
     )));
+}
+
+#[test]
+fn a_pull_changed_the_image_when_its_id_moved() {
+    let o = |b: Option<&str>, a: Option<&str>| PullOutcome {
+        before: b.map(Into::into),
+        after: a.map(Into::into),
+    };
+    assert!(o(None, Some("sha256:a")).changed(), "new image");
+    assert!(o(Some("sha256:a"), Some("sha256:b")).changed(), "moved tag");
+    assert!(!o(Some("sha256:a"), Some("sha256:a")).changed());
 }

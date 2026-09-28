@@ -34,6 +34,7 @@ pub fn target(cmd: &Command) -> (String, &'static str) {
         | Command::Restart(_)
         | Command::Reset(_)
         | Command::Build(_)
+        | Command::Pull(_)
         | Command::Stamps(_)
         | Command::Repos(_)
         | Command::Run(_)

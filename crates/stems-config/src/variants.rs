@@ -39,12 +39,13 @@ pub fn is_base(name: &str) -> bool {
 /// Stem fields that only apply to some stem types (the flat
 /// process/docker/compose fields of [`crate::raw::RawStem`]). A variant
 /// changing `type` drops all of them from the base.
-pub const TYPE_SPECIFIC_FIELDS: [&str; 15] = [
+pub const TYPE_SPECIFIC_FIELDS: [&str; 16] = [
     "cwd",
     "command",
     "shell",
     "stdin",
     "image",
+    "pull",
     "build",
     "volumes",
     "entrypoint",

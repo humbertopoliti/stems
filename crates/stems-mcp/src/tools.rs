@@ -733,6 +733,8 @@ pub async fn doctor(b: &Backend, actor: &str, a: DoctorArgs) -> Result<Value, Er
         load: opts.load_options(),
         daemon: probe,
         docker_host: opts.env.get("DOCKER_HOST").cloned(),
+        docker_config: doctor::docker_config_path(&opts.env),
+        path: opts.env.get("PATH").cloned(),
         ignore_pids: vec![i32::try_from(std::process::id()).unwrap_or(0)],
     };
     let mut report = doctor::run(input.clone(), false).await;

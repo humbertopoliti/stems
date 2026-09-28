@@ -16,6 +16,8 @@ fn input(dir: &std::path::Path) -> DoctorInput {
         },
         daemon: DaemonProbe::NotRunning,
         docker_host: Some("unix:///nonexistent/docker.sock".into()),
+        docker_config: None,
+        path: None,
         ignore_pids: vec![std::process::id() as i32],
     }
 }
@@ -177,4 +179,175 @@ fn hot_reload_detection() {
     assert!(watch_overlaps_sources(&w(&["**"])));
     assert!(!watch_overlaps_sources(&w(&["config/*.yaml"])));
     assert!(!watch_overlaps_sources(&w(&["*.py"])));
+}
+
+fn creds_config(json: &str) -> Result<stems_runtime::docker::DockerConfigFile, (PathBuf, String)> {
+    Ok(serde_json::from_str(json).unwrap())
+}
+
+fn regs(hosts: &[(&str, &[&str])]) -> Vec<(String, Vec<String>)> {
+    hosts
+        .iter()
+        .map(|(h, s)| (h.to_string(), s.iter().map(|x| x.to_string()).collect()))
+        .collect()
+}
+
+#[test]
+fn credential_results_per_registry() {
+    let cfg = creds_config(
+        r#"{"credsStore":"gone",
+            "credHelpers":{"europe-west2-docker.pkg.dev":"gcloud","ghcr.io":"missing"},
+            "auths":{"bad.io":{"auth":"%"}}}"#,
+    );
+    let find =
+        |name: &str| (name == "gcloud").then(|| PathBuf::from("/sdk/bin/docker-credential-gcloud"));
+    let r = credential_results(
+        &cfg,
+        &regs(&[
+            ("europe-west2-docker.pkg.dev", &["api", "worker"]),
+            ("ghcr.io", &["web"]),
+            ("docker.io", &["db"]),
+        ]),
+        &find,
+    );
+    let got: Vec<(&str, CheckStatus)> = r.iter().map(|c| (c.id.as_str(), c.status)).collect();
+    assert_eq!(
+        got,
+        [
+            (
+                "docker.credentials.europe-west2-docker.pkg.dev",
+                CheckStatus::Ok
+            ),
+            ("docker.credentials.ghcr.io", CheckStatus::Fail),
+            ("docker.credentials.docker.io", CheckStatus::Warn),
+        ]
+    );
+    assert_eq!(r[0].details["stems"], json!(["api", "worker"]));
+    assert_eq!(r[0].details["source"], "helper");
+    assert_eq!(r[0].details["path"], "/sdk/bin/docker-credential-gcloud");
+    assert!(
+        r[1].message.contains("docker-credential-missing"),
+        "{}",
+        r[1].message
+    );
+    assert_eq!(r[1].code, Some(ErrorCode::ImagePullFailed));
+    assert!(r[1].hint.as_ref().unwrap().contains("PATH"));
+    assert!(r[2].message.contains("anonymous"), "{}", r[2].message);
+    assert_eq!(r[2].details["source"], "store");
+
+    // No store: inline auths, an unusable entry, anonymous.
+    let cfg = creds_config(r#"{"auths":{"a.io":{"auth":"dTpw"},"bad.io":{"auth":"%"}}}"#);
+    let r = credential_results(
+        &cfg,
+        &regs(&[("a.io", &["a"]), ("bad.io", &["b"]), ("docker.io", &["c"])]),
+        &|_| None,
+    );
+    let got: Vec<(CheckStatus, &str)> = r
+        .iter()
+        .map(|c| (c.status, c.details["source"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            (CheckStatus::Ok, "auths"),
+            (CheckStatus::Fail, "auths"),
+            (CheckStatus::Ok, "anonymous")
+        ]
+    );
+    assert!(
+        r[2].hint
+            .as_ref()
+            .unwrap()
+            .contains("docker login docker.io")
+    );
+}
+
+#[test]
+fn an_unreadable_docker_config_fails_once() {
+    let r = credential_results(
+        &Err((
+            PathBuf::from("/h/.docker/config.json"),
+            "cannot parse".into(),
+        )),
+        &regs(&[("ghcr.io", &["a"])]),
+        &|_| None,
+    );
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].id, "docker.credentials");
+    assert_eq!(r[0].status, CheckStatus::Fail);
+    assert!(
+        r[0].hint
+            .as_ref()
+            .unwrap()
+            .contains("/h/.docker/config.json")
+    );
+}
+
+#[tokio::test]
+async fn doctor_checks_credentials_of_image_stems_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(d.path().join("ws")).unwrap();
+    std::fs::write(
+        d.path().join("ws/stems.yaml"),
+        "schema_version: 1\nname: w\nstems:\n  api: { type: docker, image: 'ghcr.io/acme/api:main' }\n  db: { type: docker, image: 'postgres:16' }\n  built: { type: docker, build: {} }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        d.path().join("config.json"),
+        r#"{"credHelpers":{"ghcr.io":"stemstest"}}"#,
+    )
+    .unwrap();
+    let bin = d.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let helper = bin.join("docker-credential-stemstest");
+    std::fs::write(&helper, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let mut i = input(d.path());
+    i.docker_config = Some(d.path().join("config.json"));
+    i.path = Some(bin.to_string_lossy().into_owned());
+    let r = run(i.clone(), false).await;
+    let creds: Vec<(&str, CheckStatus)> = r
+        .checks
+        .iter()
+        .filter(|c| c.id.starts_with("docker.credentials"))
+        .map(|c| (c.id.as_str(), c.status))
+        .collect();
+    assert_eq!(
+        creds,
+        [
+            ("docker.credentials.ghcr.io", CheckStatus::Ok),
+            ("docker.credentials.docker.io", CheckStatus::Ok),
+        ]
+    );
+
+    // The helper is not on PATH any more: a failure, with the PATH hint.
+    i.path = Some(d.path().join("empty").to_string_lossy().into_owned());
+    let r = run(i, false).await;
+    let c = r
+        .checks
+        .iter()
+        .find(|c| c.id == "docker.credentials.ghcr.io")
+        .unwrap();
+    assert_eq!(c.status, CheckStatus::Fail);
+    assert!(!r.ok);
+}
+
+#[test]
+fn docker_config_path_follows_the_environment() {
+    let env = |kv: &[(&str, &str)]| -> std::collections::HashMap<String, String> {
+        kv.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    };
+    assert_eq!(
+        docker_config_path(&env(&[("HOME", "/u"), ("DOCKER_CONFIG", "/cfg")])),
+        Some(PathBuf::from("/cfg/config.json"))
+    );
+    assert_eq!(
+        docker_config_path(&env(&[("HOME", "/u")])),
+        Some(PathBuf::from("/u/.docker/config.json"))
+    );
+    assert_eq!(docker_config_path(&env(&[])), None);
 }

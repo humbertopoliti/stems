@@ -963,3 +963,64 @@ fn local_ports_override_is_the_resolved_primary_port() {
         );
     }
 }
+
+#[test]
+fn docker_pull_policy_defaults_to_missing_and_is_image_only() {
+    let ws = Ws::new(&[(
+        "stems.yaml",
+        "stems:\n  a: { type: docker, image: 'ghcr.io/acme/a:latest', pull: always }\n  b: { type: docker, image: x }\n",
+    )]);
+    let r = ws.load();
+    assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+    let pull = |n: &str| match &r.workspace.stem(n).unwrap().runtime {
+        StemRuntime::Docker(d) => d.pull,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(pull("a"), stems_config::PullPolicy::Always);
+    assert_eq!(pull("b"), stems_config::PullPolicy::Missing);
+
+    let e = Ws::new(&[(
+        "stems.yaml",
+        "stems:\n  c: { type: docker, image: x, pull: sometimes }\n",
+    )])
+    .fail();
+    assert!(e.to_string().contains("stems.c.pull"), "{e}");
+
+    let ws = Ws::new(&[(
+        "stems.yaml",
+        "stems:\n  p: { type: process, command: run, pull: always }\n  b: { type: docker, build: {}, pull: never }\n",
+    )]);
+    let paths: Vec<String> = ws
+        .load()
+        .diagnostics
+        .iter()
+        .map(|d| format!("{} {}", d.code, d.path.as_ref().unwrap()))
+        .collect();
+    assert_eq!(
+        paths,
+        ["SCHEMA_INVALID stems.p.pull", "SCHEMA_INVALID stems.b.pull"]
+    );
+}
+
+#[test]
+fn a_variant_can_pull_an_image_instead_of_running_locally() {
+    let ws = Ws::new(&[(
+        "stems.yaml",
+        "stems:\n  api:\n    type: process\n    command: python3 app.py\n    ports: [{ name: http, port: 18080 }]\n    variant: published\n    variants:\n      published:\n        type: docker\n        image: europe-west2-docker.pkg.dev/proj/repo/api:main\n        pull: always\n        ports: [{ name: http, port: 18080, container_port: 8080 }]\n",
+    )]);
+    let r = ws.load();
+    assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+    let api = r.workspace.stem("api").unwrap();
+    match &api.runtime {
+        StemRuntime::Docker(d) => {
+            assert_eq!(
+                d.image.as_deref(),
+                Some("europe-west2-docker.pkg.dev/proj/repo/api:main")
+            );
+            assert_eq!(d.pull, stems_config::PullPolicy::Always);
+            assert!(d.build.is_none());
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(api.ports[0].container_port, Some(8080));
+}

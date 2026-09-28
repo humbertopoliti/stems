@@ -36,6 +36,7 @@ Commands:
   shell        Open an interactive shell in a stem's context
   reset        Run a stem's `reset` script and clear its stamps
   build        Run build scripts (or docker builds)
+  pull         Pull the images of docker stems now (a moved tag such as `latest` included)
   stamps       Show or clear setup/seed stamps
   overlays     Show the overlays stems has written into codebases
   doctor       Diagnose the environment: Docker, tool versions, ports, orphans

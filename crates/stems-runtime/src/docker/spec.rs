@@ -152,6 +152,19 @@ pub struct BuildSpec {
     pub dockerfile: PathBuf,
 }
 
+/// When `image` is pulled (`pull:` of a docker stem).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PullPolicy {
+    /// Only when the image is not present locally.
+    #[default]
+    Missing,
+    /// On every start and restart.
+    Always,
+    /// Never; a missing image is an `ImagePullFailed`.
+    Never,
+}
+
 /// Health-check override; unset fields keep the image's values.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HealthcheckSpec {
@@ -208,6 +221,10 @@ pub struct ContainerSpec {
     pub run_id: String,
     /// Image reference (absent when `build` is set).
     pub image: Option<String>,
+    /// When `image` is pulled (not part of the spec hash: a restart
+    /// recreates when the pulled image differs from the container's).
+    #[serde(default)]
+    pub pull: PullPolicy,
     pub build: Option<BuildSpec>,
     #[serde(default)]
     pub ports: Vec<PortMapping>,
@@ -242,6 +259,7 @@ impl ContainerSpec {
             stem: stem.into(),
             run_id: run_id.into(),
             image: None,
+            pull: PullPolicy::default(),
             build: None,
             ports: Vec::new(),
             volumes: Vec::new(),

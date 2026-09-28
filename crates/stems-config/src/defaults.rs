@@ -2,7 +2,9 @@
 //! that any change is a reviewed diff.
 
 use crate::types::{ArgType, AutoApply, WatchAction, WatchRoot};
-use crate::types::{ByteSize, Condition, Dur, FileMode, HealthType, RestartPolicy, StemType};
+use crate::types::{
+    ByteSize, Condition, Dur, FileMode, HealthType, PullPolicy, RestartPolicy, StemType,
+};
 
 /// `schema_version`.
 pub const SCHEMA_VERSION: u32 = 1;
@@ -159,6 +161,7 @@ pub fn defaults_table() -> Vec<(&'static str, String)> {
             "<codebase, else workspace root>".into(),
         ),
         ("stems.<n>.build.dockerfile (docker)", DOCKERFILE.into()),
+        ("stems.<n>.pull (docker)", json(&PullPolicy::default())),
         ("stems.<n>.service (compose)", "<stem name>".into()),
         (
             "stems.<n>.project_name (compose)",

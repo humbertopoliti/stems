@@ -11,6 +11,7 @@
 //! [`DockerRuntime::remove_container_id`], [`verify_labels`]) once it has a
 //! container id from `docker compose ps`.
 
+mod auth;
 mod cli;
 mod context;
 mod spec;
@@ -44,6 +45,10 @@ use crate::runtime::{
     RuntimeError, RuntimeFacts, StartSpec, StopOutcome,
 };
 
+pub use auth::{
+    CredentialSource, DOCKER_HUB_KEY, DockerConfigFile, config_path, credentials_for, find_helper,
+    helper_dirs, registry_host, resolve_with, run_helper_at, server_address,
+};
 pub use cli::{
     CliSearch, DOCKER_CLI_ENV, WELL_KNOWN_DOCKER_PATHS, docker_cli_path, docker_program,
     ensure_docker_on_path, find_docker_cli, is_executable, path_with_docker_dir,
@@ -51,9 +56,9 @@ pub use cli::{
 pub use context::{DockerIgnore, EXTERNAL_DOCKERFILE, context_tar};
 pub use spec::{
     BuildSpec, ContainerSpec, HealthcheckSpec, ImageProgress, LABEL_RUN_ID, LABEL_SPEC_HASH,
-    LABEL_STEM, LABEL_WORKSPACE, PortMapping, PortProto, ProgressSink, PullCoalescer, PullProgress,
-    VolumeMount, container_name, create_body, default_network, grace_secs, split_image_ref,
-    to_bollard, volume_name,
+    LABEL_STEM, LABEL_WORKSPACE, PortMapping, PortProto, ProgressSink, PullCoalescer, PullPolicy,
+    PullProgress, VolumeMount, container_name, create_body, default_network, grace_secs,
+    split_image_ref, to_bollard, volume_name,
 };
 
 /// Lines of build output kept for [`RuntimeError::BuildFailed`].
@@ -378,6 +383,26 @@ pub fn needs_recreate(labels: Option<&HashMap<String, String>>, spec: &Container
         .is_none_or(|h| *h != spec.spec_hash())
 }
 
+/// What [`DockerRuntime::pull`] did: the local image id before and after.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PullOutcome {
+    pub before: Option<String>,
+    pub after: Option<String>,
+}
+
+impl PullOutcome {
+    /// The local image changed (it is new, or a moved tag was pulled).
+    pub fn changed(&self) -> bool {
+        self.before != self.after
+    }
+}
+
+/// Does the container run an older image than the local `image` now names
+/// (a moved tag was pulled)? Unknown ids never force a recreate.
+pub fn image_differs(container_image: Option<&str>, local_image: Option<&str>) -> bool {
+    matches!((container_image, local_image), (Some(c), Some(l)) if c != l)
+}
+
 /// Named volumes to delete with `--volumes`: only `<ws>_*` volumes (never
 /// a user's pre-existing volume, never bind mounts).
 pub fn volumes_to_remove(inspect: &ContainerInspectResponse) -> Vec<String> {
@@ -651,18 +676,43 @@ impl DockerRuntime {
         }
     }
 
-    /// Pull `image` unless it is present locally.
-    async fn ensure_image(&self, image: &str, progress: &ProgressSink) -> Result<(), RuntimeError> {
-        match self.docker.inspect_image(image).await {
-            Ok(_) => return Ok(()),
-            Err(e) if is_not_found(&e) => {}
-            Err(e) => return Err(self.map_err(e)),
+    /// Make `image` available locally according to `pull` (see
+    /// [`PullPolicy`]); pulls authenticate with [`credentials_for`].
+    async fn ensure_image(
+        &self,
+        image: &str,
+        pull: PullPolicy,
+        progress: &ProgressSink,
+    ) -> Result<(), RuntimeError> {
+        if pull != PullPolicy::Always {
+            match self.docker.inspect_image(image).await {
+                Ok(_) => return Ok(()),
+                Err(e) if is_not_found(&e) => {}
+                Err(e) => return Err(self.map_err(e)),
+            }
         }
-        let (repo, tag) = split_image_ref(image);
+        if pull == PullPolicy::Never {
+            return Err(RuntimeError::ImagePullFailed {
+                image: image.to_string(),
+                message: "the image is not present locally and `pull: never` is set".into(),
+            });
+        }
+        self.pull_image(image, progress).await
+    }
+
+    /// `POST /images/create` for `image`, with the registry's credentials.
+    async fn pull_image(&self, image: &str, progress: &ProgressSink) -> Result<(), RuntimeError> {
         let failed = |message: String| RuntimeError::ImagePullFailed {
             image: image.to_string(),
             message,
         };
+        let credentials = credentials_for(image).await.map_err(|e| {
+            failed(format!(
+                "registry credentials for `{}`: {e}",
+                registry_host(image)
+            ))
+        })?;
+        let (repo, tag) = split_image_ref(image);
         let mut stream = self.docker.create_image(
             Some(CreateImageOptions {
                 from_image: Some(repo),
@@ -670,7 +720,7 @@ impl DockerRuntime {
                 ..Default::default()
             }),
             None,
-            None,
+            credentials,
         );
         let mut coalescer = PullCoalescer::new();
         while let Some(item) = stream.next().await {
@@ -690,6 +740,28 @@ impl DockerRuntime {
             }
         }
         Ok(())
+    }
+
+    /// `stems pull`: pull `image` now (whatever the stem's pull policy),
+    /// reporting the local image id before and after.
+    pub async fn pull(
+        &self,
+        image: &str,
+        progress: &ProgressSink,
+    ) -> Result<PullOutcome, RuntimeError> {
+        let before = self.image_id(image).await?;
+        self.pull_image(image, progress).await?;
+        let after = self.image_id(image).await?;
+        Ok(PullOutcome { before, after })
+    }
+
+    /// The local image id of `image`, if present.
+    async fn image_id(&self, image: &str) -> Result<Option<String>, RuntimeError> {
+        match self.docker.inspect_image(image).await {
+            Ok(i) => Ok(i.id),
+            Err(e) if is_not_found(&e) => Ok(None),
+            Err(e) => Err(self.map_err(e)),
+        }
     }
 
     /// `docker build` the context, tagged `stems/<ws>/<stem>:<run_id>`.
@@ -774,6 +846,16 @@ impl DockerRuntime {
     }
 
     async fn start_container(&self, spec: &ContainerSpec) -> Result<Handle, RuntimeError> {
+        self.start_container_with(spec, false).await
+    }
+
+    /// [`Self::start_container`]; `image_ready`: the image of an `image`
+    /// stem was already ensured (restart), so it is not pulled again.
+    async fn start_container_with(
+        &self,
+        spec: &ContainerSpec,
+        image_ready: bool,
+    ) -> Result<Handle, RuntimeError> {
         let image = spec.image_ref().ok_or_else(|| {
             RuntimeError::Container(format!(
                 "docker stem `{}` has neither `image` nor `build`",
@@ -781,14 +863,14 @@ impl DockerRuntime {
             ))
         })?;
         self.ensure_network(spec).await?;
-        let mut attempt = self.create_and_start(spec, &image).await;
+        let mut attempt = self.create_and_start(spec, &image, image_ready).await;
         if let Err(e) = &attempt
             && is_network_gone(e)
         {
             // Another stem of the workspace was removed in between and took
             // the (then empty) network with it: create it again, once.
             self.ensure_network(spec).await?;
-            attempt = self.create_and_start(spec, &image).await;
+            attempt = self.create_and_start(spec, &image, image_ready).await;
         }
         match attempt {
             Ok(h) => Ok(h),
@@ -806,10 +888,12 @@ impl DockerRuntime {
         &self,
         spec: &ContainerSpec,
         image: &str,
+        image_ready: bool,
     ) -> Result<Handle, RuntimeError> {
         match &spec.build {
             Some(b) => self.build_image(spec, b).await?,
-            None => self.ensure_image(image, &spec.progress).await?,
+            None if image_ready => {}
+            None => self.ensure_image(image, spec.pull, &spec.progress).await?,
         }
         self.clear_name(spec).await?;
         let name = spec.container_name();
@@ -1040,14 +1124,28 @@ impl DockerRuntime {
     }
 
     /// Restart with `spec`: recreate when its hash differs from the running
-    /// container's `stems.spec_hash` label, else `docker restart`. Either
-    /// way the old handle is released and a new one returned.
+    /// container's `stems.spec_hash` label, or when the local image of an
+    /// `image` stem (pulled first, per `spec.pull`) is not the one the
+    /// container runs; else `docker restart`. Either way the old handle is
+    /// released and a new one returned.
     pub async fn restart(&self, h: &Handle, spec: &ContainerSpec) -> Result<Handle, RuntimeError> {
         let id = self.container_of(h)?.to_string();
         let inspect = self.inspect(&id).await?;
-        let recreate = inspect
-            .as_ref()
-            .is_none_or(|i| needs_recreate(labels_of(i), spec));
+        // Pull before stopping here (the supervisor's `restart` has usually
+        // stopped the container already; `stems pull --restart` pulls first).
+        let image_ready = spec.build.is_none() && spec.image.is_some();
+        let mut image_changed = false;
+        if let (true, Some(image)) = (image_ready, spec.image.as_deref()) {
+            self.ensure_image(image, spec.pull, &spec.progress).await?;
+            let local = self.image_id(image).await?;
+            image_changed = inspect
+                .as_ref()
+                .is_some_and(|i| image_differs(i.image.as_deref(), local.as_deref()));
+        }
+        let recreate = image_changed
+            || inspect
+                .as_ref()
+                .is_none_or(|i| needs_recreate(labels_of(i), spec));
         if recreate {
             if inspect.is_some() {
                 self.stop(h, spec.stop_grace).await?;
@@ -1055,7 +1153,7 @@ impl DockerRuntime {
                 self.remove_container_inner(&id, false, false).await?;
             }
             self.release(h);
-            return self.start_container(spec).await;
+            return self.start_container_with(spec, image_ready).await;
         }
         let since = Self::now_secs();
         self.docker

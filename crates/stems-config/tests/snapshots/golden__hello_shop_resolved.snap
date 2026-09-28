@@ -90,6 +90,7 @@ workspace:
       name: postgres
       type: docker
       image: postgres:16
+      pull: missing
       build: null
       volumes:
       - hello-shop-pgdata:/var/lib/postgresql/data

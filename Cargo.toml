@@ -64,6 +64,7 @@ ulid = "3.0.0"
 tar = "0.4.46"
 flate2 = "1.1.10"
 bollard = "0.21"
+base64 = "0.22"
 bytes = "1.12.1"
 semver = "1.0.28"
 # Health probes (21): http via rustls only (no native-tls).
