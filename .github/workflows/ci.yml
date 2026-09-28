@@ -15,17 +15,34 @@ env:
   # RUSTFLAGS env replaces .cargo/config.toml, and changing it rebuilds every
   # dependency (and churns the rust-cache).
   RUSTDOCFLAGS: -D warnings
-  # No debug info: a full debug build of the workspace with it outgrows the
-  # runner's free disk, and a runner with a full disk dies without a log.
+  # No debug info: smaller target/ and rust-cache, faster links.
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
 
-# CI is the regression subset (`make ci`), on Linux only: fmt, clippy, the
+# CI is the regression subset (`make ci`) on macOS and Linux: fmt, clippy, the
 # tests of the crates that don't supervise processes (see CI_PACKAGES in the
 # Makefile), YAML lint, release packaging checks. stems-daemon, stems-runtime
 # and stems-mcp tests, the example services, the e2e suite and Docker run
-# locally (`make check`). release-checks still builds on macOS.
+# locally (`make check`).
 jobs:
+  check-macos:
+    runs-on: macos-latest
+    # Backstop; nextest kills a hung test after 120 s (.config/nextest.toml).
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install toolchain (from rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Save even when the run fails: a red run still warms the next.
+          cache-on-failure: true
+      - uses: taiki-e/install-action@nextest
+      - run: make ci NEXTEST_PROFILE=ci
+
   check-linux:
     runs-on: ubuntu-latest
     # Backstop; nextest kills a hung test after 120 s (.config/nextest.toml).
@@ -42,12 +59,7 @@ jobs:
           # Save even when the run fails: a red run still warms the next.
           cache-on-failure: true
       - uses: taiki-e/install-action@nextest
-      - name: make ci (printing disk and memory every 20 s)
-        run: |
-          ( while sleep 20; do
-              echo "[resources] disk: $(df -h / | awk 'NR==2{print $3" used, "$4" free"}'); mem: $(free -m | awk 'NR==2{print $3"M used of "$2"M"}')"
-            done ) &
-          make ci NEXTEST_PROFILE=ci
+      - run: make ci NEXTEST_PROFILE=ci
 
   # Release packaging (deliverable 32): binary size budget (< 25 MB),
   # formula template golden, completions/man generation, cargo-dist config.

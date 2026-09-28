@@ -30,9 +30,9 @@ make build   # release build: target/release/stems
 make docs    # regenerate docs/cli.md after changing CLI flags or help text
 ```
 
-CI runs only the regression subset (`make ci`), on Linux: fmt and clippy over
-the workspace, plus the tests of the crates that don't supervise processes
-(`CI_PACKAGES` in the Makefile). The stems-daemon, stems-runtime and stems-mcp
+CI runs only the regression subset (`make ci`), on macOS and Linux: fmt and
+clippy over the workspace, plus the tests of the crates that don't supervise
+processes (`CI_PACKAGES` in the Makefile). The stems-daemon, stems-runtime and stems-mcp
 tests, the example services and Docker run only locally: run `make check`
 before opening a PR that touches the runtime, daemon, MCP server or lifecycle. End-to-end scenarios live in
 `tests/features/` (cucumber); run one file with
