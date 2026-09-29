@@ -381,6 +381,22 @@ machine only, and restarts just that stem; its dependants keep running. To
 make a variant the team default, set `variant: docker` on the stem in
 `stems.yaml`. Details: [config.md#variants-fr-st-8](config.md#variants-fr-st-8).
 
+A variant can also run an image your CI already publishes instead of
+building one, from any registry (Docker Hub, GHCR, Artifact Registry,
+ECR, …) with the credentials `docker pull` uses:
+
+```yaml
+      published:
+        type: docker
+        image: europe-west2-docker.pkg.dev/acme/images/api:main
+        ports: [{ name: http, port: 18080, container_port: 8080 }]
+```
+
+`stems pull api --restart` fetches the latest build of that tag and restarts
+the stem onto it; `pull: always` on the variant re-pulls at every start.
+`stems doctor` shows where each registry's credentials come from. Details:
+[config.md](config.md#a-published-image-instead-of-a-local-build).
+
 ## 8. Profiles: named subsets
 
 Not everyone needs everything. Profiles are named starting sets:

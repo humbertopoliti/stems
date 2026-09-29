@@ -24,6 +24,7 @@ stems.<n>.shell (process)                     /bin/sh
 stems.<n>.stdin (process)                     false
 stems.<n>.build.context (docker)              <codebase, else workspace root>
 stems.<n>.build.dockerfile (docker)           Dockerfile
+stems.<n>.pull (docker)                       missing
 stems.<n>.service (compose)                   <stem name>
 stems.<n>.project_name (compose)              stems-<workspace name>
 stems.<n>.adopt (compose)                     false

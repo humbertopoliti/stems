@@ -304,6 +304,7 @@ fn type_specific_fields(rs: &RawStem) -> Vec<(&'static str, bool, &'static [Stem
         ("shell", rs.shell.is_some(), &[Process]),
         ("stdin", rs.stdin.is_some(), &[Process]),
         ("image", rs.image.is_some(), &[Docker]),
+        ("pull", rs.pull.is_some(), &[Docker]),
         ("build", rs.build.is_some(), &[Docker]),
         ("volumes", rs.volumes.is_some(), &[Docker]),
         ("entrypoint", rs.entrypoint.is_some(), &[Docker]),
@@ -353,6 +354,13 @@ fn resolve_stem(
                 ),
             );
         }
+    }
+
+    if kind == StemType::Docker && rs.pull.is_some() && rs.build.is_some() {
+        ctx.schema(
+            p.key("pull"),
+            "`pull` applies to `image`; a stem with `build` is always built".to_string(),
+        );
     }
 
     let root = ctx.root;
@@ -499,6 +507,7 @@ fn resolve_stem(
         }),
         StemType::Docker => StemRuntime::Docker(Box::new(DockerSpec {
             image: rs.image.clone(),
+            pull: rs.pull.unwrap_or_default(),
             build: rs.build.as_ref().map(|b| {
                 let context = b
                     .context

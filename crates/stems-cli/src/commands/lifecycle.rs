@@ -90,7 +90,7 @@ pub(crate) async fn connect_or_start(ctx: &Ctx, t: &Target) -> Result<(Client, b
     Ok((connect_to(t, client::options(ctx)).await?, true))
 }
 
-async fn subscribe_now(c: &Client) -> Result<EventStream, Error> {
+pub(crate) async fn subscribe_now(c: &Client) -> Result<EventStream, Error> {
     let st: DaemonStatus = c.call(Method::DAEMON_STATUS, json!({})).await?;
     c.subscribe_events(Some(st.last_seq)).await
 }
@@ -125,6 +125,14 @@ pub fn progress_line(e: &Event) -> Option<String> {
                 .map(Value::to_string)
                 .unwrap_or_default()
         ))
+    } else if k == EventKind::DOCKER_PULL {
+        // Image-level lines only ("Pulling from ...", "Digest: ...",
+        // "Status: ..."); per-layer progress is left to `stems events`.
+        let layer = e.data.get("layer").and_then(Value::as_str).unwrap_or("");
+        let status = e.data.get("status").and_then(Value::as_str)?;
+        layer
+            .is_empty()
+            .then(|| format!("{ts} {stem:<16} {status}"))
     } else if k == EventKind::DAEMON_STOPPING {
         Some(format!("{ts} daemon stopping"))
     } else {
@@ -1156,5 +1164,16 @@ mod tests {
         let mut e2 = e.clone();
         e2.kind = EventKind::UP_STARTED;
         assert!(progress_line(&e2).is_none());
+
+        // docker.pull: image-level lines only.
+        let mut pull = e.clone();
+        pull.kind = EventKind::DOCKER_PULL;
+        pull.data = json!({"stem": "api", "image": "ghcr.io/a/api:main", "layer": "", "status": "Pulling from a/api"});
+        insta::assert_snapshot!(progress_line(&pull).unwrap(), @"12:00:01.000 api              Pulling from a/api");
+        pull.data["layer"] = json!("3f2a1c");
+        assert!(
+            progress_line(&pull).is_none(),
+            "per-layer progress is not shown"
+        );
     }
 }

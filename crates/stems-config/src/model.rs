@@ -9,8 +9,8 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
 use crate::types::{
-    ArgType, AutoApply, ByteSize, Condition, Dur, FileMode, HealthType, Protocol, Requirement,
-    RestartPolicy, Scalar, StemType, WatchAction, WatchRoot,
+    ArgType, AutoApply, ByteSize, Condition, Dur, FileMode, HealthType, Protocol, PullPolicy,
+    Requirement, RestartPolicy, Scalar, StemType, WatchAction, WatchRoot,
 };
 
 /// Fixed lifecycle script names for stems (FR-SC-1).
@@ -607,6 +607,8 @@ pub struct ProcessSpec {
 pub struct DockerSpec {
     /// Image (absent when `build` is used).
     pub image: Option<String>,
+    /// When to pull `image`.
+    pub pull: PullPolicy,
     /// Build settings.
     pub build: Option<DockerBuild>,
     /// Volumes.

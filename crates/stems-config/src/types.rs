@@ -571,6 +571,19 @@ pub enum RestartPolicy {
     Always,
 }
 
+/// When a docker stem's `image` is pulled.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum PullPolicy {
+    /// Pull only when the image is not present locally.
+    #[default]
+    Missing,
+    /// Pull on every start and restart (picks up a moved tag such as `latest`).
+    Always,
+    /// Never pull; the image must already be present locally.
+    Never,
+}
+
 /// Declared type of a script argument.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]

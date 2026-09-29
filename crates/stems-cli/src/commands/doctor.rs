@@ -101,6 +101,8 @@ async fn full(ctx: &Ctx, args: &DoctorArgs, mode: Mode) -> Result<CommandOutput,
         load: ctx.load_options(),
         daemon: probe_daemon(ctx, &t).await,
         docker_host: ctx.env.get("DOCKER_HOST").cloned(),
+        docker_config: doctor::docker_config_path(&ctx.env),
+        path: ctx.env.get("PATH").cloned(),
         ignore_pids: vec![std::process::id() as i32],
     };
     let mut report = doctor::run(input.clone(), args.strict).await;

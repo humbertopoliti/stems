@@ -19,7 +19,7 @@
 mod checks;
 pub mod fix;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -34,7 +34,7 @@ use stems_runtime::{DockerOptions, DockerRuntime};
 use crate::paths::DaemonPaths;
 use crate::state::StateFile;
 
-pub use checks::{hot_reload_command, watch_overlaps_sources};
+pub use checks::{credential_results, hot_reload_command, watch_overlaps_sources};
 
 /// Time budget of one check.
 pub const CHECK_TIMEOUT: Duration = Duration::from_secs(2);
@@ -345,6 +345,14 @@ impl DaemonProbe {
     }
 }
 
+/// `$DOCKER_CONFIG/config.json`, else `$HOME/.docker/config.json`, of `env`.
+pub fn docker_config_path(env: &std::collections::HashMap<String, String>) -> Option<PathBuf> {
+    stems_runtime::docker::config_path(
+        env.get("DOCKER_CONFIG").map(std::ffi::OsStr::new),
+        env.get("HOME").map(Path::new),
+    )
+}
+
 /// Inputs of a doctor run.
 #[derive(Clone, Debug)]
 pub struct DoctorInput {
@@ -358,6 +366,12 @@ pub struct DoctorInput {
     pub daemon: DaemonProbe,
     /// `DOCKER_HOST` (from the caller's environment).
     pub docker_host: Option<String>,
+    /// The docker CLI config holding registry credentials
+    /// ([`docker_config_path`] of the caller's environment).
+    pub docker_config: Option<PathBuf>,
+    /// `PATH` (from the caller's environment): where credential helpers are
+    /// looked up first.
+    pub path: Option<String>,
     /// Pids that are never orphans (the caller itself, the daemon).
     pub ignore_pids: Vec<i32>,
 }

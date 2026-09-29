@@ -30,11 +30,11 @@ use std::time::Duration;
 use futures::future::BoxFuture;
 use serde_json::json;
 use stems_api::{EventKind, StemFailure, StemStatus};
-use stems_config::{PortRef, Stem, StemRuntime, StemType, Workspace};
+use stems_config::{PortRef, PullPolicy, Stem, StemRuntime, StemType, Workspace};
 use stems_core::{Error, ErrorCode};
 use stems_runtime::docker::{
-    BuildSpec, HealthcheckSpec, ImageProgress, PortMapping, PortProto, ProgressSink, VolumeMount,
-    container_name, labels_of, verify_labels, volume_name,
+    BuildSpec, HealthcheckSpec, ImageProgress, PortMapping, PortProto, ProgressSink, PullOutcome,
+    PullPolicy as ImagePull, VolumeMount, container_name, labels_of, verify_labels, volume_name,
 };
 use stems_runtime::{
     AdoptRecord, ComposeOptions, ComposeRuntime, ContainerSpec, DockerOptions, DockerRuntime,
@@ -84,6 +84,40 @@ pub fn default_connector() -> Connector {
             }
         })
     })
+}
+
+/// Pulls images for `stems pull` ([`Containers`] in production, a fake in
+/// tests).
+#[async_trait::async_trait]
+pub trait ImagePuller: Send + Sync {
+    /// Pull `image` now, reporting progress to `progress`.
+    async fn pull(&self, image: &str, progress: ProgressSink) -> Result<PullOutcome, RuntimeError>;
+}
+
+#[async_trait::async_trait]
+impl ImagePuller for Containers {
+    async fn pull(&self, image: &str, progress: ProgressSink) -> Result<PullOutcome, RuntimeError> {
+        self.docker().await?.pull(image, &progress).await
+    }
+}
+
+/// The catalogue error of a failed `stems pull` of `stem`'s `image`.
+pub fn pull_error(stem: &str, image: &str, e: RuntimeError) -> Error {
+    match e {
+        RuntimeError::DockerUnavailable { hint } => Error::new(
+            ErrorCode::DockerUnavailable,
+            format!("cannot pull `{image}` for `{stem}`: the Docker daemon is not reachable"),
+        )
+        .with_hint(hint)
+        .with_details(json!({ "stem": stem, "image": image, "stems": [stem] })),
+        RuntimeError::ImagePullFailed { image, message } => Error::new(
+            ErrorCode::ImagePullFailed,
+            format!("pulling `{image}` for `{stem}` failed: {message}"),
+        )
+        .with_hint("check the image name and tag and your network; for a private registry, check that `docker pull <image>` works in your shell and run `stems doctor` (`docker.credentials`)")
+        .with_details(json!({ "stem": stem, "image": image, "message": message })),
+        other => runtime_error(stem, other),
+    }
 }
 
 /// The lazily connected container runtimes of one daemon.
@@ -309,6 +343,11 @@ pub fn container_spec(
     };
     let mut spec = ContainerSpec::new(&ws.name, &stem.name, run_id);
     spec.image = d.image.clone();
+    spec.pull = match d.pull {
+        PullPolicy::Missing => ImagePull::Missing,
+        PullPolicy::Always => ImagePull::Always,
+        PullPolicy::Never => ImagePull::Never,
+    };
     spec.build = d.build.as_ref().map(|b| BuildSpec {
         context: b.context.clone(),
         dockerfile: b.dockerfile.clone(),
@@ -456,7 +495,7 @@ pub fn runtime_error(stem: &str, e: RuntimeError) -> Error {
             ErrorCode::ImagePullFailed,
             format!("cannot start `{stem}`: pulling `{image}` failed: {message}"),
         )
-        .with_hint("check the image name and tag, your network, and `docker login` for private registries")
+        .with_hint("check the image name and tag and your network; for a private registry, check that `docker pull <image>` works in your shell (`docker login`, or the registry's credential helper, e.g. `gcloud auth configure-docker <host>`)")
         .with_details(json!({ "stem": stem, "image": image, "message": message })),
         RuntimeError::BuildFailed { tail } => Error::new(
             ErrorCode::SetupFailed,
@@ -516,7 +555,7 @@ pub fn progress_event(stem: &str, p: ImageProgress) -> EventDraft {
 }
 
 /// A progress sink whose items become events (ends with the last sender).
-fn progress_sink(core: &Core, stem: &str) -> ProgressSink {
+pub(crate) fn progress_sink(core: &Core, stem: &str) -> ProgressSink {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<ImageProgress>(256);
     let events = core.events.clone();
     let stem = stem.to_string();

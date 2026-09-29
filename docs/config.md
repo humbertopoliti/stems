@@ -178,7 +178,7 @@ out of a partial apply stays pending until it restarts).
 
 | Changed field(s) | Action | Hot | What `apply` does |
 |---|---|---|---|
-| `env` (incl. local env, workspace `env`/`vars` folded in), `env_files`, `ports`, `command`, `cwd`, `shell`, `stdin`, `codebase`, `overlays`, `type`, docker/compose fields (`image`, `build`, `volumes`, `entrypoint`, `network`, `labels`, `healthcheck`, ...), `scripts.start`, any other field | `restart_required` (`fields` names them) | no | restart in dependency order with the new config |
+| `env` (incl. local env, workspace `env`/`vars` folded in), `env_files`, `ports`, `command`, `cwd`, `shell`, `stdin`, `codebase`, `overlays`, `type`, docker/compose fields (`image`, `pull`, `build`, `volumes`, `entrypoint`, `network`, `labels`, `healthcheck`, ...), `scripts.start`, any other field | `restart_required` (`fields` names them) | no | restart in dependency order with the new config |
 | a `${stem.x.port}` target's `ports` (`port: auto` references) | `restart_required` (`stem.x.ports`) | no | restart |
 | `outputs` | `outputs_changed` | no | restart (outputs are evaluated at start) |
 | new stem, or `enabled: true` again | `added` | no | start it if the last `up` covers it (every stem, or its profile/stems); otherwise just register it |
@@ -413,8 +413,8 @@ local override still wins over a variant.
   nothing.
 * A variant that sets a **different `type`** first drops every
   type-specific field of the base — `cwd`, `command`, `shell`, `stdin`
-  (process), `image`, `build`, `volumes`, `entrypoint`, `network`, `labels`,
-  `healthcheck` (docker), `file`, `service`, `project_name`, `adopt`
+  (process), `image`, `pull`, `build`, `volumes`, `entrypoint`, `network`,
+  `labels`, `healthcheck` (docker), `file`, `service`, `project_name`, `adopt`
   (compose) — and keeps the shared ones: `description`, `codebase`, `env`,
   `env_files`, `ports`, `depends_on`, `health`, `restart`, `watch`,
   `overlays`, `outputs`, `tags`, `limits`, `stop_grace`, `scripts` (custom
@@ -426,6 +426,56 @@ local override still wins over a variant.
   `SCHEMA_INVALID` at its path, e.g. `stems.api.variants.docker.imag`.
   Variant names `local` and `base` are reserved, and a variant cannot set
   `variant` / `variants` itself (`SCHEMA_INVALID`).
+
+### A published image instead of a local build
+
+A variant can run an image someone else built and pushed (CI, another
+team) instead of the stem's own code: set `image:` instead of `build:`.
+Any registry works — Docker Hub, GHCR, Google Artifact Registry, ECR, a
+self-hosted one — with the credentials your `docker pull` already uses (see
+[Registry credentials](docker.md#registry-credentials)).
+
+```yaml
+stems:
+  api:
+    type: process
+    command: python3 app.py
+    ports: [{ name: http, port: 18080 }]
+    variants:
+      published:
+        type: docker
+        image: europe-west2-docker.pkg.dev/acme/images/api:main
+        pull: always          # re-pull on every start/restart: picks up a moved tag
+        ports: [{ name: http, port: 18080, container_port: 8080 }]
+```
+
+`pull:` (docker stems with `image:`) decides when the image is pulled:
+
+| `pull` | When |
+|---|---|
+| `missing` (default) | only when it is not present locally; a moved tag (`latest`, `main`) is **not** refreshed |
+| `always` | on every start and restart; a restart recreates the container when the pulled image differs from the one it runs. A failed pull fails the start (even when an older copy is present locally) |
+| `never` | never; a missing image is `IMAGE_PULL_FAILED` |
+
+`pull` together with `build:` is `SCHEMA_INVALID` (a built image is always
+built). Tags are exact: there are no wildcards such as `api:1.*`.
+
+To move to a newly published version:
+
+* **A pinned tag** (`api:1.4.2`): change the tag in the variant and apply
+  (`stems config apply`, or `config.reload.auto_apply`). The `image`
+  change restarts the stem, which pulls the new tag.
+* **A moving tag** (`api:main`): `stems pull api --restart` pulls it and
+  restarts the stem if the image changed (see [`stems
+  pull`](docker.md#stems-pull)); a failed pull leaves the running stem
+  alone. With `pull: always`, a plain `stems restart api` also pulls and
+  recreates the container only when the image changed, but it has stopped
+  the stem first: if the pull fails (offline, expired credentials), the
+  stem stays down.
+
+`stems doctor` reports where each registry's credentials come from
+(`docker.credentials.<registry>`), e.g. a credential helper that is not
+installed.
 
 ### Choosing one
 

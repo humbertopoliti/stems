@@ -1,0 +1,24 @@
+# docker-pull — `stems pull` against a local registry (tests/features/docker/pull.feature;
+# needs Docker: `make e2e-docker`).
+#
+# `registry` is a plain registry:2 on host port 18541 (remapped by the
+# harness). `app` runs `localhost:<that port>/stems-e2e/app:latest`, which
+# the scenario pushes (and moves) itself; `pull: never` so that `up` never
+# pulls it behind the scenario's back.
+schema_version: 1
+name: docker-pull
+
+stems:
+  registry:
+    type: docker
+    image: registry:2
+    ports: [{ name: http, port: 18541, container_port: 5000 }]
+    health: { type: tcp, interval: 200ms, start_timeout: 120s }
+    stop_grace: 1s
+  app:
+    type: docker
+    image: "localhost:${stem.registry.port}/stems-e2e/app:latest"
+    pull: never
+    command: ["sleep", "3600"]
+    depends_on: [registry]
+    stop_grace: 1s

@@ -299,6 +299,15 @@ pub enum Command {
     Reset(ResetArgs),
     /// Run build scripts (or docker builds).
     Build(BuildArgs),
+    /// Pull the images of docker stems now (a moved tag such as `latest`
+    /// included).
+    ///
+    /// Default: every enabled docker stem with an `image`, except `pull:
+    /// never` ones (pulled only when named). Uses the same registry
+    /// credentials as `docker pull` (`docker login`, credential helpers).
+    /// Running stems keep their old image until restarted; `--restart`
+    /// restarts those whose image changed.
+    Pull(PullArgs),
     /// Show or clear setup/seed stamps.
     Stamps(StampsArgs),
     /// Show the overlays stems has written into codebases.
@@ -760,6 +769,16 @@ pub struct ResetArgs {
 pub struct BuildArgs {
     /// Only these stems (default: every enabled stem with a `build` script).
     pub stems: Vec<String>,
+}
+
+/// `stems pull`.
+#[derive(Debug, Args)]
+pub struct PullArgs {
+    /// Only these stems (default: every enabled docker stem with an `image`).
+    pub stems: Vec<String>,
+    /// Restart the running stems whose image changed.
+    #[arg(long)]
+    pub restart: bool,
 }
 
 /// `stems stamps`.

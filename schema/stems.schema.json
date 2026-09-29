@@ -839,6 +839,17 @@
             "null"
           ]
         },
+        "pull": {
+          "description": "(docker) When to pull `image`: `missing` (default), `always` or `never`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PullPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "build": {
           "description": "(docker) Build instead of pulling.",
           "anyOf": [
@@ -1762,6 +1773,26 @@
           "items": {
             "type": "string"
           }
+        }
+      ]
+    },
+    "PullPolicy": {
+      "description": "When a docker stem's `image` is pulled.",
+      "oneOf": [
+        {
+          "description": "Pull only when the image is not present locally.",
+          "type": "string",
+          "const": "missing"
+        },
+        {
+          "description": "Pull on every start and restart (picks up a moved tag such as `latest`).",
+          "type": "string",
+          "const": "always"
+        },
+        {
+          "description": "Never pull; the image must already be present locally.",
+          "type": "string",
+          "const": "never"
         }
       ]
     },

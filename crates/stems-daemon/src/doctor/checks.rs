@@ -12,6 +12,9 @@ use stems_config::{Codebase, PortRef, Requirement, ScriptSource, Stem, StemRunti
 use stems_core::overlays::{ExistingFile, OverlayStatus, status_of};
 use stems_core::tools::SystemTools;
 use stems_core::{ErrorCode, validate::check_requirement};
+use stems_runtime::docker::{
+    CredentialSource, DockerConfigFile, find_helper, helper_dirs, registry_host,
+};
 use stems_runtime::os;
 use stems_runtime::{ComposeOptions, ComposeRuntime, Orphan, OrphanScope};
 
@@ -36,6 +39,12 @@ pub(super) fn registry(cx: &DoctorCtx) -> Vec<Box<dyn Check>> {
     }
     if cx.needs_compose() {
         v.push(Box::new(ComposeCheck));
+    }
+    if ws
+        .stems()
+        .any(|s| matches!(&s.runtime, StemRuntime::Docker(d) if d.image.is_some()))
+    {
+        v.push(Box::new(CredentialsCheck));
     }
     for (tool, req) in &ws.requires {
         v.push(Box::new(RequiresCheck {
@@ -310,6 +319,132 @@ impl Check for ComposeCheck {
             }
         }]
     }
+}
+
+// ---------------------------------------------------------------------------
+// registry credentials
+// ---------------------------------------------------------------------------
+
+/// `docker.credentials.<registry>`: where pulls from each registry the
+/// workspace's images come from get their credentials, and whether the
+/// credential helpers exist. The helpers are not run (a token refresh can
+/// take longer than a check's budget).
+struct CredentialsCheck;
+
+#[async_trait]
+impl Check for CredentialsCheck {
+    fn id(&self) -> String {
+        "docker.credentials".into()
+    }
+    async fn run(&self, cx: Arc<DoctorCtx>) -> Vec<CheckResult> {
+        let Some(ws) = cx.workspace() else {
+            return Vec::new();
+        };
+        // (registry, stems pulling from it), in declaration order.
+        let mut registries: Vec<(String, Vec<String>)> = Vec::new();
+        for stem in ws.stems() {
+            let StemRuntime::Docker(d) = &stem.runtime else {
+                continue;
+            };
+            let Some(image) = &d.image else { continue };
+            let host = registry_host(image);
+            match registries.iter_mut().find(|(h, _)| *h == host) {
+                Some((_, stems)) => stems.push(stem.name.clone()),
+                None => registries.push((host, vec![stem.name.clone()])),
+            }
+        }
+        let config = cx.input.docker_config.clone();
+        let path = cx.input.path.clone();
+        let home = cx.input.load.env.get("HOME").map(PathBuf::from);
+        blocking(move || {
+            let loaded = match &config {
+                Some(p) => DockerConfigFile::load(p).map_err(|e| (p.clone(), e)),
+                None => Ok(DockerConfigFile::default()),
+            };
+            let extra = helper_dirs(home.as_deref());
+            let find = |name: &str| {
+                find_helper(
+                    name,
+                    path.as_deref().map(std::ffi::OsStr::new),
+                    &extra,
+                    &stems_runtime::docker::is_executable,
+                )
+            };
+            credential_results(&loaded, &registries, &find)
+        })
+        .await
+        .unwrap_or_default()
+    }
+}
+
+/// The `docker.credentials.<registry>` results for `registries` (each with
+/// the stems pulling from it), given the loaded docker config (or the
+/// config file and why it could not be read) and a helper lookup.
+pub fn credential_results(
+    config: &Result<DockerConfigFile, (PathBuf, String)>,
+    registries: &[(String, Vec<String>)],
+    find: &dyn Fn(&str) -> Option<PathBuf>,
+) -> Vec<CheckResult> {
+    let cfg = match config {
+        Ok(c) => c,
+        Err((path, e)) => {
+            return vec![
+                CheckResult::fail(
+                    "docker.credentials",
+                    format!("cannot use the docker config: {e}"),
+                )
+                .code(ErrorCode::ImagePullFailed)
+                .hint(format!("fix or remove {}", path.display()))
+                .details(json!({ "config": path })),
+            ];
+        }
+    };
+    let path_hint = "If it is installed: the daemon looks helpers up on the PATH of the shell that started it, then next to the docker CLI; restart it (`stems daemon stop`, then `stems daemon start`) from a shell where the helper is on PATH";
+    registries
+        .iter()
+        .map(|(host, stems)| {
+            let id = format!("docker.credentials.{host}");
+            let base = json!({ "registry": host, "stems": stems });
+            let with = |mut d: serde_json::Value, extra: serde_json::Value| {
+                if let (Some(d), Some(e)) = (d.as_object_mut(), extra.as_object()) {
+                    d.extend(e.clone());
+                }
+                d
+            };
+            match cfg.source_for(host) {
+                CredentialSource::Helper(h) => match find(&h) {
+                    Some(p) => CheckResult::ok(&id, format!("credential helper `{h}` ({})", p.display()))
+                        .details(with(base, json!({ "source": "helper", "helper": h, "path": p }))),
+                    None => CheckResult::fail(
+                        &id,
+                        format!("credential helper `docker-credential-{h}` (credHelpers) not found: pulls from {host} fail"),
+                    )
+                    .code(ErrorCode::ImagePullFailed)
+                    .hint(format!("install it (for Artifact Registry: the gcloud SDK). {path_hint}"))
+                    .details(with(base, json!({ "source": "helper", "helper": h, "path": null }))),
+                },
+                CredentialSource::Store(h) => match find(&h) {
+                    Some(p) => CheckResult::ok(&id, format!("credential store `{h}` ({})", p.display()))
+                        .details(with(base, json!({ "source": "store", "helper": h, "path": p }))),
+                    None => CheckResult::warn(
+                        &id,
+                        format!("credential store `docker-credential-{h}` (credsStore) not found: pulls from {host} are anonymous, so private images fail"),
+                    )
+                    .hint(format!("remove `credsStore` from the docker config if you no longer use it, or install the helper. {path_hint}"))
+                    .details(with(base, json!({ "source": "store", "helper": h, "path": null }))),
+                },
+                CredentialSource::Inline => CheckResult::ok(&id, "credentials in the docker config (`auths`)")
+                    .details(with(base, json!({ "source": "auths" }))),
+                CredentialSource::InvalidInline(e) => CheckResult::fail(&id, format!("unusable credentials: {e}"))
+                    .code(ErrorCode::ImagePullFailed)
+                    .hint(format!("run `docker login {host}` again"))
+                    .details(with(base, json!({ "source": "auths" }))),
+                CredentialSource::Anonymous => CheckResult::ok(&id, "anonymous (public images only)")
+                    .hint(format!("for private images, `docker login {host}` or configure the registry's credential helper"))
+                    .details(with(base, json!({ "source": "anonymous" }))),
+            }
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

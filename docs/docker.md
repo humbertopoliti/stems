@@ -108,13 +108,13 @@ LABEL_RUN_ID, LABEL_SPEC_HASH}`.
 
 | Operation | What happens |
 |---|---|
-| `start` | ensure network → pull the image if it is not present (or build) → if a container with our name exists: remove it when it is ours (labels) and stopped, else fail (`Container`) → create → start (a created container that fails to start is removed) → follow logs from the beginning |
-| pull | `POST /images/create` with repository and tag (`latest` if none; digests supported). Progress is coalesced to one `ImageProgress::Pull { image, layer, status }` per layer status change and sent best-effort (never blocks) to `ContainerSpec.progress` → daemon `docker.pull` events |
+| `start` | ensure network → make the image available per `pull` (`missing`: pull if not present; `always`: pull; `never`: fail if not present), or build → if a container with our name exists: remove it when it is ours (labels) and stopped, else fail (`Container`) → create → start (a created container that fails to start is removed) → follow logs from the beginning |
+| pull | `POST /images/create` with repository and tag (`latest` if none; digests supported) and the registry's credentials (see [Registry credentials](#registry-credentials)). Progress is coalesced to one `ImageProgress::Pull { image, layer, status }` per layer status change and sent best-effort (never blocks) to `ContainerSpec.progress` → daemon `docker.pull` events |
 | build | the context directory is tarred (see below) and sent to `POST /build` with `t=stems/<ws>/<stem>:<run_id>`, `rm`, `forcerm`; each output line is sent as `ImageProgress::Build { stem, line }` (`docker.build` events); failure keeps the last 20 lines |
 | `stop(grace)` | not running → `AlreadyDead`; else `docker stop -t ceil(grace)` (SIGTERM, then Docker's own SIGKILL). Still running afterwards → `kill` (SIGKILL) → `Killed`. Exit code 137 after the stop → `Killed`; otherwise `Graceful` |
 | `remove(handle, volumes)` | `DELETE /containers/<id>?force=1&v=1`: the container's *anonymous* volumes (an image `VOLUME` such as redis's `/data`) always go with it (`v` never touches named volumes); with `volumes` also every named volume mounted by it whose name starts with `<ws>_` (read from the container's `stems.workspace` label; a user's own volumes and bind mounts are never removed). Then each network it was on is removed when stems created it for this workspace (label `stems.workspace=<ws>`) and no container is attached any more (`network_removable`), so the last `down` also removes `<ws>_net`. This is `down` / `down --volumes` (FR-LC-2) |
 | failed start | a pull, build, create or start failure removes the network the attempt created when nothing else uses it (a created-but-never-started container is removed too) |
-| `restart(handle, spec)` | recreate (stop, remove keeping named volumes and the network, start) when `spec.spec_hash()` differs from the container's `stems.spec_hash` label, else `docker restart -t ceil(grace)`. The old handle is released and a new one returned either way |
+| `restart(handle, spec)` | an `image` stem first makes its image available per `pull` (the supervisor has already stopped the container by then, so with `pull: always` a failed pull leaves the stem stopped and failed; `stems pull --restart` pulls before stopping anything). Recreate (stop, remove keeping named volumes and the network, start) when `spec.spec_hash()` differs from the container's `stems.spec_hash` label, or when the local image id of `image` differs from the container's (`image_differs`: a moved tag was pulled), else `docker restart -t ceil(grace)`. The old handle is released and a new one returned either way |
 | `wait` | `POST /containers/<id>/wait?condition=not-running` → exit code (`signal` is always `None`; 137 means killed) |
 | `is_alive` | inspect `State.Running` |
 | `describe` | container id, `State.Pid` as `pid` (pgid 0, no process tree), host ports as bound (`NetworkSettings.Ports`), `container_health` |
@@ -122,8 +122,46 @@ LABEL_RUN_ID, LABEL_SPEC_HASH}`.
 
 The spec hash covers workspace, stem, image, build, ports, volumes, env,
 command, entrypoint, network (resolved, so an explicit `<ws>_net` equals the
-default), user labels and healthcheck. It excludes the run id, `stop_grace`
-and the progress sink.
+default), user labels and healthcheck. It excludes the run id, `stop_grace`,
+the pull policy and the progress sink.
+
+### Registry credentials
+
+Pulls authenticate the way the `docker` CLI does, so any registry works with
+the setup its own docs describe (`docker login ghcr.io`, `gcloud auth
+configure-docker europe-west2-docker.pkg.dev`, the ECR credential helper,
+...); stems has no registry-specific code. `credentials_for(image)` in
+`crates/stems-runtime/src/docker/auth.rs`:
+
+1. The registry host is the image's first path component when it contains
+   `.` or `:` or is `localhost`, else Docker Hub (`docker.io`, stored under
+   `https://index.docker.io/v1/`). `index.docker.io` and
+   `registry-1.docker.io` are Docker Hub too.
+2. The config is `$DOCKER_CONFIG/config.json`, else `~/.docker/config.json`
+   (of the daemon's environment). A missing file means anonymous pulls.
+3. In order:
+   * `credHelpers[<host>]`: run `docker-credential-<helper> get` with the
+     host on stdin; the reply is `{ServerURL, Username, Secret}`
+     (`Username: "<token>"` = an identity token). A failure is an
+     `IMAGE_PULL_FAILED` naming the helper: it was configured for exactly
+     this registry.
+   * `credsStore`: the same protocol with the default store (`osxkeychain`,
+     `desktop`, ...). "credentials not found" moves on; any other failure is
+     logged and moves on, so a stale `credsStore: desktop` (e.g. after
+     switching to Colima) does not break pulls of public images.
+   * `auths[<host>]`: `auth` (base64 `user:password`), `username` +
+     `password`, or `identitytoken`. Keys match by host (`https://ghcr.io`
+     and `ghcr.io` are the same).
+   * Otherwise the pull is anonymous.
+
+Helpers are looked up on the daemon's `PATH`, then next to the `docker` CLI
+and in the [well-known docker locations](#finding-the-docker-cli). Nothing
+is cached: helpers run on every pull, so short-lived tokens (Artifact
+Registry's hour, ECR's 12 hours) are always fresh; each run is bounded by 30
+s. The daemon inherits `PATH` from the shell that started it: a helper that
+only your shell profile puts on `PATH` (e.g. `~/google-cloud-sdk/bin`) needs
+the daemon restarted from such a shell (`stems daemon stop`, then `stems
+daemon start`); the error says so.
 
 ### Build context
 
@@ -176,6 +214,33 @@ it, so `--yes` may remove it). Removal is
 `DockerRuntime::remove_container_id(id, volumes)`. A failed scan logs a
 warning and returns no orphans.
 
+## `stems pull`
+
+`stems pull [stems…] [--restart]` pulls the images of docker stems now,
+whatever their `pull` policy (`crates/stems-daemon/src/supervisor/images.rs`,
+RPC `pull`):
+
+* **Selection:** without names, every enabled docker stem with an `image`,
+  except `pull: never` ones; other stems are not mentioned. Named stems are
+  pulled when they have an `image` (`pull: never` included); a named
+  process/compose/external stem or a `build:` stem is reported in `skipped`
+  with its reason. An unknown name is `UNKNOWN_STEM`.
+* **Pulling:** in the daemon (started when none runs, stopped again after
+  if it runs nothing), so credentials resolve exactly as for a start. Each
+  distinct image is pulled once, all concurrently; progress is emitted as
+  `docker.pull` events of the first stem using it, and the human output
+  streams the image-level lines ("Pulling from …", "Digest: …", "Status:
+  …").
+* **Result:** per stem the local image id `before` and `after` the pull and
+  whether it `changed` (new, or a moved tag). A failed pull is a `failed`
+  entry (`IMAGE_PULL_FAILED`, or `DOCKER_UNAVAILABLE`), exit 1.
+* **Running stems** keep the image they started with. Their next restart
+  (`stems restart`, a config apply, a crash restart) uses the new one:
+  `restart` recreates the container when the local image of its `image` is
+  not the one it runs, whatever the `pull` policy. `--restart` restarts the
+  running stems whose image changed right away (`no_deps`, cascade per
+  their `restart.cascade`); the outcome is `restarted` (an `UpResult`).
+
 ## Errors and their catalogue codes
 
 The runtime returns `RuntimeError`; the daemon maps it to the §7.5
@@ -184,7 +249,7 @@ catalogue:
 | `RuntimeError` | Code | Exit | Notes |
 |---|---|---|---|
 | `DockerUnavailable { hint }` | `DOCKER_UNAVAILABLE` | 1 | connect/ping failure, or a transport error (socket gone, connection refused, timeout) on any later call |
-| `ImagePullFailed { image, message }` | `IMAGE_PULL_FAILED` | 1 | `message` is the registry's own text (e.g. `pull access denied for stems-does-not-exist ...`) |
+| `ImagePullFailed { image, message }` | `IMAGE_PULL_FAILED` | 1 | `message` is the registry's own text (e.g. `pull access denied for stems-does-not-exist ...`), a credential helper's failure, or the `pull: never` refusal |
 | `BuildFailed { tail }` | `SETUP_FAILED` (§7.5 has no build code; building the image is the docker stem's setup) with `details.tail` and `details.build: true` | 1 | last 20 lines of build output |
 | `Container(message)` containing `port is already allocated` | `PORT_IN_USE` (`details.message`) | 1 | Docker's own error message |
 | `Container(message)`, `Unsupported`, anything else | `START_FAILED` | 1 | Docker's own error message |

@@ -22,6 +22,7 @@ use stems_core::{Error, ErrorCode};
 #[cfg(feature = "client")]
 pub mod client;
 pub mod health;
+pub mod images;
 pub mod lifecycle;
 pub mod logs;
 pub mod metrics;
@@ -32,6 +33,7 @@ pub mod scripts;
 pub mod watch;
 
 pub use health::{HealthParams, HealthResult, HealthStatus, ProbeOutcome, ProbeRecord, StemHealth};
+pub use images::{PullParams, PullResult, PullSkip, PulledImage};
 pub use lifecycle::{CascadeRef, CascadeReport};
 pub use lifecycle::{
     DownParams, DownResult, PortStatus, RestartParams, StartParams, StatusParams, StatusResult,
@@ -192,6 +194,10 @@ string_newtype! {
         RESET = "reset";
         /// List or clear stamps ([`StampsParams`] -> [`StampsResult`]).
         STAMPS = "stamps";
+        // --- images -------------------------------------------------------------
+        /// Pull the images of docker stems ([`PullParams`] -> [`PullResult`];
+        /// progress as `docker.pull` events).
+        PULL = "pull";
         // --- overlays (18) -----------------------------------------------------
         /// Recorded overlays and their status ([`OverlaysParams`] -> [`OverlaysResult`]).
         OVERLAYS = "overlays";

@@ -1379,3 +1379,238 @@ mod reload;
 // --- cascading restarts (FR-LC-9) --------------------------------------------
 
 mod cascade;
+
+// ---------------------------------------------------------------------------
+// `stems pull`
+// ---------------------------------------------------------------------------
+
+/// A scripted pull: `(before, after)` image ids, or an error message.
+type PullScript = Result<(Option<&'static str>, Option<&'static str>), String>;
+
+/// Pulls from a script (image → [`PullScript`]).
+#[derive(Default)]
+struct FakePuller {
+    outcomes: HashMap<String, PullScript>,
+    calls: Mutex<Vec<String>>,
+}
+
+#[async_trait::async_trait]
+impl containers::ImagePuller for FakePuller {
+    async fn pull(
+        &self,
+        image: &str,
+        progress: stems_runtime::docker::ProgressSink,
+    ) -> Result<stems_runtime::docker::PullOutcome, RuntimeError> {
+        self.calls.lock().unwrap().push(image.to_string());
+        progress.send(stems_runtime::docker::ImageProgress::Pull(
+            stems_runtime::docker::PullProgress {
+                image: image.to_string(),
+                layer: String::new(),
+                status: "Pulling from acme".into(),
+            },
+        ));
+        match self.outcomes.get(image) {
+            Some(Ok((b, a))) => Ok(stems_runtime::docker::PullOutcome {
+                before: b.map(Into::into),
+                after: a.map(Into::into),
+            }),
+            Some(Err(m)) => Err(RuntimeError::ImagePullFailed {
+                image: image.to_string(),
+                message: m.clone(),
+            }),
+            None => Ok(stems_runtime::docker::PullOutcome::default()),
+        }
+    }
+}
+
+const PULL_WS: &str = "  api: { type: docker, image: 'ghcr.io/acme/api:main' }\n  worker: { type: docker, image: 'ghcr.io/acme/api:main' }\n  db: { type: docker, image: 'postgres:16' }\n  pinned: { type: docker, image: 'local/only:dev', pull: never }\n  built: { type: docker, build: {} }\n  broken: { type: docker, image: 'ghcr.io/acme/nope:1' }\n  web: { type: process, command: run }\n";
+
+fn pull_rig(puller: FakePuller) -> (Arc<Supervisor>, Arc<EventBus>, Arc<FakePuller>) {
+    let events = Arc::new(EventBus::default());
+    let puller = Arc::new(puller);
+    let mut reg = RuntimeRegistry::default().with_puller(puller.clone());
+    reg.register(StemType::Process, Arc::new(FakeRuntime::default()));
+    let sup = Supervisor::new(
+        events.clone(),
+        host(PULL_WS),
+        reg,
+        Arc::new(FakeWaiter::default()),
+    );
+    (sup, events, puller)
+}
+
+fn fake_puller() -> FakePuller {
+    FakePuller {
+        outcomes: HashMap::from([
+            (
+                "ghcr.io/acme/api:main".to_string(),
+                Ok((Some("sha256:old"), Some("sha256:new"))),
+            ),
+            (
+                "postgres:16".to_string(),
+                Ok((Some("sha256:pg"), Some("sha256:pg"))),
+            ),
+            (
+                "ghcr.io/acme/nope:1".to_string(),
+                Err("denied: permission_denied".to_string()),
+            ),
+        ]),
+        ..FakePuller::default()
+    }
+}
+
+#[test]
+fn pull_targets_select_docker_images() {
+    let h = host(PULL_WS);
+    let ws = &h.ws.workspace;
+    let order: Vec<String> = ws.stems().map(|s| s.name.clone()).collect();
+    let (targets, skipped) = images::pull_targets(ws, &order, &[]);
+    let names: Vec<&str> = targets.iter().map(|(s, _)| s.as_str()).collect();
+    assert_eq!(names, ["api", "worker", "db", "broken"]);
+    let skips: Vec<(&str, &str)> = skipped
+        .iter()
+        .map(|s| (s.stem.as_str(), s.reason.as_str()))
+        .collect();
+    assert_eq!(
+        skips,
+        [
+            ("pinned", images::SKIP_NEVER),
+            ("built", images::SKIP_BUILT)
+        ],
+        "a process stem is not reported unless named"
+    );
+
+    // Named: `pull: never` is pulled anyway; a process stem is reported.
+    let named = ["pinned".to_string(), "web".to_string(), "built".to_string()];
+    let (targets, skipped) = images::pull_targets(ws, &named, &named);
+    assert_eq!(
+        targets,
+        [("pinned".to_string(), "local/only:dev".to_string())]
+    );
+    let skips: Vec<(&str, &str)> = skipped
+        .iter()
+        .map(|s| (s.stem.as_str(), s.reason.as_str()))
+        .collect();
+    assert_eq!(
+        skips,
+        [
+            ("web", images::SKIP_NOT_DOCKER),
+            ("built", images::SKIP_BUILT)
+        ]
+    );
+}
+
+#[tokio::test]
+async fn pull_pulls_each_image_once_and_reports_per_stem() {
+    let (sup, events, puller) = pull_rig(fake_puller());
+    let res = sup
+        .pull(stems_api::PullParams::default(), "cli:t")
+        .await
+        .unwrap();
+    // One pull per distinct image.
+    let mut calls = puller.calls.lock().unwrap().clone();
+    calls.sort();
+    assert_eq!(
+        calls,
+        [
+            "ghcr.io/acme/api:main",
+            "ghcr.io/acme/nope:1",
+            "postgres:16"
+        ]
+    );
+    let pulled: Vec<(&str, bool)> = res
+        .pulled
+        .iter()
+        .map(|p| (p.stem.as_str(), p.changed))
+        .collect();
+    // Start order (alphabetical within a layer).
+    assert_eq!(pulled, [("api", true), ("db", false), ("worker", true)]);
+    assert_eq!(res.pulled[0].before.as_deref(), Some("sha256:old"));
+    assert_eq!(res.pulled[0].after.as_deref(), Some("sha256:new"));
+    assert!(!res.ok);
+    assert_eq!(res.failed.len(), 1);
+    let f = &res.failed[0];
+    assert_eq!(f.stem, "broken");
+    assert_eq!(f.error.code, ErrorCode::ImagePullFailed);
+    assert!(f.error.message.contains("denied"), "{}", f.error.message);
+    assert_eq!(f.error.details["stem"], "broken");
+    assert!(res.restarted.is_none());
+
+    // Progress became `docker.pull` events of the first stem per image.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let mut stems: Vec<String> = events
+        .replay(0)
+        .into_iter()
+        .filter(|e| e.kind == EventKind::DOCKER_PULL)
+        .filter_map(|e| e.stem)
+        .collect();
+    stems.sort();
+    assert_eq!(stems, ["api", "broken", "db"]);
+}
+
+#[tokio::test]
+async fn pull_of_named_stems_and_unknown_names() {
+    let (sup, _, puller) = pull_rig(fake_puller());
+    let res = sup
+        .pull(
+            stems_api::PullParams {
+                stems: vec!["db".into(), "web".into()],
+                restart: true,
+            },
+            "cli:t",
+        )
+        .await
+        .unwrap();
+    assert!(res.ok, "{res:?}");
+    assert_eq!(*puller.calls.lock().unwrap(), ["postgres:16"]);
+    assert_eq!(res.skipped[0].stem, "web");
+    assert!(
+        res.restarted.is_none(),
+        "nothing changed, nothing restarted"
+    );
+
+    let e = sup
+        .pull(
+            stems_api::PullParams {
+                stems: vec!["nope".into()],
+                restart: false,
+            },
+            "cli:t",
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, ErrorCode::UnknownStem);
+}
+
+#[tokio::test]
+async fn pull_without_a_docker_runtime_is_an_error_only_with_targets() {
+    let events = Arc::new(EventBus::default());
+    let mut reg = RuntimeRegistry::default();
+    reg.register(StemType::Process, Arc::new(FakeRuntime::default()));
+    let sup = Supervisor::new(events, host(PULL_WS), reg, Arc::new(FakeWaiter::default()));
+    let only_process = stems_api::PullParams {
+        stems: vec!["web".into()],
+        restart: false,
+    };
+    assert!(sup.pull(only_process, "t").await.unwrap().ok);
+    let e = sup
+        .pull(stems_api::PullParams::default(), "t")
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, ErrorCode::Internal);
+}
+
+#[test]
+fn pull_restarts_only_running_stems_whose_image_changed() {
+    let img = |stem: &str, changed: bool| stems_api::PulledImage {
+        stem: stem.into(),
+        image: "i".into(),
+        before: None,
+        after: None,
+        changed,
+        duration_ms: 0,
+    };
+    let pulled = [img("a", true), img("b", true), img("c", false)];
+    assert_eq!(images::to_restart(&pulled, |s| s != "b"), ["a"]);
+    assert!(images::to_restart(&pulled, |_| false).is_empty());
+}

@@ -11,7 +11,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::types::{
     ArgType, AutoApply, ByteSize, Condition, CpuLimit, Dur, FileMode, HealthType, MemoryLimit,
-    Protocol, Requirement, RestartPolicy, Scalar, StemType, StringOrList, WatchAction, WatchRoot,
+    Protocol, PullPolicy, Requirement, RestartPolicy, Scalar, StemType, StringOrList, WatchAction,
+    WatchRoot,
 };
 
 /// Deserialize "a string, or else a `T`", giving `T`'s own error message
@@ -259,6 +260,8 @@ pub struct RawStem {
     // --- docker -----------------------------------------------------------
     /// (docker) Image reference.
     pub image: Option<String>,
+    /// (docker) When to pull `image`: `missing` (default), `always` or `never`.
+    pub pull: Option<PullPolicy>,
     /// (docker) Build instead of pulling.
     pub build: Option<RawDockerBuild>,
     /// (docker) Volume specs, `name:/path` or `./host:/path`.
