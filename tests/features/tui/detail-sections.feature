@@ -20,7 +20,7 @@ Feature: The Detail view lists the stem's scripts and runs them
     And the last frame contains "Scripts · Enter run · : menu"
     And the last frame contains "› always-fails     custom"
     And the last frame contains "  create-test-user custom    (email*, role) Create a user with a known password"
-    And the last frame contains ": scripts (8)"
+    And the last frame contains ": scripts (8+1)"
 
   Scenario: j then Enter runs create-test-user through its form
     When I run "stems attach --headless --size 120x40 --script 'wait:healthy;3;j;Enter;type:a@b.c;frame;Enter;wait:event=script.finished:shop-api;frame'"

@@ -318,6 +318,9 @@ process group ([process-model.md](process-model.md)).
   stream (deliverable 27, [tui.md](tui.md)): attached `up` asks "Stop
   everything? [y/N/d(etach)]" on `q`/Ctrl-C (`y` = the `down --all`
   teardown above, `d` = leave the daemon running); `attach` just leaves.
+  Attached `up` opens the dashboard as soon as the daemon accepted the
+  `up` (`up.started`), so the stems are watched coming up; the result is a
+  toast there and the summary is printed when the dashboard closes.
   `STEMS_TUI=0`, `--json` or a non-terminal stdout keep the plain stream.
 * The daemon's own exit path (`stems daemon stop`, SIGTERM/SIGINT/SIGHUP to
   the daemon) stops every running stem in reverse order before it removes

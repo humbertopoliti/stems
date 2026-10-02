@@ -278,8 +278,9 @@ description, args, requires, kind: lifecycle|custom, timeout, retries,
 concurrent, mcp_tool, input_schema}]}`. It reads the config locally and
 needs no daemon. `mcp_tool` (`shop_api__create_test_user`,
 `workspace__nuke_databases`) and `input_schema` (a JSON Schema of `args`)
-are what the MCP server publishes (FR-AI-2); the TUI's action menu uses the
-same data. The daemon serves it as the `script_catalog` RPC
+are what the MCP server publishes (FR-AI-2); the dashboard's `:` menu and
+its Scripts view ([tui.md](tui.md#the-scripts-view), every script, the
+workspace-level ones included) use the same data. The daemon serves it as the `script_catalog` RPC
 ([protocol.md](protocol.md#methods)).
 
 ## Timeouts and failures

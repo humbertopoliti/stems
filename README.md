@@ -32,7 +32,7 @@ stems down    # stop everything
 ```
 
 ```
- stems · shop                     1 Graph  2 [Table]  3 Detail  4 Logs  5 Events
+ stems · shop          1 Graph  2 [Table]  3 Detail  4 Logs  5 Events  6 Scripts
   STEM      TYPE     STATUS     REASON  PID    PORTS  UPTIME  RESTARTS  CPU   MEM
   postgres  docker   ✓ healthy  -       -      15432  3m12s   0
 › api       process  ✓ healthy  -       41822  8080   3m04s   0

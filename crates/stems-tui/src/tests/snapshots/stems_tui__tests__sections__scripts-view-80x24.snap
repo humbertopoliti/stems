@@ -1,17 +1,17 @@
 ---
-source: crates/stems-tui/src/tests.rs
-assertion_line: 1104
+source: crates/stems-tui/src/tests/sections.rs
+assertion_line: 833
 expression: text
 ---
- stems · minimal      1 Graph  2 Table  3 Detail  4 [Logs]  5 Events  6 Scripts
-┌ Logs: echo-svc · following ──────────────────────────────────────────────────┐
-│   12:00:00.000 INFO chaos log line 0                                         │
-│   12:00:00.010 ERROR chaos log line 1                                        │
-│   12:00:00.020 INFO chaos log line 2                                         │
-│   12:00:00.030 ERROR chaos log line 3                                        │
-│   12:00:00.040 INFO chaos log line 4                                         │
-│›  12:00:00.050 ERROR chaos log line 5                                        │
+ stems · process-ch…  1 Graph  2 Table  3 Detail  4 Logs  5 Events  6 [Scripts]
+┌ Scripts · 4 ─────────────────────────────────────────────────────────────────┐
+│workspace · global                                                            │
+│  needs-api        custom    ✓ 1.2s A workspace script                        │
 │                                                                              │
+│b · ✓ healthy                                                                 │
+│› create-test-user custom    (email*, role) Create a user with a known passwo…│
+│  flaky            custom    running… Fails on its first two attempts         │
+│  start            lifecycle                                                  │
 │                                                                              │
 │                                                                              │
 │                                                                              │
@@ -26,4 +26,4 @@ expression: text
 │                                                                              │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
- minimal · profile - · daemon pid 4242 · ✓1 !0 ✗0 ↯0 ·0 ?0 ↻0 Space pause · j/k…
+ process-chain · profile - · daemon pid 4242 · ✓2 !0 ✗0 ↯0 ·1 ?0 ↻1 j/k move · …

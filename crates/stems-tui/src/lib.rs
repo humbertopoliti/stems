@@ -29,6 +29,7 @@ pub mod model;
 pub mod prefs;
 pub mod runner;
 pub mod script;
+pub mod scripts;
 pub mod terminal;
 pub mod toast;
 pub mod update;
@@ -50,6 +51,7 @@ pub use runner::{
     run_headless, run_headless_output, run_terminal,
 };
 pub use script::{Token, WaitFor};
+pub use scripts::ScriptsState;
 pub use toast::{Toast, ToastKind, Toasts};
 pub use update::{init, update};
 pub use view::{render_text, view};

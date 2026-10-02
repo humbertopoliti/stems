@@ -1,9 +1,9 @@
 ---
 source: crates/stems-tui/src/tests/actions.rs
-assertion_line: 592
+assertion_line: 607
 expression: text
 ---
- stems · process-chain           1 Graph  2 [Table]  3 Detail  4 Logs  5 Events
+ stems · process-ch…  1 Graph  2 [Table]  3 Detail  4 Logs  5 Events  6 Scripts
   STEM TYPE    STATUS     REASON       PID    PORTS  UPTIME RESTARTS CPU   MEM
   a    process ✓ healthy  ready (tcp)  101    18301  9s     0
 › b    process ✓ healthy  ready (tcp)  102    18302  8s     0

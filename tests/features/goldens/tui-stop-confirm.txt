@@ -1,4 +1,4 @@
- stems · process-chain           1 Graph  2 [Table]  3 Detail  4 Logs  5 Events
+ stems · process-ch…  1 Graph  2 [Table]  3 Detail  4 Logs  5 Events  6 Scripts
   STEM TYPE    STATUS     REASON       PID    PORTS  UPTIME RESTARTS CPU   MEM
   a    process ✓ healthy  -            *      18301  *      0        *     *
 › b    process ✓ healthy  -            *      18302  *      0        *     *

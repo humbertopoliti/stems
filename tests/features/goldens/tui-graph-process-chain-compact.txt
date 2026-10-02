@@ -1,4 +1,4 @@
- stems · process-chain           1 [Graph]  2 Table  3 Detail  4 Logs  5 Events
+ stems · process-ch…  1 [Graph]  2 Table  3 Detail  4 Logs  5 Events  6 Scripts
        ╭──▶[b ✓]──╮
 [d ✓]──┤          ├──▶[a ✓]
        ╰──▶[c ✓]──╯

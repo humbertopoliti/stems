@@ -5,21 +5,41 @@ the daemon's RPCs and event stream (deliverables 27 to 30; FR-UI-1..4,
 FR-GR-4/5/6, FR-LC-4, FR-LG-3/4, FR-SC-2, FR-WD-2, FR-ST-8, FR-AI-4).
 The main things you do to a stem (start/stop/restart, its scripts, its
 variants, its file watcher) are always one key away: the **action bar**
-names them for the selected stem, and the **Detail** view lists its
-scripts, variants and watchdog as rows you run with `Enter`.
+names them for the selected stem, the **Detail** view lists its
+scripts, variants and watchdog as rows you run with `Enter`, and the
+**Scripts** view lists every script of the workspace, the workspace-level
+ones included.
 The code lives in the `stems-tui` crate (ratatui 0.30 + crossterm 0.29).
 
 ## Opening it
 
 | Command | What you get |
 |---|---|
-| `stems up` on a terminal | `up` progress, then the dashboard; quitting asks "Stop everything? [y/N/d(etach)]" |
+| `stems up` on a terminal | the dashboard at once, while the stems start (below); quitting asks "Stop everything? [y/N/d(etach)]" |
 | `stems attach` on a terminal | the dashboard on a running daemon; `q` just leaves (stems keep running) |
 | `stems attach --view detail` | opens on the selected stem's detail (`--view table`, `--view graph` likewise) |
 | `STEMS_TUI=0 stems up` / `stems attach` | the plain event stream (CI logs), as before 27 |
 | stdout not a terminal, or `--json` | the plain event stream / NDJSON (unchanged) |
 | `STEMS_TUI_FORCE=1` | the terminal dashboard even when stdout is not a terminal (no raw mode, no key input then; for the panic-restore test) |
 | `stems attach --headless --script '...'` | replay keys, print frames as text (below) |
+
+**`stems up` opens the dashboard while the stems are starting.** It does
+not wait for them to be ready: as soon as the daemon accepted the `up`
+(its `up.started` event: the config loaded and the start order is
+planned) the dashboard opens, and the graph / table show each stem going
+through `setup`, `starting` and `healthy` live. When the `up` is done a
+toast says so (`✓ up: 4 ready`, or `✗ up: 3 ready, 1 failed, 0 skipped`;
+from the `up.finished` event), and the usual summary (`up: 4 ready, 0
+failed, 0 skipped`, with the failures) is printed when the dashboard
+closes. Errors that stop the `up` before anything starts (an invalid
+config, an unknown stem or profile, orphans, Docker not reachable) are
+printed as before, without the dashboard; an `up` that fails as a whole
+later (the workspace `bootstrap` script, `--fresh`'s reset) closes the
+dashboard and prints its error. Quitting while stems are still starting
+works as usual: `y` stops everything (the in-flight `up` is cancelled),
+`d` detaches and the daemon finishes the `up` on its own. The plain
+stream (`STEMS_TUI=0`, `--json`, no terminal) still prints the progress
+lines and the summary.
 
 Quitting an attached `stems up`: `q` or `Ctrl-C` opens the confirmation;
 `y` runs `down --all` (every stem and the daemon stop, as with Ctrl-C in
@@ -31,7 +51,7 @@ stop everything in attached `up` and just leave in `attach`. A plain
 ## Layout
 
 ```
- stems · minimal                 1 Graph  2 [Table]  3 Detail  4 Logs  5 Events
+ stems · minimal      1 Graph  2 [Table]  3 Detail  4 Logs  5 Events  6 Scripts
   STEM     TYPE    STATUS     REASON   PID    PORTS  UPTIME RESTARTS CPU   MEM
 › echo-svc process ✓ healthy  -        12345  18090  42s    0
 
@@ -40,12 +60,15 @@ stop everything in attached `up` and just leave in `attach`. A plain
 ```
 
 * Title bar: workspace and the views; the current one is in brackets, each
-  numbered with its key (`1`-`5`). When the line is too narrow for the
-  numbers (under 56 columns) the tabs are shown without them
-  (` Graph [Table] Detail  Logs  Events`). With `mouse = true` a click on
-  a tab switches to that view.
+  numbered with its key (`1`-`6`). The tabs come first: a workspace name
+  that does not fit next to them is cut with `…` (the status bar has it in
+  full). When the line is too narrow for the numbers (under 67 columns)
+  the tabs are shown without them (` Graph [Table] Detail  Logs  Events
+  Scripts `), and under 46 columns without their padding (`Graph [Table]
+  Detail Logs Events Scripts`). With `mouse = true` a click on a tab
+  switches to that view.
 * Body: the current view.
-* Action bar (Table, Graph and Detail; also under the split log pane):
+* Action bar (Table, Graph and Detail; also above the split log pane):
   what the keys do to the selected stem, always visible (below).
 * Status bar: workspace, profile, daemon pid, counts per glyph (healthy
   `✓`, degraded `!`, failed `✗`, unhealthy `↯`, stopped `·`, unknown `?`,
@@ -65,13 +88,14 @@ One line directly above the status bar, contextual to the selected stem:
 |---|---|
 | `▶ s start` | the stem is stopped or failed |
 | `■ x stop  ↻ r restart` | otherwise (running, starting, unhealthy, ...) |
-| `: scripts (N)` | always; `N` custom scripts (from `script_catalog`); dimmed at 0 |
+| `: scripts (N)` / `: scripts (N+W)` | always; `N` custom scripts of the stem, `W` workspace-level scripts (from `script_catalog`; `+W` is left out when the workspace has none); dimmed when both are 0 |
 | `v variant local ▸ docker` | the stem has `variants`: the active choice, then the next one |
 | `p watch on` / `p watch ⏸ paused` | the stem has `watch:` rules |
 | `o editor`, `? more` | always (`?` is the full key help) |
 
-Segments that do nothing now are dimmed (no custom scripts; with no stem
-selected every stem key is). On a narrow terminal the bar is cut from the
+Segments that do nothing now are dimmed (no scripts at all; with no stem
+selected every stem key is, but `: scripts (W)` stays lit when the
+workspace has scripts: they need no stem). On a narrow terminal the bar is cut from the
 right, ending in `…`. With `mouse = true` a click on a segment presses its
 key. ASCII mode (`STEMS_ASCII=1`) drops the icons (`s start`, `v variant
 local > docker`, `p watch || paused`).
@@ -119,6 +143,8 @@ narrow the hint goes first, then the stems furthest from the current one
 (`…  e  [f]  g  …`). With `mouse = true` a click on a stem in the strip
 selects it.
 * **Events**: the daemon's event stream as a table (below).
+* **Scripts**: every script of the workspace, the workspace-level ones
+  first (below).
 
 ### The Detail view
 
@@ -204,15 +230,15 @@ loaded once for every stem whose `status` has a `variant`, again after a
 switch and after `config.applied`. The palette has `switch variant of
 <stem>` for those stems.
 
-`Tab` cycles Graph → Table → Detail → Logs → Events; `1`-`5` jump straight
+`Tab` cycles Graph → Table → Detail → Logs → Events → Scripts; `1`-`6` jump straight
 to one (in every view, except while typing a filter or search or with a
 dialog open, where the digit is typed).
 
 Terminals smaller than 40x10 show "terminal too small" instead.
 
-With the **split layout** (`Ctrl-L`) the bottom 40 % of Table, Graph and
-Detail is the log pane of the selected stem, following; it moves with the
-selection. It is the same component as the Logs view. `Ctrl-L` saves the
+With the **split layout** (`Ctrl-L`) the bottom 40 % of Table, Graph,
+Detail and Scripts is the log pane of the selected stem, following; it
+moves with the selection. It is the same component as the Logs view. `Ctrl-L` saves the
 choice as `split_logs` in `ui.toml` (the one line is replaced or added,
 the rest of the file is kept), so the next session starts split.
 
@@ -293,6 +319,45 @@ the rest of the file is kept), so the next session starts split.
   again. Over the split pane the wheel scrolls the pane, elsewhere the
   view under it.
 
+### The Scripts view
+
+```
+ stems · shop         1 Graph  2 Table  3 Detail  4 Logs  5 Events  6 [Scripts]
+┌ Scripts · 4 ─────────────────────────────────────────────────────────────────┐
+│workspace · global                                                            │
+│› needs-api        custom    ✓ 0.1s A workspace script that needs shop-api he…│
+│                                                                              │
+│shop-api · ✓ healthy                                                          │
+│  create-test-user custom    (email*, role) Create a user with a known passwo…│
+│  seed-large       custom    running… Load the large data set                 │
+│  start            lifecycle                                                  │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+Every script of `script_catalog` in one place (what `stems scripts`
+prints), grouped by what it belongs to: the **workspace-level** scripts
+first (`workspace · global`: `bootstrap`, `teardown` and the named ones of
+the root `scripts:`, what `stems run --ws <script>` runs), then
+each stem's in table order, with the stem's state. Within a group custom
+scripts come first, then lifecycle ones, each by name, as in the Detail
+view's Scripts section. A row shows the name, the kind, the last run the
+dashboard saw (`queued`, `running…`, `✓ 1.2s`, `✗ exit 3`; from the
+daemon's `script.*` events, any actor), the arguments (`*` = required)
+and the description.
+
+`j`/`k` (`↓`/`↑`), `PageUp`/`PageDown`, `g`/`G` and the wheel move.
+`Enter` runs the selected script exactly as the `:` menu does: its form
+first when it declares `args`, else `run_script {wait: false}`; the split
+log pane opens on its output (a workspace script's under the log stem
+`_workspace`) and `script.finished` becomes a toast. `/` filters (fuzzy,
+on the script name and its owner: `seed`, `seed postgres`, `workspace`);
+`Enter` keeps the filter, `Esc` clears it. Moving onto a stem's script
+selects that stem, so the split pane and the other views follow; a
+workspace script leaves the stem selection alone. The view has no action
+bar (the stem keys act in Table, Graph and Detail); `Ctrl-P` and `[`/`]`
+work as everywhere. The catalogue is reloaded when the view opens, and on
+`tools.changed` / `config.applied`.
+
 ### The Events view (29)
 
 ```
@@ -336,16 +401,16 @@ its own line (and never runs a clipboard command). The status bar says
 | `Enter` | open the detail view (`Esc` goes back to the graph or table); in Detail: run the selected script (its form first), switch to the selected variant (after `y`), pause / resume the watchdog |
 | `v` | the variant picker of the selected stem (Table, Graph, Detail) |
 | `Tab` / `Shift-Tab` | next / previous view |
-| `1` `2` `3` `4` `5` | Graph / Table / Detail / Logs / Events, from any view (not while typing into a filter, search or dialog). `3` with no stem selected selects the first one; `Esc` in Detail goes back to the Table or Graph it came from |
+| `1` `2` `3` `4` `5` `6` | Graph / Table / Detail / Logs / Events / Scripts, from any view (not while typing into a filter, search or dialog). `3` with no stem selected selects the first one; `Esc` in Detail goes back to the Table or Graph it came from |
 | `/` | filter by name: type, `Enter` keeps it, `Esc` clears it |
 | `O` | cycle the sort: config order, name, state (failed first), uptime (was `s` before 30) |
 | `Esc` | dismiss the toasts, close the help / dialog, back from Detail, clear the filter |
 | `?` | toggle the help overlay |
 | `q`, `Ctrl-C` | quit (see above) |
-| `Ctrl-L` | split layout: the selected stem's log pane under Table/Graph/Detail (saved in `ui.toml`) |
+| `Ctrl-L` | split layout: the selected stem's log pane under Table/Graph/Detail/Scripts (saved in `ui.toml`) |
 | `Ctrl-P` | the command palette (any view; below) |
 | mouse click | select a table row; a view tab in the title bar switches to it; a stem in the Detail / Logs stem strip selects it; an action bar segment presses its key (`mouse = true`) |
-| mouse wheel | Table / Graph: move the selection; Detail: scroll; Logs and the split pane (under the pointer): move the selected line, up leaves follow; Events: move the selection (`mouse = true`; three rows per notch) |
+| mouse wheel | Table / Graph: move the selection; Detail: scroll; Logs and the split pane (under the pointer): move the selected line, up leaves follow; Events and Scripts: move the selection (`mouse = true`; three rows per notch) |
 
 In the Logs view:
 
@@ -366,10 +431,12 @@ In the Logs view:
 
 In the Events view: `j`/`k`, `PgUp`/`PgDn`, `g`/`G` and the wheel move,
 `/` filters, `Enter` jumps to the logs, `Esc` clears the filter, `[`/`]`
-move the shared stem selection. In both views `Tab` and `1`-`5` switch
+move the shared stem selection. In the Scripts view: `j`/`k`,
+`PgUp`/`PgDn`, `g`/`G` and the wheel move, `Enter` runs the script, `/`
+filters, `Esc` clears the filter. In these views `Tab` and `1`-`6` switch
 views (not while typing a search or filter). `?` shows the keys of the
-current view. The status bar's hints name the keys of Detail, Logs and
-Events (`j/k row · Enter act`, `Space pause`, `[ ] stem`).
+current view. The status bar's hints name the keys of Detail, Logs,
+Events and Scripts (`j/k row · Enter act`, `Space pause`, `[ ] stem`).
 
 ## Actions (30, FR-UI-2)
 
@@ -480,7 +547,7 @@ stem, `Esc` cancels).
 ```toml
 theme = "dark"          # dark | light (accent colours)
 mouse = false           # clicks (table row, header tab, stem strip, action bar) and the wheel
-default_view = "graph"  # table | detail | graph | logs | events (unset: graph for >1 stem, else table)
+default_view = "graph"  # table | detail | graph | logs | events | scripts (unset: graph for >1 stem, else table)
 refresh_ms = 250        # tick interval, 50..5000; status refreshes about every second
 split_logs = false      # the split log pane (Ctrl-L toggles and saves it)
 clipboard = "osc52"     # osc52 | command (pbcopy / wl-copy / xclip)
@@ -518,7 +585,7 @@ is refreshed, so the frame shows the daemon's current state.
 | `wait:event=<kind>[:<stem>]` | wait until an event of that kind (and stem) arrives after the last key token (30), e.g. `wait:event=script.finished:shop-api` |
 | `type:<text>` | the characters of `<text>` as keys, verbatim (spaces, `<`, `>` included): typing into the focused field, filter or palette (30), e.g. `type:rest api` |
 | `chaos:<path>` | `GET http://127.0.0.1:<port>/__chaos/<path>` on the selected stem's first port (the shop-api chaos endpoints of the test workspaces; errors become a notice) |
-| `view:<name>` | switch view |
+| `view:<name>` | switch view (`table`, `detail`, `graph`, `logs`, `events`, `scripts`) |
 | `frame` | dump the frame |
 | `sleep:<ms>` | pause (scripts only; scenarios use waits) |
 
@@ -596,7 +663,9 @@ prove it (`tests/features/tui/panic-restore.feature`, run with
   `Cmd::LoadVariants(stem)` (`switch_variant {stem}`, list only) fills
   `Model::variants`, `Cmd::LoadWatch(stem)` (`watch_status`) the Detail's
   watchdog; `Action::SwitchVariant` is the switch. `Model::script_activity`
-  keeps the last `script.*` state per script.
+  keeps the last `script.*` state per script. The Scripts view is
+  `stems_tui::scripts` (`entries(model)`: the listed scripts in order,
+  filtered; `selected(model)`; state in `Model::scripts_view`).
 * Frame goldens: `stems_tui::assert_frame!(model, "name")` snapshots the
   frame at 80x24 and 120x40 (`crates/stems-tui/src/snapshots/`).
 * E2E: `Then the frame matches golden "<name>" masking PID,UPTIME,CPU,MEM`

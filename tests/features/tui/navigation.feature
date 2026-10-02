@@ -20,12 +20,13 @@ Feature: Keyboard navigation in the dashboard
     And the last frame contains "- stem: a"
 
   Scenario: Tab cycles the views
-    When I run "stems attach --headless --script 'wait:healthy;frame;Tab;frame;Tab;frame;Tab;Tab;Tab;frame'"
+    When I run "stems attach --headless --script 'wait:healthy;frame;Tab;frame;Tab;frame;Tab;Tab;Tab;frame;Tab;frame'"
     Then the command succeeds
     And frame 1 contains "[Graph]"
     And frame 2 contains "[Table]"
     And frame 3 contains "[Detail]"
-    And frame 4 contains "[Graph]"
+    And frame 4 contains "[Scripts]"
+    And frame 5 contains "[Graph]"
 
   Scenario: / filters the table
     When I run "stems attach --view table --headless --script 'wait:healthy;/b<Enter>;frame'"

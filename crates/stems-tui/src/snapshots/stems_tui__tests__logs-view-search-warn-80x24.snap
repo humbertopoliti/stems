@@ -1,9 +1,9 @@
 ---
 source: crates/stems-tui/src/tests.rs
-assertion_line: 1094
+assertion_line: 1111
 expression: text
 ---
- stems · minimal                 1 Graph  2 Table  3 Detail  4 [Logs]  5 Events
+ stems · minimal      1 Graph  2 Table  3 Detail  4 [Logs]  5 Events  6 Scripts
 ┌ Logs: echo-svc · scrolled · level warn+ ─────────────────────────────────────┐
 │›* 12:00:00.010 ERROR chaos log line 1                                        │
 │   12:00:00.030 ERROR chaos log line 3                                        │

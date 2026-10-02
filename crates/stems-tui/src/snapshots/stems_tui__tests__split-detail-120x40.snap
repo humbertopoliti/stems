@@ -1,9 +1,9 @@
 ---
 source: crates/stems-tui/src/tests.rs
-assertion_line: 1257
+assertion_line: 1274
 expression: text
 ---
- stems · minimal                                                         1 Graph  2 Table  3 [Detail]  4 Logs  5 Events
+ stems · minimal                                              1 Graph  2 Table  3 [Detail]  4 Logs  5 Events  6 Scripts
 ┌ Detail: echo-svc · ✓ healthy ────────────────────────────────────────────────────────────────────────────────────────┐
 │✓ healthy · ready (tcp)                                                                                               │
 │pid 12345 · up 42s · restarts 0                                                                                       │

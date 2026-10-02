@@ -1,4 +1,4 @@
- stems · run-scripts             1 Graph  2 [Table]  3 Detail  4 Logs  5 Events
+ stems · run-scripts  1 Graph  2 [Table]  3 Detail  4 Logs  5 Events  6 Scripts
   STEM     TYPE    STATUS     REASON   PID    PORTS  UPTIME RESTARTS CPU   MEM
 › shop-api process ✓ healthy  -        *      18611  *      0        *     *
 
@@ -20,5 +20,5 @@
     └──────────────────────────────────────────────────────────────────────┘
 
 
- ■ x stop  ↻ r restart  : scripts (8)  o editor  ? more
+ ■ x stop  ↻ r restart  : scripts (8+1)  o editor  ? more
  run-scripts · profile - · daemon pid * · ✓1 !0 ✗0 ↯0 ·0 ?0 ↻0
