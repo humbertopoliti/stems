@@ -3393,7 +3393,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "stems-api"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "futures",
@@ -3409,7 +3409,7 @@ dependencies = [
 
 [[package]]
 name = "stems-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3435,7 +3435,7 @@ dependencies = [
 
 [[package]]
 name = "stems-config"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "humantime",
  "indexmap",
@@ -3451,7 +3451,7 @@ dependencies = [
 
 [[package]]
 name = "stems-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "clap",
@@ -3472,7 +3472,7 @@ dependencies = [
 
 [[package]]
 name = "stems-daemon"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3508,7 +3508,7 @@ dependencies = [
 
 [[package]]
 name = "stems-e2e"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "cucumber",
@@ -3530,7 +3530,7 @@ dependencies = [
 
 [[package]]
 name = "stems-mcp"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "futures",
@@ -3554,7 +3554,7 @@ dependencies = [
 
 [[package]]
 name = "stems-runtime"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3581,7 +3581,7 @@ dependencies = [
 
 [[package]]
 name = "stems-tui"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "crossterm",
