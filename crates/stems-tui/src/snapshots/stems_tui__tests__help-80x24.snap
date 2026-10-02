@@ -1,9 +1,9 @@
 ---
 source: crates/stems-tui/src/tests.rs
-assertion_line: 712
+assertion_line: 729
 expression: text
 ---
- stems · process-chain           1 Graph  2 [Table]  3 Detail  4 Logs  5 Events
+ stems · process-ch…  1 Graph  2 [Table]  3 Detail  4 Logs  5 Events  6 Scripts
   STEM TYPE    STATUS     REASON       PID    PORTS  UPTIME RESTARTS CPU   MEM
 › a    process ✓ healthy  ready (tcp)  101    18301  9s     0
   b    process ✓ healthy  ready (tcp)  102    18302  8s     0
@@ -16,7 +16,7 @@ expression: text
 │ f e + -    graph: focus labels zoom       o          open code in $EDITOR    │
 │ Enter      detail · run/switch/pause row  S          reset (type `reset`)    │
 │ Tab S-Tab  next / previous view           :          script menu             │
-│ 1-5        go to a view (header #)        u / d      up all / down all       │
+│ 1-6        go to a view (header #)        u / d      up all / down all       │
 │ /          filter stems by name           Ctrl-P     command palette         │
 │ O          cycle the sort order           Esc        dismiss toasts, back    │
 │ Ctrl-L     split: logs below              e          error toast details     │

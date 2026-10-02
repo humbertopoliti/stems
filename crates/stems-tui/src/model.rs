@@ -26,6 +26,7 @@ pub use crate::form::ScriptForm;
 use crate::graph::{GraphState, GraphStem};
 pub use crate::logs::LogPane;
 use crate::prefs::{Clipboard, Prefs};
+pub use crate::scripts::ScriptsState;
 pub use crate::toast::{Toast, ToastKind, Toasts};
 
 /// Events kept in memory (detail and Events views).
@@ -45,16 +46,19 @@ pub enum ViewKind {
     Logs,
     /// Events (deliverable 29).
     Events,
+    /// Every runnable script: the workspace's, then each stem's.
+    Scripts,
 }
 
 impl ViewKind {
     /// Every view, in `Tab` order.
-    pub const ALL: [ViewKind; 5] = [
+    pub const ALL: [ViewKind; 6] = [
         ViewKind::Graph,
         ViewKind::Table,
         ViewKind::Detail,
         ViewKind::Logs,
         ViewKind::Events,
+        ViewKind::Scripts,
     ];
 
     /// Title-case name shown in the tab bar.
@@ -65,16 +69,17 @@ impl ViewKind {
             ViewKind::Graph => "Graph",
             ViewKind::Logs => "Logs",
             ViewKind::Events => "Events",
+            ViewKind::Scripts => "Scripts",
         }
     }
 
-    /// The view's direct key (`1`-`5`, in `Tab` order).
+    /// The view's direct key (`1`-`6`, in `Tab` order).
     pub fn digit(self) -> char {
         let i = ViewKind::ALL.iter().position(|v| *v == self).unwrap_or(0);
         char::from(b'1' + i as u8)
     }
 
-    /// The view of a direct key (`1`-`5`).
+    /// The view of a direct key (`1`-`6`).
     pub fn from_digit(c: char) -> Option<ViewKind> {
         let i = c.to_digit(10)?.checked_sub(1)?;
         ViewKind::ALL.get(i as usize).copied()
@@ -254,7 +259,8 @@ pub struct DetailData {
 }
 
 /// What the dashboard last saw of a script (its `script.*` events, any
-/// actor): shown inline in the Detail view's Scripts section.
+/// actor): shown inline in the Detail view's Scripts section and in the
+/// Scripts view.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ScriptActivity {
     /// `script.queued`: waiting for another run of the stem.
@@ -376,6 +382,8 @@ pub struct Model {
     pub events: VecDeque<Event>,
     /// The Events view (29).
     pub events_view: EventsState,
+    /// The Scripts view.
+    pub scripts_view: ScriptsState,
     /// The log pane of the Logs view and of the split layout (29).
     pub log_pane: LogPane,
     /// Metric history per stem (25).
@@ -470,6 +478,7 @@ impl Model {
                 ..LogPane::default()
             },
             events_view: EventsState::default(),
+            scripts_view: ScriptsState::default(),
             prefs,
             ascii: false,
             detail: None,
@@ -549,6 +558,14 @@ impl Model {
                 })
                 .count()
         })
+    }
+
+    /// The workspace-level scripts in the catalogue (`None` until it is
+    /// loaded).
+    pub fn workspace_scripts(&self) -> Option<usize> {
+        self.catalog
+            .as_ref()
+            .map(|c| c.iter().filter(|e| e.stem.is_none()).count())
     }
 
     /// `stem`'s variant choices, once loaded.

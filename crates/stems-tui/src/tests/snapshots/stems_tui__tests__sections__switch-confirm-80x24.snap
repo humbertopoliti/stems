@@ -1,9 +1,9 @@
 ---
 source: crates/stems-tui/src/tests/sections.rs
-assertion_line: 617
+assertion_line: 689
 expression: text
 ---
- stems · process-chain           1 Graph  2 Table  3 [Detail]  4 Logs  5 Events
+ stems · process-ch…  1 Graph  2 Table  3 [Detail]  4 Logs  5 Events  6 Scripts
 ┌ Detail: b · ✓ healthy · lines 1-19/41 ──────── a  [b]  c  d · [ ] ←/→ switch ┐
 │✓ healthy · ready (tcp)                                                       │
 │pid 102 · up 8s · restarts 0 · variant local                                  │
@@ -25,5 +25,5 @@ expression: text
 │                                                                              │
 │Health                                                                        │
 └──────────────────────────────────────────────────────────────────────────────┘
- ■ x stop  ↻ r restart  : scripts (2)  v variant local ▸ slow  p watch on …
+ ■ x stop  ↻ r restart  : scripts (2+1)  v variant local ▸ slow  p watch on …
  process-chain · profile - · daemon pid 4242 · ✓2 !0 ✗0 ↯0 ·1 ?0 ↻1 j/k row · E…

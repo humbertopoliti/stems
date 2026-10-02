@@ -9,8 +9,9 @@
 //! `▶ s start` replaces stop/restart when the stem is stopped or failed;
 //! `v variant …` shows only for a stem with `variants` (the active choice,
 //! then the next one), `p watch …` only for one with `watch:` rules.
-//! Segments that do nothing now are dimmed (no custom scripts, no stem
-//! selected). On a narrow terminal the bar is cut from the right with `…`.
+//! `: scripts (3+2)` counts the stem's custom scripts, then the workspace's
+//! (left out when there are none). Segments that do nothing now are dimmed
+//! (no scripts at all, no stem selected). On a narrow terminal the bar is cut from the right with `…`.
 //! With `mouse = true` a click on a segment presses its key
 //! ([`Model::bar_hits`]).
 
@@ -62,9 +63,14 @@ pub fn segments(model: &Model) -> Vec<Segment> {
     let a = model.ascii;
     let icon = |u: &'static str| if a { "" } else { u };
     let Some(s) = model.selected_stem() else {
+        // Workspace scripts need no stem.
+        let scripts = match model.workspace_scripts() {
+            Some(w) if w > 0 => Segment::new(':', "", format!("scripts ({w})"), true),
+            _ => Segment::new(':', "", "scripts", false),
+        };
         return vec![
             Segment::new('s', icon("▶"), "start", false),
-            Segment::new(':', "", "scripts", false),
+            scripts,
             Segment::new('o', "", "editor", false),
             Segment::new('?', "", "more", true),
         ];
@@ -76,9 +82,13 @@ pub fn segments(model: &Model) -> Vec<Segment> {
         out.push(Segment::new('x', icon("■"), "stop", true));
         out.push(Segment::new('r', icon("↻"), "restart", true));
     }
-    match model.custom_scripts(&s.name) {
-        Some(n) => out.push(Segment::new(':', "", format!("scripts ({n})"), n > 0)),
-        None => out.push(Segment::new(':', "", "scripts", true)),
+    // The stem's custom scripts, `+` the workspace's (the menu lists both).
+    match (model.custom_scripts(&s.name), model.workspace_scripts()) {
+        (Some(n), Some(w)) if w > 0 => {
+            out.push(Segment::new(':', "", format!("scripts ({n}+{w})"), true));
+        }
+        (Some(n), _) => out.push(Segment::new(':', "", format!("scripts ({n})"), n > 0)),
+        (None, _) => out.push(Segment::new(':', "", "scripts", true)),
     }
     if let Some(active) = &s.variant {
         let next = model.variant_choices(&s.name).and_then(|v| {

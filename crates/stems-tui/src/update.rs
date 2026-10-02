@@ -39,13 +39,9 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
 }
 
 /// What the log pane should show now: the Logs view, or the split pane
-/// under Table/Graph/Detail; `None` when neither is on screen.
+/// under Table/Graph/Detail/Scripts; `None` when neither is on screen.
 pub fn log_target(model: &Model) -> Option<LogTarget> {
-    let split = model.log_pane.visible
-        && matches!(
-            model.view,
-            ViewKind::Table | ViewKind::Graph | ViewKind::Detail
-        );
+    let split = crate::view::splits(model);
     if model.view != ViewKind::Logs && !split {
         return None;
     }
@@ -198,6 +194,9 @@ fn step(model: &mut Model, msg: Msg) -> Vec<Cmd> {
                 cmds.extend(refresh(model));
             } else if e.kind == EventKind::DAEMON_STOPPING {
                 model.message = Some("daemon stopping".into());
+            } else if e.kind == EventKind::UP_FINISHED {
+                up_finished(model, &e);
+                cmds.extend(refresh(model));
             } else if e.kind == EventKind::SCRIPT_FINISHED {
                 script_activity(model, &e);
                 script_finished(model, &e);
@@ -331,6 +330,7 @@ fn step(model: &mut Model, msg: Msg) -> Vec<Cmd> {
                 RpcResult::Events(Err(e)) => model.message = Some(format!("events: {e}")),
                 RpcResult::Catalog(Ok(entries)) => {
                     model.catalog = Some(entries);
+                    scripts_select(model, 0);
                     if let Modal::ScriptMenu(m) = &mut model.modal {
                         m.selected = 0;
                     }
@@ -503,7 +503,7 @@ pub fn detail_cmds(stem: &str) -> Vec<Cmd> {
     ]
 }
 
-/// A text field, modal or overlay has the input: view keys (`Tab`, `1`-`5`)
+/// A text field, modal or overlay has the input: view keys (`Tab`, `1`-`6`)
 /// and header clicks do nothing.
 fn capturing(model: &Model) -> bool {
     model.modal.is_open()
@@ -511,9 +511,10 @@ fn capturing(model: &Model) -> bool {
         || model.filter_editing
         || (model.view == ViewKind::Logs && model.log_pane.search_editing)
         || (model.view == ViewKind::Events && model.events_view.editing)
+        || (model.view == ViewKind::Scripts && model.scripts_view.editing)
 }
 
-/// `1`-`5` or a header click: switch to `v`. Detail remembers where `Esc`
+/// `1`-`6` or a header click: switch to `v`. Detail remembers where `Esc`
 /// goes back to (as `Enter` does) and selects the first stem when none is.
 fn go_to_view(model: &mut Model, v: ViewKind) -> Vec<Cmd> {
     if v == ViewKind::Detail && model.view != ViewKind::Detail {
@@ -533,6 +534,11 @@ fn set_view(model: &mut Model, v: ViewKind) -> Vec<Cmd> {
     if v == ViewKind::Events && !model.events_view.loaded {
         model.events_view.loaded = true;
         cmds.push(Cmd::LoadEvents);
+    }
+    if v == ViewKind::Scripts {
+        // As the script menu does: the catalogue may have changed.
+        cmds.push(Cmd::LoadCatalog);
+        scripts_select(model, 0);
     }
     graph_selection(model);
     cmds.extend(ensure_detail(model));
@@ -810,7 +816,8 @@ pub const WHEEL_STEP: isize = 3;
 /// A mouse wheel notch (`mouse = true`): the view under the pointer
 /// scrolls. Logs, and the split log pane when the pointer is over it,
 /// move the selected line (up leaves follow mode, like `k`); Events moves
-/// its selection; Detail scrolls; Table and Graph move the stem selection.
+/// and Scripts move their selection; Detail scrolls; Table and Graph move
+/// the stem selection.
 fn wheel(model: &mut Model, up: bool, row: u16) -> Vec<Cmd> {
     if model.modal.is_open() || model.help {
         return Vec::new();
@@ -829,6 +836,7 @@ fn wheel(model: &mut Model, up: bool, row: u16) -> Vec<Cmd> {
             Vec::new()
         }
         ViewKind::Detail => scroll_detail(model, sign * WHEEL_STEP),
+        ViewKind::Scripts => scripts_select(model, sign),
         _ => move_selection(model, sign),
     }
 }
@@ -910,14 +918,15 @@ fn key(model: &mut Model, k: KeyEvent) -> Vec<Cmd> {
         return open_palette(model);
     }
     let typing = (model.view == ViewKind::Logs && model.log_pane.search_editing)
-        || (model.view == ViewKind::Events && model.events_view.editing);
+        || (model.view == ViewKind::Events && model.events_view.editing)
+        || (model.view == ViewKind::Scripts && model.scripts_view.editing);
     if !typing
         && !ctrl
         && let Some(cmds) = toast_key(model, k.code)
     {
         return cmds;
     }
-    // 5. Logs and Events keys.
+    // 5. Logs, Events and Scripts keys.
     if model.view == ViewKind::Logs
         && !ctrl
         && let Some(cmds) = logs_key(model, k)
@@ -927,6 +936,12 @@ fn key(model: &mut Model, k: KeyEvent) -> Vec<Cmd> {
     if model.view == ViewKind::Events
         && !ctrl
         && let Some(cmds) = events_key(model, k)
+    {
+        return cmds;
+    }
+    if model.view == ViewKind::Scripts
+        && !ctrl
+        && let Some(cmds) = scripts_key(model, k)
     {
         return cmds;
     }
@@ -1132,6 +1147,78 @@ fn events_key(model: &mut Model, k: KeyEvent) -> Option<Vec<Cmd>> {
         _ => return None,
     }
     Some(Vec::new())
+}
+
+/// Move the Scripts view's selection by `delta` rows (within the list). A
+/// stem's script selects that stem, so the split log pane and the other
+/// views follow; a workspace script leaves the stem selection alone.
+fn scripts_select(model: &mut Model, delta: isize) -> Vec<Cmd> {
+    let all = crate::scripts::entries(model);
+    let Some(last) = all.len().checked_sub(1) else {
+        model.scripts_view.selected = 0;
+        return Vec::new();
+    };
+    let cur = model.scripts_view.selected.min(last) as isize;
+    let next = cur.saturating_add(delta).clamp(0, last as isize) as usize;
+    let stem = all[next].stem.clone();
+    model.scripts_view.selected = next;
+    if delta != 0
+        && let Some(stem) = stem
+        && model.selected.as_deref() != Some(stem.as_str())
+        && model.stems.iter().any(|s| s.name == stem)
+    {
+        model.selected = Some(stem);
+        model.touched = true;
+        model.log_focus = None;
+    }
+    Vec::new()
+}
+
+/// A key in the Scripts view; `None` falls through to the normal keys.
+fn scripts_key(model: &mut Model, k: KeyEvent) -> Option<Vec<Cmd>> {
+    let sv = &mut model.scripts_view;
+    if sv.editing {
+        match k.code {
+            KeyCode::Enter => sv.editing = false,
+            KeyCode::Esc => {
+                sv.editing = false;
+                sv.filter.clear();
+            }
+            KeyCode::Backspace => {
+                sv.filter.pop();
+            }
+            KeyCode::Char(c) => sv.filter.push(c),
+            _ => {}
+        }
+        sv.selected = 0;
+        return Some(Vec::new());
+    }
+    Some(match k.code {
+        KeyCode::Char('/') => {
+            sv.editing = true;
+            sv.filter.clear();
+            sv.selected = 0;
+            Vec::new()
+        }
+        KeyCode::Esc if !sv.filter.is_empty() => {
+            sv.filter.clear();
+            sv.selected = 0;
+            Vec::new()
+        }
+        KeyCode::Char('j') | KeyCode::Down => scripts_select(model, 1),
+        KeyCode::Char('k') | KeyCode::Up => scripts_select(model, -1),
+        KeyCode::PageDown => scripts_select(model, 10),
+        KeyCode::PageUp => scripts_select(model, -10),
+        KeyCode::Char('g') | KeyCode::Home => scripts_select(model, isize::MIN / 2),
+        KeyCode::Char('G') | KeyCode::End => scripts_select(model, isize::MAX / 2),
+        KeyCode::Enter => {
+            let Some(e) = crate::scripts::selected(model).cloned() else {
+                return Some(Vec::new());
+            };
+            open_script(model, e.stem, &e.name)
+        }
+        _ => return None,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1382,6 +1469,29 @@ fn script_finished(model: &mut Model, e: &stems_api::Event) {
     model
         .toasts
         .push(Toast::failure(format!("{script} failed: {why}"), now));
+}
+
+/// `up.finished` of somebody else's `up` (the dashboard's own `u` reports
+/// through its action result): above all the `stems up` this dashboard
+/// opened under, which is still starting stems when the first frame shows.
+fn up_finished(model: &mut Model, e: &stems_api::Event) {
+    if e.actor.starts_with("tui:") {
+        return;
+    }
+    let d = &e.data;
+    let count = |k: &str| d.get(k).and_then(|v| v.as_array()).map_or(0, Vec::len);
+    let (ready, failed, skipped) = (count("started"), count("failed"), count("skipped"));
+    let now = model.clock_ms;
+    if d.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+        model
+            .toasts
+            .push(Toast::ok(format!("up: {ready} ready"), now));
+    } else {
+        model.toasts.push(Toast::failure(
+            format!("up: {ready} ready, {failed} failed, {skipped} skipped"),
+            now,
+        ));
+    }
 }
 
 /// `config.changed` (33): a sticky toast, `a` applies, `v` shows the plan.

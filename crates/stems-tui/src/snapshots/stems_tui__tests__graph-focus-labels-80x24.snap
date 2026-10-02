@@ -1,9 +1,9 @@
 ---
 source: crates/stems-tui/src/tests.rs
-assertion_line: 921
+assertion_line: 938
 expression: text
 ---
- stems · process-chain           1 [Graph]  2 Table  3 Detail  4 Logs  5 Events
+ stems · process-ch…  1 [Graph]  2 Table  3 Detail  4 Logs  5 Events  6 Scripts
 ┌─────┐      ┌─────┐           ┌─────┐
 │ d · ├─────▶│ c ↻ ├─── http ─▶│ a ✗ │
 └─────┘      └─────┘           └─────┘

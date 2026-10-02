@@ -75,7 +75,7 @@ pub fn rows(model: &Model, stem: &str) -> Vec<DetailRow> {
 }
 
 /// `email*, role`: the arguments of a script (`*` = required).
-fn args_summary(e: &MenuEntry) -> String {
+pub(crate) fn args_summary(e: &MenuEntry) -> String {
     e.args
         .iter()
         .map(|a| format!("{}{}", a.name, if a.required { "*" } else { "" }))
@@ -83,7 +83,7 @@ fn args_summary(e: &MenuEntry) -> String {
         .join(", ")
 }
 
-fn activity_text(a: Option<&ScriptActivity>, ascii: bool) -> (String, Style) {
+pub(crate) fn activity_text(a: Option<&ScriptActivity>, ascii: bool) -> (String, Style) {
     let (ok, bad) = if ascii { ("OK", "X") } else { ("✓", "✗") };
     match a {
         None => (String::new(), Style::default()),
@@ -368,7 +368,12 @@ fn ms_text(ms: u64) -> String {
 }
 
 /// A row cut to `w` columns (`…`); reversed when selected.
-fn fit(spans: Vec<Span<'static>>, w: usize, selected: bool, ascii: bool) -> Line<'static> {
+pub(crate) fn fit(
+    spans: Vec<Span<'static>>,
+    w: usize,
+    selected: bool,
+    ascii: bool,
+) -> Line<'static> {
     let mut out = Vec::new();
     let mut used = 0usize;
     for s in spans {

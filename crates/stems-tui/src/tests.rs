@@ -193,10 +193,13 @@ fn number_keys_go_to_views() {
     assert_eq!(m.view, ViewKind::Logs);
     assert_eq!(update(&mut m, ch('5')), vec![Cmd::LoadEvents]);
     assert_eq!(m.view, ViewKind::Events);
-    for c in ['0', '6', '9'] {
+    for c in ['0', '7', '9'] {
         update(&mut m, ch(c));
         assert_eq!(m.view, ViewKind::Events, "{c} is not a view key");
     }
+    assert_eq!(update(&mut m, ch('6')), vec![Cmd::LoadCatalog]);
+    assert_eq!(m.view, ViewKind::Scripts);
+    update(&mut m, ch('5'));
     update(&mut m, ctrl('1'));
     assert_eq!(m.view, ViewKind::Events, "Ctrl-1 is not a view key");
     // From the graph, Esc in Detail returns to the graph.
@@ -274,6 +277,7 @@ fn header_tab_columns_follow_the_render() {
             (ViewKind::Detail, "3 Detail".to_string()),
             (ViewKind::Logs, "4 Logs".to_string()),
             (ViewKind::Events, "5 Events".to_string()),
+            (ViewKind::Scripts, "6 Scripts".to_string()),
         ]
     );
     assert_eq!(
@@ -281,19 +285,31 @@ fn header_tab_columns_follow_the_render() {
         Some(79),
         "right-aligned, 1 margin"
     );
-    // Narrow: no digits, the plain tabs.
-    let text = render_text(&m, 40, 10);
-    let header: Vec<char> = format!("{:<40}", text.lines().next().expect("header"))
-        .chars()
-        .collect();
-    let hits = m.tab_hits.borrow().clone();
-    let labels: Vec<String> = hits
-        .iter()
-        .map(|&(_, a, b)| header[a as usize..b as usize].iter().collect())
-        .collect();
+    // Narrow: no digits, the plain tabs; narrower still, without padding.
+    let labels = |w: u16| -> Vec<String> {
+        let text = render_text(&m, w, 10);
+        let header: Vec<char> = format!("{:<60}", text.lines().next().expect("header"))
+            .chars()
+            .collect();
+        let hits = m.tab_hits.borrow().clone();
+        hits.iter()
+            .map(|&(_, a, b)| header[a as usize..b as usize].iter().collect())
+            .collect()
+    };
     assert_eq!(
-        labels,
-        [" Graph ", "[Table]", " Detail ", " Logs ", " Events "]
+        labels(60),
+        [
+            " Graph ",
+            "[Table]",
+            " Detail ",
+            " Logs ",
+            " Events ",
+            " Scripts "
+        ]
+    );
+    assert_eq!(
+        labels(40),
+        ["Graph", "[Table]", "Detail", "Logs", "Events", "Scripts"]
     );
     // Too small: no header, no tabs.
     render_text(&m, 39, 9);
@@ -365,7 +381,7 @@ fn clicking_a_header_tab_switches_views() {
 fn tab_cycles_views() {
     let mut m = chain();
     let mut seen = vec![m.view];
-    for _ in 0..5 {
+    for _ in 0..6 {
         update(&mut m, k(KeyCode::Tab));
         seen.push(m.view);
     }
@@ -376,6 +392,7 @@ fn tab_cycles_views() {
             ViewKind::Detail,
             ViewKind::Logs,
             ViewKind::Events,
+            ViewKind::Scripts,
             ViewKind::Graph,
             ViewKind::Table
         ]

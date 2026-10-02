@@ -13,6 +13,10 @@
 //! pipe), then runs `down --all` with a deadline of the sum of `stop_grace`
 //! + 5 s, waits for the daemon to exit and exits 0.
 //!
+//! With the dashboard (27) the progress is not printed: the dashboard opens
+//! on `up.started`, next to the `up` call, and the result is printed when
+//! it closes.
+//!
 //! **`attach`** streams the same way but never tears anything down: Ctrl-C
 //! just exits (the TUI's "stop everything?" prompt comes with 27).
 
@@ -480,8 +484,13 @@ async fn up_async(
     let call = c.call_with_timeout::<UpResult>(Method::UP, &params, rpc_timeout);
     tokio::pin!(call);
 
+    // The dashboard opens as soon as the daemon accepted the `up`
+    // (`up.started`: the config loaded, the plan is made) and shows the
+    // stems coming up; the plain stream waits for the result.
+    let early = !tui.is_plain();
     let mut interrupted = None;
-    let result: Result<UpResult, Error> = loop {
+    let mut result: Option<Result<UpResult, Error>> = None;
+    loop {
         let sig = async {
             match exit.as_mut() {
                 Some(x) => x.wait().await,
@@ -489,24 +498,48 @@ async fn up_async(
             }
         };
         tokio::select! {
-            r = &mut call => break r,
-            Some(ev) = events.next() => print_event(stdout, mode, &ev),
-            s = sig => { interrupted = Some(s); break Err(Error::internal("interrupted")); }
+            r = &mut call => { result = Some(r); break; }
+            Some(ev) = events.next() => {
+                if early && ev.kind == EventKind::UP_STARTED {
+                    break;
+                }
+                print_event(stdout, mode, &ev);
+            }
+            s = sig => { interrupted = Some(s); break; }
         }
-    };
+    }
 
     if let Some(why) = interrupted {
         return Ok(teardown(ctx, &t, &c, why, mode, stdout).await);
     }
+    // A failed `up` RPC (nothing was started): no daemon is left behind.
+    let failed = |e: Error| async {
+        if auto_started && !args.detach {
+            let _ = c.shutdown().await;
+            wait_daemon_gone(&t, WAIT).await;
+        }
+        Errors::from(e)
+    };
+    let Some(result) = result else {
+        drop(events);
+        let session = TuiSession {
+            mode: stems_tui::AttachMode::Up,
+            profile: args.profile.clone(),
+            view: None,
+            owns_daemon: auto_started,
+        };
+        let up = UpRun {
+            call: call.as_mut(),
+            orphans,
+        };
+        return match run_tui_session(ctx, &t, &c, tui, session, mode, stdout, Some(up)).await {
+            Ok(out) => Ok(out),
+            Err(e) => Err(failed(e).await),
+        };
+    };
     let res = match result {
         Ok(r) => r,
-        Err(e) => {
-            if auto_started && !args.detach {
-                let _ = c.shutdown().await;
-                wait_daemon_gone(&t, WAIT).await;
-            }
-            return Err(e.into());
-        }
+        Err(e) => return Err(failed(e).await),
     };
     // Flush the progress events up to `up.finished`.
     let _ = tokio::time::timeout(Duration::from_secs(2), async {
@@ -518,28 +551,13 @@ async fn up_async(
         }
     })
     .await;
-    let mut out = up_output(&res).compact();
-    if !orphans.is_empty()
-        && let Value::Object(m) = &mut out.data
-    {
-        m.insert("orphans".into(), Value::Array(orphans));
-    }
+    let out = up_summary(&res, orphans);
     if args.detach {
         return Ok(out);
     }
 
     // Attached: print the summary now, then follow until told to exit.
-    crate::output::render(
-        &out,
-        &crate::output::OutputOptions {
-            mode,
-            json_explicit: mode == Mode::Json,
-            quiet: false,
-            no_color: true,
-        },
-        stdout,
-        &mut std::io::stderr(),
-    );
+    render_up_summary(&out, mode, stdout);
     if !tui.is_plain() {
         drop(events);
         let session = TuiSession {
@@ -548,7 +566,9 @@ async fn up_async(
             view: None,
             owns_daemon: auto_started,
         };
-        return Ok(run_tui_session(ctx, &t, &c, tui, session, mode, stdout).await);
+        return run_tui_session(ctx, &t, &c, tui, session, mode, stdout, None)
+            .await
+            .map_err(Errors::from);
     }
     if mode == Mode::Human {
         let _ = writeln!(
@@ -574,6 +594,32 @@ async fn up_async(
             why = exit.wait() => return Ok(teardown(ctx, &t, &c, why, mode, stdout).await),
         }
     }
+}
+
+/// The `up` output: the result, plus the orphans handled before it.
+fn up_summary(res: &UpResult, orphans: Vec<Value>) -> CommandOutput {
+    let mut out = up_output(res).compact();
+    if !orphans.is_empty()
+        && let Value::Object(m) = &mut out.data
+    {
+        m.insert("orphans".into(), Value::Array(orphans));
+    }
+    out
+}
+
+/// Print an attached `up`'s summary (the command goes on afterwards).
+fn render_up_summary(out: &CommandOutput, mode: Mode, stdout: &mut dyn Write) {
+    crate::output::render(
+        out,
+        &crate::output::OutputOptions {
+            mode,
+            json_explicit: mode == Mode::Json,
+            quiet: false,
+            no_color: true,
+        },
+        stdout,
+        &mut std::io::stderr(),
+    );
 }
 
 /// The orphan scan of `up` (deliverable 11, FR-CR-4): report, prompt, kill
@@ -829,7 +875,9 @@ pub fn attach(ctx: &Ctx, args: &AttachArgs, mode: Mode, stdout: &mut dyn Write) 
                 }),
                 owns_daemon: false,
             };
-            Ok::<_, Errors>(run_tui_session(ctx, &t, &c, tui, session, mode, stdout).await)
+            run_tui_session(ctx, &t, &c, tui, session, mode, stdout, None)
+                .await
+                .map_err(Errors::from)
         })
         .unwrap_or_else(CommandOutput::failed);
     }
@@ -988,8 +1036,23 @@ fn tui_choice_up(ctx: &Ctx, args: &UpArgs, mode: Mode) -> Result<TuiChoice, Erro
     Ok(TuiChoice::Plain)
 }
 
+/// The `up` call still in flight while the dashboard runs (attached `up`
+/// opens it before the stems are ready).
+pub struct UpRun<'a> {
+    call: std::pin::Pin<&'a mut dyn Future<Output = Result<UpResult, Error>>>,
+    /// The orphans handled before the `up` (for its summary).
+    orphans: Vec<Value>,
+}
+
 /// Run the TUI on `t`'s daemon, then act on how it ended: `StopAll` runs
 /// the attached-mode teardown (`down --all`), `Detach` leaves everything.
+///
+/// With `up` the dashboard runs next to that call: its result is printed
+/// once the dashboard closed (the dashboard itself reports it from the
+/// `up.finished` event); an `up` that fails as a whole closes the
+/// dashboard and is the `Err` returned. Leaving the dashboard first drops
+/// the call (the daemon finishes the `up` on its own unless told to stop).
+#[allow(clippy::too_many_arguments)]
 async fn run_tui_session(
     ctx: &Ctx,
     t: &Target,
@@ -998,12 +1061,13 @@ async fn run_tui_session(
     session: TuiSession,
     mode: Mode,
     stdout: &mut dyn Write,
-) -> CommandOutput {
+    mut up: Option<UpRun<'_>>,
+) -> Result<CommandOutput, Error> {
     let mut opts = client::options(ctx);
     opts.actor = opts.actor.replacen("cli:", "tui:", 1);
     let tc = match connect_to(t, opts).await {
         Ok(c) => std::sync::Arc::new(c),
-        Err(e) => return CommandOutput::failed(e).compact(),
+        Err(e) => return Ok(CommandOutput::failed(e).compact()),
     };
     let env = |k: &str| ctx.env.get(k).cloned();
     // Headless frames must not depend on the developer's ~/.config: only
@@ -1025,40 +1089,68 @@ async fn run_tui_session(
         .filter(|e| !e.trim().is_empty())
         .or_else(|| env("VISUAL"));
     let mut frames: Option<Vec<String>> = None;
-    let result = match choice {
-        TuiChoice::Plain => Ok(stems_tui::Outcome::Detach),
-        TuiChoice::Terminal => {
-            model.ascii = stems_core::status::prefers_ascii(env);
-            let panic_test = env_flag(ctx, stems_tui::ENV_PANIC_TEST) == Some(true);
-            stems_tui::run_terminal(tc, model, stems_tui::TerminalOptions { panic_test }).await
-        }
-        TuiChoice::Headless(h) => {
-            // Deterministic frames: ASCII only when asked for explicitly.
-            model.ascii = env_flag(ctx, "STEMS_ASCII") == Some(true);
-            let print = !(ctx.global.json && session.mode == stems_tui::AttachMode::Attach);
-            let r = stems_tui::run_headless_output(tc, model, h, |out| {
-                if print {
-                    match out {
-                        stems_tui::HeadlessOutput::Frame(n, text) => {
-                            let _ = writeln!(stdout, "{}", stems_tui::frame_header(n));
-                            let _ = write!(stdout, "{text}");
-                        }
-                        // The OSC 52 sequence of a copy (`y`, 29), on its own line.
-                        stems_tui::HeadlessOutput::Raw(raw) => {
-                            let _ = writeln!(stdout, "{raw}");
-                        }
-                    }
-                    let _ = stdout.flush();
+    let mut up_result: Option<UpResult> = None;
+    let result = {
+        let tui = async {
+            match choice {
+                TuiChoice::Plain => Ok(stems_tui::Outcome::Detach),
+                TuiChoice::Terminal => {
+                    model.ascii = stems_core::status::prefers_ascii(env);
+                    let panic_test = env_flag(ctx, stems_tui::ENV_PANIC_TEST) == Some(true);
+                    stems_tui::run_terminal(tc, model, stems_tui::TerminalOptions { panic_test })
+                        .await
                 }
-            })
-            .await;
-            r.map(|run| {
-                frames = Some(run.frames);
-                run.outcome
-            })
+                TuiChoice::Headless(h) => {
+                    // Deterministic frames: ASCII only when asked for explicitly.
+                    model.ascii = env_flag(ctx, "STEMS_ASCII") == Some(true);
+                    let print = !(ctx.global.json && session.mode == stems_tui::AttachMode::Attach);
+                    let r = stems_tui::run_headless_output(tc, model, h, |out| {
+                        if print {
+                            match out {
+                                stems_tui::HeadlessOutput::Frame(n, text) => {
+                                    let _ = writeln!(stdout, "{}", stems_tui::frame_header(n));
+                                    let _ = write!(stdout, "{text}");
+                                }
+                                // The OSC 52 sequence of a copy (`y`, 29), on its own line.
+                                stems_tui::HeadlessOutput::Raw(raw) => {
+                                    let _ = writeln!(stdout, "{raw}");
+                                }
+                            }
+                            let _ = stdout.flush();
+                        }
+                    })
+                    .await;
+                    r.map(|run| {
+                        frames = Some(run.frames);
+                        run.outcome
+                    })
+                }
+            }
+        };
+        tokio::pin!(tui);
+        loop {
+            let pending = up.as_mut().filter(|_| up_result.is_none());
+            let call = async {
+                match pending {
+                    Some(u) => u.call.as_mut().await,
+                    None => std::future::pending().await,
+                }
+            };
+            tokio::select! {
+                r = &mut tui => break r,
+                r = call => match r {
+                    Ok(res) => up_result = Some(res),
+                    // Leaving this block drops the dashboard, which
+                    // restores the terminal before the error is printed.
+                    Err(e) => return Err(e),
+                },
+            }
         }
     };
-    match result {
+    if let (Some(res), Some(u)) = (&up_result, up) {
+        render_up_summary(&up_summary(res, u.orphans), mode, stdout);
+    }
+    Ok(match result {
         Ok(stems_tui::Outcome::StopAll) => teardown(ctx, t, c, "quit", mode, stdout).await,
         Ok(stems_tui::Outcome::Detach) => {
             let mut data = json!({ "detached": true });
@@ -1085,7 +1177,7 @@ async fn run_tui_session(
             }
             CommandOutput::failed(e).compact()
         }
-    }
+    })
 }
 
 #[cfg(test)]

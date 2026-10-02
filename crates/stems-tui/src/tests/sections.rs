@@ -188,24 +188,38 @@ fn action_bar_follows_the_selected_stem() {
     let text = bar(&m, 120);
     assert_eq!(
         text,
-        " ■ x stop  ↻ r restart  : scripts (2)  v variant local ▸ slow  p watch on  o editor  ? more"
+        " ■ x stop  ↻ r restart  : scripts (2+1)  v variant local ▸ slow  p watch on  o editor  ? more"
     );
-    // A stem without variants, watch rules or scripts (catalogue loaded).
+    // A stem without variants, watch rules or scripts (catalogue loaded):
+    // the workspace's script keeps the menu worth opening.
     update(&mut m, ch('k'));
     let text = bar(&m, 120);
     assert_eq!(
         text,
-        " ■ x stop  ↻ r restart  : scripts (0)  o editor  ? more"
+        " ■ x stop  ↻ r restart  : scripts (0+1)  o editor  ? more"
     );
-    let segs = crate::bar::segments(&m);
-    assert!(
-        !segs.iter().find(|s| s.key == ':').unwrap().enabled,
-        "dimmed"
-    );
+    let scripts = |m: &Model| {
+        let segs = crate::bar::segments(m);
+        segs.into_iter().find(|s| s.key == ':').unwrap()
+    };
+    assert!(scripts(&m).enabled, "the workspace has a script");
+    // Without workspace scripts: the stem's count alone, dimmed at 0.
+    let mut own = m.clone();
+    let stems_only: Vec<_> = catalog().into_iter().filter(|e| e.stem.is_some()).collect();
+    update(&mut own, Msg::Rpc(RpcResult::Catalog(Ok(stems_only))));
+    assert_eq!(scripts(&own).label, "scripts (0)");
+    assert!(!scripts(&own).enabled, "dimmed");
+    // No stem selected: the workspace's scripts still run.
+    own.selected = None;
+    assert!(!scripts(&own).enabled);
+    m.selected = None;
+    assert_eq!(scripts(&m).label, "scripts (1)");
+    assert!(scripts(&m).enabled);
+    m.selected = Some("a".into());
     // Stopped: start instead of stop / restart.
     update(&mut m, ch('G'));
     assert_eq!(m.selected.as_deref(), Some("d"));
-    assert!(bar(&m, 120).starts_with(" ▶ s start  : scripts (0)"));
+    assert!(bar(&m, 120).starts_with(" ▶ s start  : scripts (0+1)"));
     // `x` then the stem's stop event turns the bar to `s start`.
     update(&mut m, ch('g'));
     update(&mut m, ch('j'));
@@ -213,7 +227,7 @@ fn action_bar_follows_the_selected_stem() {
         &mut m,
         Msg::Event(Box::new(event(20, "b", "healthy", "stopped"))),
     );
-    assert!(bar(&m, 120).starts_with(" ▶ s start  : scripts (2)  v variant local ▸ slow"));
+    assert!(bar(&m, 120).starts_with(" ▶ s start  : scripts (2+1)  v variant local ▸ slow"));
     // Paused watchdog.
     let mut st = m.stems.clone();
     st[1].watch = Some(WatchSummary {
@@ -230,7 +244,7 @@ fn action_bar_follows_the_selected_stem() {
     m.ascii = true;
     assert!(
         bar(&m, 120)
-            .starts_with(" s start  : scripts (2)  v variant local > slow  p watch || paused")
+            .starts_with(" s start  : scripts (2+1)  v variant local > slow  p watch || paused")
     );
 }
 
@@ -238,7 +252,7 @@ fn action_bar_follows_the_selected_stem() {
 fn action_bar_is_cut_from_the_right_on_narrow_terminals() {
     let m = rich();
     let text = bar(&m, 50);
-    assert_eq!(text, " ■ x stop  ↻ r restart  : scripts (2) …");
+    assert_eq!(text, " ■ x stop  ↻ r restart  : scripts (2+1) …");
     assert!(crate::view::str_width(&text) <= 50);
     // Every segment fits at 120: no ellipsis.
     assert!(!bar(&m, 120).contains('…'));
@@ -676,4 +690,182 @@ fn frame_detail_sections() {
     update(&mut m, k(KeyCode::Esc));
     update(&mut m, ch('v'));
     crate::assert_frame!(m, "variant-picker", 80, 24);
+}
+
+// --- the Scripts view ---------------------------------------------------------------
+
+/// `rich()` in the Scripts view.
+fn rich_scripts() -> Model {
+    let mut m = rich();
+    assert_eq!(update(&mut m, ch('6')), vec![Cmd::LoadCatalog]);
+    assert_eq!(m.view, ViewKind::Scripts);
+    m
+}
+
+fn listed(m: &Model) -> Vec<(Option<&str>, &str)> {
+    crate::scripts::entries(m)
+        .into_iter()
+        .map(|e| (e.stem.as_deref(), e.name.as_str()))
+        .collect()
+}
+
+#[test]
+fn scripts_view_lists_the_workspace_then_each_stem() {
+    let m = rich_scripts();
+    assert_eq!(
+        listed(&m),
+        vec![
+            (None, "needs-api"),
+            (Some("b"), "create-test-user"),
+            (Some("b"), "flaky"),
+            (Some("b"), "start"),
+        ]
+    );
+    assert!(
+        !crate::view::has_bar(&m),
+        "the stem actions are not its keys"
+    );
+    let text = render_text(&m, 80, 24);
+    assert!(text.contains("6 [Scripts]"), "{text}");
+    assert!(text.contains("workspace · global"), "{text}");
+    assert!(text.contains("› needs-api"), "{text}");
+}
+
+#[test]
+fn scripts_view_selection_follows_into_the_stem() {
+    let mut m = rich_scripts();
+    assert_eq!(m.selected.as_deref(), Some("b"));
+    update(&mut m, ch('['));
+    assert_eq!(m.selected.as_deref(), Some("a"));
+    // A workspace script leaves the stem selection alone.
+    update(&mut m, ch('k'));
+    assert_eq!(m.scripts_view.selected, 0);
+    assert_eq!(m.selected.as_deref(), Some("a"));
+    // Onto b's first script: b is selected everywhere.
+    update(&mut m, ch('j'));
+    assert_eq!(m.scripts_view.selected, 1);
+    assert_eq!(m.selected.as_deref(), Some("b"));
+    update(&mut m, ch('G'));
+    assert_eq!(crate::scripts::selected(&m).unwrap().name, "start");
+    update(&mut m, ch('j'));
+    assert_eq!(m.scripts_view.selected, 3, "stays on the last row");
+    update(&mut m, ch('g'));
+    assert_eq!(m.scripts_view.selected, 0);
+}
+
+#[test]
+fn scripts_view_enter_runs_or_opens_the_form() {
+    let mut m = rich_scripts();
+    // The workspace script runs at once; its output owns the split pane.
+    let cmds = update(&mut m, k(KeyCode::Enter));
+    assert!(cmds.contains(&Cmd::Action(Action::RunScript {
+        stem: None,
+        script: "needs-api".into(),
+        args: serde_json::Map::new(),
+    })));
+    assert!(m.log_pane.visible);
+    assert_eq!(
+        m.log_focus.as_deref(),
+        Some(crate::actions::WORKSPACE_LOG_STEM)
+    );
+    assert!(
+        crate::view::body_areas(&m).unwrap().1.is_some(),
+        "the split pane shows under the Scripts view"
+    );
+    // A script with `args` opens its form first.
+    update(&mut m, ch('j'));
+    let cmds = update(&mut m, k(KeyCode::Enter));
+    assert!(cmds.iter().all(|c| !matches!(c, Cmd::Action(_))));
+    assert!(matches!(&m.modal, Modal::ScriptForm(f) if f.script == "create-test-user"));
+}
+
+#[test]
+fn scripts_view_filters_by_script_or_owner() {
+    let mut m = rich_scripts();
+    update(&mut m, ch('/'));
+    for c in "flk".chars() {
+        update(&mut m, ch(c));
+    }
+    assert!(m.scripts_view.editing);
+    assert_eq!(m.view, ViewKind::Scripts, "typed text is not a view key");
+    assert_eq!(listed(&m), vec![(Some("b"), "flaky")]);
+    update(&mut m, k(KeyCode::Enter));
+    assert!(!m.scripts_view.editing);
+    let cmds = update(&mut m, k(KeyCode::Enter));
+    assert!(cmds.contains(&Cmd::Action(Action::RunScript {
+        stem: Some("b".into()),
+        script: "flaky".into(),
+        args: serde_json::Map::new(),
+    })));
+    // By owner; Esc clears.
+    update(&mut m, ch('/'));
+    for c in "workspace".chars() {
+        update(&mut m, ch(c));
+    }
+    assert_eq!(listed(&m), vec![(None, "needs-api")]);
+    update(&mut m, k(KeyCode::Esc));
+    assert_eq!(listed(&m).len(), 4);
+}
+
+#[test]
+fn frame_scripts_view() {
+    let mut m = rich_scripts();
+    let ev = |seq: u64, kind: &str, stem: Value, data: Value| {
+        Msg::Event(Box::new(
+            serde_json::from_value(json!({
+                "ts": "2026-09-26T12:00:10Z", "seq": seq, "kind": kind,
+                "actor": "cli:me", "stem": stem, "data": data
+            }))
+            .unwrap(),
+        ))
+    };
+    update(
+        &mut m,
+        ev(
+            60,
+            "script.finished",
+            Value::Null,
+            json!({"script": "needs-api", "ok": true, "duration_ms": 1200}),
+        ),
+    );
+    update(
+        &mut m,
+        ev(61, "script.started", json!("b"), json!({"script": "flaky"})),
+    );
+    update(&mut m, ch('j'));
+    crate::assert_frame!(m, "scripts-view");
+}
+
+// --- `up.finished` -------------------------------------------------------------------
+
+#[test]
+fn up_finished_of_another_actor_is_a_toast() {
+    let mut m = rich();
+    let ev = |actor: &str, data: Value| {
+        Msg::Event(Box::new(
+            serde_json::from_value(json!({
+                "ts": "2026-09-26T12:00:10Z", "seq": 70, "kind": "up.finished",
+                "actor": actor, "data": data
+            }))
+            .unwrap(),
+        ))
+    };
+    let ok = json!({"started": ["a", "b"], "failed": [], "skipped": [], "ok": true});
+    update(&mut m, ev("tui:me", ok.clone()));
+    assert!(
+        m.toasts.is_empty(),
+        "the dashboard's own `u` reports itself"
+    );
+    update(&mut m, ev("cli:me", ok));
+    let text = render_text(&m, 80, 24);
+    assert!(text.contains("up: 2 ready"), "{text}");
+    update(
+        &mut m,
+        ev(
+            "cli:me",
+            json!({"started": ["a"], "failed": ["b"], "skipped": ["d"], "ok": false}),
+        ),
+    );
+    let text = render_text(&m, 80, 24);
+    assert!(text.contains("up: 1 ready, 1 failed, 1 skipped"), "{text}");
 }

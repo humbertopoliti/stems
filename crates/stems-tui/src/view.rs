@@ -6,7 +6,7 @@
 //! profile, daemon pid, counts, key hints or the filter). Overlays: help
 //! (`?`) and the quit confirmation. Below 40x10 only a "terminal too small"
 //! notice is drawn. With the split layout (`Ctrl-L`, 29) the bottom 40 % of
-//! Table/Graph/Detail is the log pane.
+//! Table/Graph/Detail/Scripts is the log pane.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -72,6 +72,7 @@ pub fn view(model: &Model, f: &mut Frame) {
             f,
             main,
         ),
+        ViewKind::Scripts => crate::scripts::render(model, f, main),
     }
     if let Some(p) = pane {
         log_pane(model, f, p);
@@ -87,14 +88,20 @@ pub fn view(model: &Model, f: &mut Frame) {
     crate::modals::render(model, f, area);
 }
 
-/// The body split: the current view and, with the split layout under
-/// Table/Graph/Detail, the log pane (bottom 40 %).
-fn split_body(model: &Model, body: Rect) -> (Rect, Option<Rect>) {
-    let split = model.log_pane.visible
+/// Whether the current view takes the split log pane (Table, Graph,
+/// Detail, Scripts).
+pub fn splits(model: &Model) -> bool {
+    model.log_pane.visible
         && matches!(
             model.view,
-            ViewKind::Table | ViewKind::Graph | ViewKind::Detail
-        );
+            ViewKind::Table | ViewKind::Graph | ViewKind::Detail | ViewKind::Scripts
+        )
+}
+
+/// The body split: the current view and, with the split layout under
+/// Table/Graph/Detail/Scripts, the log pane (bottom 40 %).
+fn split_body(model: &Model, body: Rect) -> (Rect, Option<Rect>) {
+    let split = splits(model);
     if split {
         let [a, b] =
             Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)]).areas(body);
@@ -369,10 +376,11 @@ fn too_small(f: &mut Frame, area: Rect) {
     f.render_widget(Paragraph::new(msg).centered(), r);
 }
 
-/// The header's view tabs, `1 Graph  2 [Table]  3 Detail  4 Logs  5 Events`
-/// (the digit is the view's direct key; the current view in brackets), or
-/// the plain ` Graph [Table] Detail ` when the header is too narrow for the
-/// digits. `None` segments are the gaps between tabs.
+/// The header's view tabs, `1 Graph  2 [Table]  3 Detail  4 Logs  5 Events
+/// 6 Scripts` (the digit is the view's direct key; the current view in
+/// brackets), or the plain ` Graph [Table] Detail ` when the header is too
+/// narrow for the digits, or `Graph [Table] Detail` when even that does not
+/// fit. `None` segments are the gaps between tabs.
 fn tab_segments(model: &Model, width: u16) -> Vec<(Option<ViewKind>, Vec<Span<'static>>)> {
     const GAP: &str = "  ";
     let titles: u16 = ViewKind::ALL
@@ -384,6 +392,8 @@ fn tab_segments(model: &Model, width: u16) -> Vec<(Option<ViewKind>, Vec<Span<'s
     let numbered_w = titles + 2 * n + 2 + GAP.len() as u16 * (n - 1) + 1;
     // Keep room for " stems ·" on the left (and the right margin).
     let numbered = width > numbered_w + 8;
+    // The plain form pads every tab to its bracketed width.
+    let tight = !numbered && width < titles + 2 * n + 1;
     let current = Style::default()
         .fg(accent(model))
         .add_modifier(Modifier::BOLD);
@@ -396,7 +406,7 @@ fn tab_segments(model: &Model, width: u16) -> Vec<(Option<ViewKind>, Vec<Span<'s
         let active = v == model.view;
         let label = if active {
             Span::styled(format!("[{}]", v.title()), current)
-        } else if numbered {
+        } else if numbered || tight {
             Span::raw(v.title())
         } else {
             Span::raw(format!(" {} ", v.title()))
@@ -411,6 +421,9 @@ fn tab_segments(model: &Model, width: u16) -> Vec<(Option<ViewKind>, Vec<Span<'s
                 vec![Span::styled(format!("{} ", v.digit()), digit), label],
             ));
         } else {
+            if tight && i > 0 {
+                out.push((None, vec![Span::raw(" ")]));
+            }
             out.push((Some(v), vec![label]));
         }
     }
@@ -420,7 +433,7 @@ fn tab_segments(model: &Model, width: u16) -> Vec<(Option<ViewKind>, Vec<Span<'s
 fn title_bar(model: &Model, f: &mut Frame, area: Rect) {
     let segs = tab_segments(model, area.width);
     let width = |spans: &[Span]| spans.iter().map(|s| s.width() as u16).sum::<u16>();
-    let tabs_w: u16 = segs.iter().map(|(_, s)| width(s)).sum::<u16>() + 1;
+    let tabs_w: u16 = (segs.iter().map(|(_, s)| width(s)).sum::<u16>() + 1).min(area.width);
     let [left, right] =
         Layout::horizontal([Constraint::Fill(1), Constraint::Length(tabs_w)]).areas(area);
     let ws = if model.workspace.is_empty() {
@@ -428,10 +441,13 @@ fn title_bar(model: &Model, f: &mut Frame, area: Rect) {
     } else {
         &model.workspace
     };
+    // The tabs come first: a long workspace name is cut (the status bar
+    // has it in full).
+    let room = usize::from(left.width).saturating_sub(" stems · ".chars().count() + 1);
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(" stems", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(format!(" · {ws}")),
+            Span::raw(format!(" · {}", truncate(ws, room, model.ascii))),
         ])),
         left,
     );
@@ -501,6 +517,9 @@ fn status_bar(model: &Model, f: &mut Frame, area: Rect) {
                 "Space pause · j/k scroll · [ ] stem · ? help · q quit ".to_string()
             }
             (ViewKind::Events, _) => "j/k scroll · Enter logs · ? help · q quit ".to_string(),
+            (ViewKind::Scripts, _) => {
+                "j/k move · Enter run · / filter · ? help · q quit ".to_string()
+            }
             (_, SortKey::Declared) => "? help · q quit ".to_string(),
             (_, sort) => format!("sort:{} · ? help · q quit ", sort.label()),
         }
@@ -723,7 +742,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("f e + -", "graph: focus labels zoom"),
     ("Enter", "detail · run/switch/pause row"),
     ("Tab S-Tab", "next / previous view"),
-    ("1-5", "go to a view (header #)"),
+    ("1-6", "go to a view (header #)"),
     ("/", "filter stems by name"),
     ("O", "cycle the sort order"),
     ("Ctrl-L", "split: logs below"),
@@ -760,7 +779,7 @@ pub const LOGS_HELP: &[(&str, &str)] = &[
     ("V, y", "visual range · copy line or range"),
     ("w / t", "wrap long lines / timestamps (UTC)"),
     ("Tab, Ctrl-L", "next view · split pane elsewhere"),
-    ("1-5, click", "go to a view (header number or tab)"),
+    ("1-6, click", "go to a view (header number or tab)"),
     ("click", "a stem in the title strip (mouse = true)"),
     ("q", "quit"),
 ];
@@ -773,8 +792,24 @@ pub const EVENTS_HELP: &[(&str, &str)] = &[
     ("/", "filter by stem, kind, state or reason"),
     ("Enter", "the stem's logs at the event time"),
     ("Esc", "clear the filter"),
-    ("Tab, 1-5", "next view · go to a view"),
+    ("Tab, 1-6", "next view · go to a view"),
     ("[ / ]", "previous / next stem (selection)"),
+    ("?", "toggle this help"),
+    ("q", "quit"),
+];
+
+/// Key help of the Scripts view.
+pub const SCRIPTS_HELP: &[(&str, &str)] = &[
+    ("j / k, g / G", "move · first / last"),
+    ("PgUp / PgDn", "move a page"),
+    ("wheel", "move (mouse = true)"),
+    ("Enter", "run the script (its form first)"),
+    ("/", "filter by script or owner"),
+    ("Esc", "clear the filter"),
+    ("[ / ]", "previous / next stem (selection)"),
+    ("Ctrl-L", "split: the script's output below"),
+    ("Ctrl-P", "command palette"),
+    ("Tab, 1-6", "next view · go to a view"),
     ("?", "toggle this help"),
     ("q", "quit"),
 ];
@@ -783,6 +818,7 @@ fn help(model: &Model, f: &mut Frame, area: Rect) {
     let keys = match model.view {
         ViewKind::Logs => LOGS_HELP,
         ViewKind::Events => EVENTS_HELP,
+        ViewKind::Scripts => SCRIPTS_HELP,
         _ => HELP,
     };
     // One column when it fits the height, else two side by side.

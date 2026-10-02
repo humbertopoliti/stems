@@ -2,7 +2,7 @@
 Feature: The action bar names what the keys do to the selected stem
   In Table, Graph and Detail a one-line bar sits above the status bar,
   contextual to the selected stem: `■ x stop  ↻ r restart` while it runs,
-  `▶ s start` when it is stopped or failed, then `: scripts (N)` (its
+  `▶ s start` when it is stopped or failed, then `: scripts (N)` or `(N+W)` (its
   custom scripts), `v variant …` (only with variants), `p watch …` (only
   with watch rules), `o editor` and `? more`. process-chain is declared
   a, b, c, d: `G` selects d, the leaf (no dependants).

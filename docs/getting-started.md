@@ -487,9 +487,9 @@ stems validate
 stems up              # starts in dependency order and opens the dashboard
 ```
 
-In the dashboard, `1` to `5` switch views (graph, table, detail, logs,
-events), the action bar names the keys for the selected stem, and `?` shows
-help. Quitting asks whether to stop everything or leave it running
+The dashboard opens at once and shows the stems coming up. `1` to `6`
+switch views (graph, table, detail, logs, events, scripts), the action bar
+names the keys for the selected stem, and `?` shows help. Quitting asks whether to stop everything or leave it running
 (`stems up --detach` starts without the dashboard). Then:
 
 ```sh

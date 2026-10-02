@@ -15,7 +15,7 @@
 //! | `type:<text>` | the characters of `<text>` typed as keys, verbatim (spaces and `<`/`>` included) into the focused field (30) |
 //! | `wait:event=<kind>[:<stem>]` | wait until an event of that kind (and stem) arrives after the last key (30) |
 //! | `chaos:<path>` | `GET /__chaos/<path>` on the selected stem's first port (29; test workspaces) |
-//! | `view:<name>` | switch to a view (`table`, `detail`, `graph`, `logs`, `events`) |
+//! | `view:<name>` | switch to a view (`table`, `detail`, `graph`, `logs`, `events`, `scripts`) |
 //! | `frame` | dump the current frame |
 //! | `sleep:<ms>` | pause (scripts only; scenarios use waits) |
 
