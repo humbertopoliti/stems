@@ -10,6 +10,7 @@
 [![MCP server](https://img.shields.io/badge/MCP-server-8A2BE2)](docs/mcp.md)
 ![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
 ![Written in Rust](https://img.shields.io/badge/written%20in-Rust-orange)
+[![M8ven Score](https://m8ven.ai/badge/mcp/humbertopoliti-stems-pm9acx?v=5d675a2a2c9d210ba38dbc0616e22f69)](https://m8ven.ai/mcp/humbertopoliti-stems-pm9acx?s=readme)
 
 [Install](#install) · [Quick start](#quick-start) · [MCP for agents](#built-for-ai-agents-stems-mcp) · [Commands](#everyday-commands) · [Docs](#documentation)
 
