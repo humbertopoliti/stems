@@ -1,0 +1,51 @@
+---
+source: crates/stems-cli/tests/help.rs
+expression: help
+---
+Select a configuration (or `none`) in stems.local.yaml.
+
+Writes `configuration: <name>` to stems.local.yaml (comments kept; `none` removes the key),
+validates the workspace (the file is restored on error) and, when the daemon runs, applies the
+change: stems whose config changed restart (`--no-apply` only edits the file). An unknown name is
+UNKNOWN_CONFIGURATION (exit 2).
+
+Usage: stems configuration use [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+          A configuration name, or `none` for the base config
+
+Options:
+      --no-apply
+          Only edit stems.local.yaml; do not apply the change to a running daemon
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Global options:
+      --workspace <PATH>
+          Workspace directory or stems.yaml path (default: $STEMS_WORKSPACE, else walk up from the
+          current directory)
+
+      --json
+          Emit the JSON envelope (the default when stdout is not a terminal)
+
+      --human
+          Emit human text even when stdout is not a terminal
+
+      --no-color
+          Disable colours in human output
+          
+          [env: STEMS_NO_COLOR]
+
+  -q, --quiet
+          Print only errors in human mode
+
+  -v, --verbose...
+          More detail (repeat for more: -vv)
+
+      --home <PATH>
+          Root for daemon state, sockets, locks and logs (default: ~/Library/Application
+          Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
+          
+          [env: STEMS_HOME]

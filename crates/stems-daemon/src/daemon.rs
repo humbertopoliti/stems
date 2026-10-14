@@ -231,6 +231,9 @@ impl Daemon {
             info: self.info(),
             workspace_name: resolved.as_ref().map(|r| r.workspace.name.clone()),
             stem_count: resolved.as_ref().map_or(0, |r| r.workspace.stems.len()),
+            configuration: resolved
+                .as_ref()
+                .and_then(|r| r.workspace.configuration.clone()),
             last_seq: self.events.last_seq(),
             subscribers: self.events.subscriber_count(),
             debug_rpc: self.debug.is_some(),
@@ -297,6 +300,7 @@ impl Daemon {
                 "root": out.root,
                 "name": out.name,
                 "stems": out.stems,
+                "configuration": ws.configuration,
             })),
         );
         out

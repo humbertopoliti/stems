@@ -3,7 +3,8 @@
 //!
 //! Layout: a title line (workspace + view tabs, the current one in
 //! brackets), the body (the current view), a status bar (workspace,
-//! profile, daemon pid, counts, key hints or the filter). Overlays: help
+//! profile, daemon pid, counts, the filter, the search, key hints or the
+//! last notice). Overlays: help
 //! (`?`) and the quit confirmation. Below 40x10 only a "terminal too small"
 //! notice is drawn. With the split layout (`Ctrl-L`, 29) the bottom 40 % of
 //! Table/Graph/Detail/Scripts is the log pane.
@@ -22,6 +23,7 @@ use stems_core::Glyph;
 use crate::graph::glyph_color;
 use crate::model::{Model, SortKey, StemHit, ViewKind};
 use crate::prefs::Theme;
+use crate::search::highlight;
 
 /// Smallest usable terminal.
 pub const MIN_SIZE: (u16, u16) = (40, 10);
@@ -67,6 +69,7 @@ pub fn view(model: &Model, f: &mut Frame) {
         ViewKind::Events => crate::events::render(
             &model.events_view,
             &model.events,
+            &model.search.query,
             model.ascii,
             accent(model),
             f,
@@ -474,13 +477,17 @@ fn status_bar(model: &Model, f: &mut Frame, area: Rect) {
     let s = &model.summary;
     let g = |g: Glyph| g.symbol(!model.ascii);
     let mut left = format!(
-        " {} · profile {} · daemon pid {} · {}{} {}{} {}{} {}{} {}{} {}{} {}{}",
+        " {} · profile {}{} · daemon pid {} · {}{} {}{} {}{} {}{} {}{} {}{} {}{}",
         if model.workspace.is_empty() {
             "-"
         } else {
             &model.workspace
         },
         model.profile.as_deref().unwrap_or("-"),
+        model
+            .configuration
+            .as_deref()
+            .map_or_else(String::new, |c| format!(" · config {c}")),
         model
             .daemon_pid
             .map_or_else(|| "-".into(), |p| p.to_string()),
@@ -501,27 +508,37 @@ fn status_bar(model: &Model, f: &mut Frame, area: Rect) {
     );
     if model.filter_editing || !model.filter.is_empty() {
         left.push_str(&format!(
-            " · /{}{}",
+            " · filter:{}{}",
             model.filter,
             if model.filter_editing { "_" } else { "" }
         ));
+    }
+    if crate::search::applies(model.view) && model.search.active() {
+        let (m, cur) = crate::search::state(model);
+        left.push_str(&format!(" · {}", model.search.bar_text(m.len(), cur)));
     }
     let right = if let Some(m) = &model.message {
         m.clone()
     } else {
         match (model.view, model.sort) {
             (ViewKind::Detail, _) => {
-                "j/k row · Enter act · [ ] stem · Esc back · ? help · q quit ".to_string()
+                "j/k row · Enter act · [ ] stem · / search · Esc back · ? help · q quit "
+                    .to_string()
             }
             (ViewKind::Logs, _) => {
                 "Space pause · j/k scroll · [ ] stem · ? help · q quit ".to_string()
             }
-            (ViewKind::Events, _) => "j/k scroll · Enter logs · ? help · q quit ".to_string(),
-            (ViewKind::Scripts, _) => {
-                "j/k move · Enter run · / filter · ? help · q quit ".to_string()
+            (ViewKind::Events, _) => {
+                "j/k scroll · Enter logs · / search · F filter · ? help · q quit ".to_string()
             }
-            (_, SortKey::Declared) => "? help · q quit ".to_string(),
-            (_, sort) => format!("sort:{} · ? help · q quit ", sort.label()),
+            (ViewKind::Scripts, _) => {
+                "j/k move · Enter run · / search · F filter · ? help · q quit ".to_string()
+            }
+            (_, SortKey::Declared) => "/ search · F filter · ? help · q quit ".to_string(),
+            (_, sort) => format!(
+                "sort:{} · / search · F filter · ? help · q quit ",
+                sort.label()
+            ),
         }
     };
     let w = area.width as usize;
@@ -615,6 +632,8 @@ fn table(model: &Model, f: &mut Frame, area: Rect) {
             .add_modifier(Modifier::BOLD),
     );
     let visible = model.visible();
+    let query = model.search.query.as_str();
+    let hl = |text: String, style: Style| Cell::from(Line::from(highlight(&text, query, style)));
     let rows: Vec<Row> = visible
         .iter()
         .map(|s| {
@@ -644,16 +663,20 @@ fn table(model: &Model, f: &mut Frame, area: Rect) {
             } else {
                 truncate(&s.name, usize::from(widths[0]), a)
             };
+            let plain = Style::default();
             let mut cells = vec![
-                Cell::from(name),
-                Cell::from(truncate(&s.kind, usize::from(widths[1]), a)),
-                Cell::from(Span::styled(
+                hl(name, plain),
+                hl(truncate(&s.kind, usize::from(widths[1]), a), plain),
+                hl(
                     truncate(&status, usize::from(widths[2]), a),
                     Style::default().fg(glyph_color(s.glyph)),
-                )),
-                Cell::from(truncate(&reason, usize::from(widths[3]), a)),
+                ),
+                hl(truncate(&reason, usize::from(widths[3]), a), plain),
                 Cell::from(s.pid.map_or_else(|| "-".into(), |p| p.to_string())),
-                Cell::from(truncate(&ports_text(s, wide), usize::from(widths[5]), a)),
+                hl(
+                    truncate(&ports_text(s, wide), usize::from(widths[5]), a),
+                    plain,
+                ),
                 Cell::from(uptime(s.uptime_s)),
                 Cell::from(s.restarts.to_string()),
                 Cell::from(spark(hist.map(|h| &h.cpu), widths[8])),
@@ -670,7 +693,7 @@ fn table(model: &Model, f: &mut Frame, area: Rect) {
                     Some(_) => "on".to_string(),
                 };
                 cells.push(Cell::from(scripts));
-                cells.push(Cell::from(truncate(&variant, usize::from(widths[11]), a)));
+                cells.push(hl(truncate(&variant, usize::from(widths[11]), a), plain));
                 cells.push(Cell::from(watch));
             }
             Row::new(cells)
@@ -689,7 +712,7 @@ fn table(model: &Model, f: &mut Frame, area: Rect) {
         let msg = if !model.loaded {
             "loading…".to_string()
         } else if !model.filter.is_empty() {
-            format!("no stem matches /{}", model.filter)
+            format!("no stem matches filter:{}", model.filter)
         } else {
             "no stems".to_string()
         };
@@ -743,7 +766,8 @@ pub const HELP: &[(&str, &str)] = &[
     ("Enter", "detail · run/switch/pause row"),
     ("Tab S-Tab", "next / previous view"),
     ("1-6", "go to a view (header #)"),
-    ("/", "filter stems by name"),
+    ("/  n / N", "search · next/prev match"),
+    ("F", "filter stems by name"),
     ("O", "cycle the sort order"),
     ("Ctrl-L", "split: logs below"),
     ("click", "row/tab/strip/bar (mouse)"),
@@ -758,7 +782,7 @@ pub const HELP: &[(&str, &str)] = &[
     (":", "script menu"),
     ("u / d", "up all / down all"),
     ("Ctrl-P", "command palette"),
-    ("Esc", "dismiss toasts, back"),
+    ("Esc", "drop search/filter, back"),
     ("e", "error toast details"),
     ("?", "toggle this help"),
     ("q Ctrl-C", "quit"),
@@ -789,9 +813,10 @@ pub const EVENTS_HELP: &[(&str, &str)] = &[
     ("j / k, g / G", "move · first / newest (follows)"),
     ("PgUp / PgDn", "move a page"),
     ("wheel", "scroll (mouse = true)"),
-    ("/", "filter by stem, kind, state or reason"),
+    ("/  n / N", "search · next/prev match"),
+    ("F", "filter by stem, kind, state or reason"),
     ("Enter", "the stem's logs at the event time"),
-    ("Esc", "clear the filter"),
+    ("Esc", "clear the search, then the filter"),
     ("Tab, 1-6", "next view · go to a view"),
     ("[ / ]", "previous / next stem (selection)"),
     ("?", "toggle this help"),
@@ -804,8 +829,9 @@ pub const SCRIPTS_HELP: &[(&str, &str)] = &[
     ("PgUp / PgDn", "move a page"),
     ("wheel", "move (mouse = true)"),
     ("Enter", "run the script (its form first)"),
-    ("/", "filter by script or owner"),
-    ("Esc", "clear the filter"),
+    ("/  n / N", "search · next/prev match"),
+    ("F", "filter by script or owner"),
+    ("Esc", "clear the search, then the filter"),
     ("[ / ]", "previous / next stem (selection)"),
     ("Ctrl-L", "split: the script's output below"),
     ("Ctrl-P", "command palette"),

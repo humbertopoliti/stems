@@ -1,15 +1,13 @@
 ---
 source: crates/stems-tui/src/tests.rs
-assertion_line: 729
 expression: text
 ---
  stems · process-chain                                        1 Graph  2 [Table]  3 Detail  4 Logs  5 Events  6 Scripts
   STEM TYPE     STATUS       REASON            PID     PORTS        UPTIME  RESTARTS CPU    MEM    SCRIPTS VARIANT WATCH
 › a    process  ✓ healthy    ready (tcp)       101     http:18301   9s      0                      -       -       -
   b    process  ✓ healthy    ready (tcp)       102     http:18302   8s      0                      -       -       -
-  c    process  ↻ starting   -                 103     http:18303   1s      0                      -       -       -
-  d    process  · stopped ┌ Help ────────────────────────────────────────────────────────────┐     -       -       -
-                          │ j/k ↓/↑         move · detail: rows (scroll)                     │
+  c    process  ↻ starting┌ Help ────────────────────────────────────────────────────────────┐     -       -       -
+  d    process  · stopped │ j/k ↓/↑         move · detail: rows (scroll)                     │     -       -       -
                           │ PgUp PgDn       detail: scroll a page                            │
                           │ g / G           first / last · top / end                         │
                           │ [ / ]           prev / next stem (wraps)                         │
@@ -18,7 +16,8 @@ expression: text
                           │ Enter           detail · run/switch/pause row                    │
                           │ Tab S-Tab       next / previous view                             │
                           │ 1-6             go to a view (header #)                          │
-                          │ /               filter stems by name                             │
+                          │ /  n / N        search · next/prev match                         │
+                          │ F               filter stems by name                             │
                           │ O               cycle the sort order                             │
                           │ Ctrl-L          split: logs below                                │
                           │ click           row/tab/strip/bar (mouse)                        │
@@ -33,7 +32,7 @@ expression: text
                           │ :               script menu                                      │
                           │ u / d           up all / down all                                │
                           │ Ctrl-P          command palette                                  │
-                          │ Esc             dismiss toasts, back                             │
+                          │ Esc             drop search/filter, back                         │
                           │ e               error toast details                              │
                           │ ?               toggle this help                                 │
                           │ q Ctrl-C        quit                                             │
@@ -42,4 +41,4 @@ expression: text
 
 
  ■ x stop  ↻ r restart  : scripts  o editor  ? more
- process-chain · profile - · daemon pid 4242 · ✓2 !0 ✗0 ↯0 ·1 ?0 ↻1                                     ? help · q quit
+ process-chain · profile - · daemon pid 4242 · ✓2 !0 ✗0 ↯0 ·1 ?0 ↻1               / search · F filter · ? help · q quit

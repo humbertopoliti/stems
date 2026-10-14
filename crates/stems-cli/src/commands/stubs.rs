@@ -20,6 +20,7 @@ pub fn target(cmd: &Command) -> (String, &'static str) {
         Command::Init(_)
         | Command::Mcp(_)
         | Command::Profiles(_)
+        | Command::Configuration(_)
         | Command::Config(
             ConfigCommand::Get(_)
             | ConfigCommand::Set(_)

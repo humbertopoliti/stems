@@ -118,6 +118,16 @@ UNKNOWN_VARIANT: stem `shop-api` has no variant `dockr`
   at stems.yaml:4:5 (stems.shop-api.variant)
   hint: variants of `shop-api`: docker (or `local` for the base definition; see `stems switch shop-api`)
 
+# exit 2 — `configuration:`, `default_configuration:` or `stems configuration use <name>` names a configuration that `configurations:` does not declare
+UNKNOWN_CONFIGURATION: no configuration named `prod`
+  at stems.yaml:2:5 (configuration)
+  hint: configurations: ci, docker (or `none` for the base config; see `stems configuration list`)
+
+# exit 2 — the selected configuration's file (`configurations.<name>: <path>`) does not exist
+CONFIGURATION_NOT_FOUND: configuration `docker`: /work/integration/configurations/docker.yaml not found
+  at stems.yaml:7:5 (configurations.docker)
+  hint: fix the path (it is relative to the file that names it), create the file, or select another configuration
+
 # exit 2 — a destructive operation was requested without `--yes` / `confirm: true`
 DESTRUCTIVE_NOT_CONFIRMED: `down --volumes` deletes data and needs confirmation
   hint: re-run with --yes (CLI) or `confirm: true` (MCP)

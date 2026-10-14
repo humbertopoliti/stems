@@ -15,6 +15,7 @@ use crate::model::{
     AttachMode, Cmd, DetailData, EVENT_RING, LogSubscription, Modal, Model, Msg, Outcome,
     RpcResult, ScriptActivity, ScriptRun, SignalKind, ViewKind,
 };
+use crate::search::Edit as SearchEdit;
 use crate::toast::{Toast, ToastKind};
 
 /// Detail events shown.
@@ -269,6 +270,7 @@ fn step(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             match r {
                 RpcResult::Daemon(d) => {
                     model.daemon_pid = Some(d.info.pid);
+                    model.configuration = d.configuration;
                     if let Some(n) = d.workspace_name {
                         model.workspace = n;
                     }
@@ -458,6 +460,7 @@ fn ensure_detail(model: &mut Model) -> Vec<Cmd> {
         .collect();
     model.detail_scroll = 0;
     model.detail_row = 0;
+    model.search_line = None;
     model.detail = Some(DetailData {
         stem: stem.clone(),
         config: None,
@@ -509,6 +512,7 @@ fn capturing(model: &Model) -> bool {
     model.modal.is_open()
         || model.help
         || model.filter_editing
+        || model.search.editing
         || (model.view == ViewKind::Logs && model.log_pane.search_editing)
         || (model.view == ViewKind::Events && model.events_view.editing)
         || (model.view == ViewKind::Scripts && model.scripts_view.editing)
@@ -885,6 +889,7 @@ fn key(model: &mut Model, k: KeyEvent) -> Vec<Cmd> {
     }
     if ctrl_c {
         model.filter_editing = false;
+        model.search.editing = false;
         return quit_request(model);
     }
     // 2. The help overlay: `?`, `Esc` or `q` close it.
@@ -894,7 +899,13 @@ fn key(model: &mut Model, k: KeyEvent) -> Vec<Cmd> {
         }
         return Vec::new();
     }
-    // 3. Typing a filter.
+    // 3. Typing a search (Table, Graph, Detail, Events, Scripts) or a filter.
+    if model.search.editing {
+        return match model.search.edit(k) {
+            SearchEdit::Done => search_jump(model, true, true),
+            SearchEdit::Typing | SearchEdit::Cancelled => Vec::new(),
+        };
+    }
     if model.filter_editing {
         match k.code {
             KeyCode::Enter => model.filter_editing = false,
@@ -916,6 +927,12 @@ fn key(model: &mut Model, k: KeyEvent) -> Vec<Cmd> {
     // search in Logs/Events).
     if ctrl && matches!(k.code, KeyCode::Char('p' | 'P')) {
         return open_palette(model);
+    }
+    if crate::search::applies(model.view)
+        && !ctrl
+        && let Some(cmds) = search_key(model, k.code)
+    {
+        return cmds;
     }
     let typing = (model.view == ViewKind::Logs && model.log_pane.search_editing)
         || (model.view == ViewKind::Events && model.events_view.editing)
@@ -1048,7 +1065,7 @@ fn key(model: &mut Model, k: KeyEvent) -> Vec<Cmd> {
             let v = ViewKind::from_digit(c).expect("checked");
             go_to_view(model, v)
         }
-        KeyCode::Char('/') => {
+        KeyCode::Char('F') => {
             model.filter_editing = true;
             Vec::new()
         }
@@ -1110,7 +1127,7 @@ fn events_key(model: &mut Model, k: KeyEvent) -> Option<Vec<Cmd>> {
         return Some(Vec::new());
     }
     match k.code {
-        KeyCode::Char('/') => {
+        KeyCode::Char('F') => {
             ev.editing = true;
             ev.filter.clear();
             ev.selected = None;
@@ -1194,7 +1211,7 @@ fn scripts_key(model: &mut Model, k: KeyEvent) -> Option<Vec<Cmd>> {
         return Some(Vec::new());
     }
     Some(match k.code {
-        KeyCode::Char('/') => {
+        KeyCode::Char('F') => {
             sv.editing = true;
             sv.filter.clear();
             sv.selected = 0;
@@ -1219,6 +1236,106 @@ fn scripts_key(model: &mut Model, k: KeyEvent) -> Option<Vec<Cmd>> {
         }
         _ => return None,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Search (Table, Graph, Detail, Events, Scripts)
+// ---------------------------------------------------------------------------
+
+/// The search keys of every view but Logs: `/` starts a query, `n` / `N`
+/// go to the next / previous match, `Esc` clears a kept query (before
+/// anything else `Esc` does). `None` when `code` is not one of them.
+fn search_key(model: &mut Model, code: KeyCode) -> Option<Vec<Cmd>> {
+    match code {
+        KeyCode::Char('/') => {
+            model.search.start();
+            model.search_line = None;
+            Some(Vec::new())
+        }
+        KeyCode::Char('n') => Some(search_jump(model, true, false)),
+        KeyCode::Char('N') => Some(search_jump(model, false, false)),
+        KeyCode::Esc if !model.search.query.is_empty() => {
+            model.search.clear();
+            model.search_line = None;
+            Some(Vec::new())
+        }
+        _ => None,
+    }
+}
+
+/// Go to the next (`forward`) match of the current view from its cursor
+/// (the cursor itself counts when `inclusive`), wrapping; nothing without
+/// a query or a match.
+fn search_jump(model: &mut Model, forward: bool, inclusive: bool) -> Vec<Cmd> {
+    if !crate::search::applies(model.view) || model.search.query.is_empty() {
+        return Vec::new();
+    }
+    let m = model.search.matches(crate::search::rows(model));
+    let cur = crate::search::cursor(model).unwrap_or(0);
+    match crate::search::next_match(&m, cur, forward, inclusive) {
+        Some(i) => search_goto(model, i),
+        None => Vec::new(),
+    }
+}
+
+/// Put the current view's cursor on row `i` (of [`crate::search::rows`]):
+/// select the stem (Table, Graph), scroll the line into view and select
+/// it when it is a row (Detail), select the event or the script.
+fn search_goto(model: &mut Model, i: usize) -> Vec<Cmd> {
+    match model.view {
+        ViewKind::Table => {
+            let Some(name) = model.visible().get(i).map(|s| s.name.clone()) else {
+                return Vec::new();
+            };
+            model.selected = Some(name);
+            model.touched = true;
+            model.log_focus = None;
+            ensure_detail(model)
+        }
+        ViewKind::Graph => {
+            if let Some(name) = model
+                .graph
+                .shown()
+                .and_then(|l| l.nodes.get(i))
+                .map(|n| n.name.clone())
+            {
+                model.selected = Some(name);
+                model.touched = true;
+            }
+            Vec::new()
+        }
+        ViewKind::Detail => {
+            let Some((c, h)) = crate::view::detail_content(model) else {
+                return Vec::new();
+            };
+            if i >= c.lines.len() {
+                return Vec::new();
+            }
+            model.search_line = Some(i);
+            let max = c.lines.len().saturating_sub(h);
+            model.detail_scroll = i.saturating_sub(h / 2).min(max);
+            if let Some(r) = c.rows.iter().position(|(_, line)| *line == i) {
+                model.detail_row = r;
+            }
+            Vec::new()
+        }
+        ViewKind::Events => {
+            let ev = &mut model.events_view;
+            if let Some(e) = ev.rows(&model.events).get(i) {
+                ev.selected = Some(e.seq);
+            }
+            Vec::new()
+        }
+        ViewKind::Scripts => {
+            let n = crate::scripts::entries(model).len();
+            if n == 0 {
+                return Vec::new();
+            }
+            let cur = model.scripts_view.selected.min(n - 1) as isize;
+            scripts_select(model, i as isize - cur)
+        }
+        ViewKind::Logs => Vec::new(),
+    }
 }
 
 // ---------------------------------------------------------------------------

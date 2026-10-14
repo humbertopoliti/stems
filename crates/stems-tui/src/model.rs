@@ -27,6 +27,7 @@ use crate::graph::{GraphState, GraphStem};
 pub use crate::logs::LogPane;
 use crate::prefs::{Clipboard, Prefs};
 pub use crate::scripts::ScriptsState;
+pub use crate::search::Search;
 pub use crate::toast::{Toast, ToastKind, Toasts};
 
 /// Events kept in memory (detail and Events views).
@@ -322,6 +323,8 @@ pub struct Model {
     pub workspace: String,
     /// Active profile, if any.
     pub profile: Option<String>,
+    /// Active configuration (from `daemon_status`), if any.
+    pub configuration: Option<String>,
     /// Daemon pid.
     pub daemon_pid: Option<u32>,
     /// Stems as of the last `status` (event-patched in between).
@@ -346,8 +349,14 @@ pub struct Model {
     pub graph: GraphState,
     /// Table filter (substring of the stem name, case-insensitive).
     pub filter: String,
-    /// Typing into the filter (`/`).
+    /// Typing into the filter (`F`).
     pub filter_editing: bool,
+    /// The search (`/`, `n`/`N`) shared by Table, Graph, Detail, Events and
+    /// Scripts ([`crate::search`]); the Logs view searches in its pane.
+    pub search: Search,
+    /// The Detail line of the current search match (`n`/`N` continue from
+    /// it); `None` again for another stem or a new query.
+    pub search_line: Option<usize>,
     /// Table sort.
     pub sort: SortKey,
     /// Help overlay (`?`).
@@ -458,6 +467,7 @@ impl Model {
             owns_daemon: false,
             workspace: String::new(),
             profile: None,
+            configuration: None,
             daemon_pid: None,
             stems: Vec::new(),
             summary: StatusSummary::default(),
@@ -470,6 +480,8 @@ impl Model {
             graph: GraphState::default(),
             filter: String::new(),
             filter_editing: false,
+            search: Search::default(),
+            search_line: None,
             sort: SortKey::Declared,
             help: false,
             modal: Modal::None,

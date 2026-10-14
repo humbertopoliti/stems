@@ -111,9 +111,37 @@ pub struct RawWorkspace {
     pub include: Vec<String>,
     /// A base workspace file merged underneath this one.
     pub extends: Option<String>,
+    /// Named configurations: overlays with the shape of `stems.local.yaml`,
+    /// inline or as a path (relative to this file) to a YAML file. The
+    /// selected one is merged between this file and `stems.local.yaml`.
+    #[serde(default)]
+    pub configurations: IndexMap<String, RawConfiguration>,
+    /// Configuration used when `configuration:` does not select one.
+    pub default_configuration: Option<String>,
+    /// The selected configuration (`none` for no configuration); meant for
+    /// `stems.local.yaml`, wins over `default_configuration`.
+    pub configuration: Option<String>,
     /// The stems, keyed by name.
     #[serde(default)]
     pub stems: IndexMap<String, RawStem>,
+}
+
+/// One entry of `configurations:`: an inline overlay (the shape of
+/// `stems.local.yaml`) or the path of a YAML file holding one.
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+#[serde(untagged)]
+#[schemars(rename = "Configuration")]
+pub enum RawConfiguration {
+    /// Path of a YAML overlay file, relative to the file naming it.
+    File(String),
+    /// An inline overlay.
+    Inline(Box<RawWorkspace>),
+}
+
+impl<'de> Deserialize<'de> for RawConfiguration {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        string_or(d, |s| Ok(Self::File(s)), Self::Inline, |_| None)
+    }
 }
 
 /// A profile: a list of stems, or the name of another profile.

@@ -150,3 +150,76 @@ fn init_then_validate_then_refuse() {
     let gi = std::fs::read_to_string(root.join(".gitignore")).unwrap();
     assert_eq!(gi.matches("stems.local.yaml").count(), 1);
 }
+
+#[test]
+fn configuration_list_use_and_save_without_a_daemon() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap().join("ws");
+    std::fs::create_dir_all(root.join("configurations")).unwrap();
+    std::fs::write(
+        root.join("stems.yaml"),
+        "name: demo\nconfigurations:\n  ci: { stems: { api: { env: { CI: \"1\" } } } }\n  quiet: configurations/quiet.yaml\nstems:\n  api:\n    type: process\n    command: sleep 1\n    env: { FROM: base }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("configurations/quiet.yaml"),
+        "stems: { api: { env: { FROM: quiet } } }\n",
+    )
+    .unwrap();
+
+    let (code, out, _) = invoke(&["configuration"], false, root.clone());
+    assert_eq!(code, 0, "{out}");
+    let v = json(&out);
+    assert_eq!(v["data"]["active"], Value::Null);
+    assert_eq!(v["data"]["configurations"][0]["name"], "ci");
+    assert_eq!(v["data"]["configurations"][0]["source"], "inline");
+    assert_eq!(v["data"]["configurations"][1]["source"], "file");
+
+    let (code, out, _) = invoke(&["configuration", "use", "nope"], false, root.clone());
+    assert_eq!(code, 2, "{out}");
+    assert_eq!(json(&out)["errors"][0]["code"], "UNKNOWN_CONFIGURATION");
+    assert!(!root.join("stems.local.yaml").exists());
+
+    let (code, out, _) = invoke(&["configuration", "use", "quiet"], false, root.clone());
+    assert_eq!(code, 0, "{out}");
+    let v = json(&out);
+    assert_eq!(v["data"]["to"], "quiet");
+    assert_eq!(v["data"]["daemon"], false);
+    let local = std::fs::read_to_string(root.join("stems.local.yaml")).unwrap();
+    assert_eq!(local, "configuration: quiet\n");
+    let (_, out, _) = invoke(&["show", "api"], false, root.clone());
+    assert_eq!(json(&out)["data"]["env"]["FROM"], "quiet");
+
+    // save: the local file minus `configuration`, registered in stems.yaml.
+    let (code, out, _) = invoke(&["configuration", "save", "mine"], false, root.clone());
+    assert_eq!(code, 2, "an empty overlay is nothing to save: {out}");
+    assert_eq!(json(&out)["errors"][0]["code"], "USAGE");
+    std::fs::write(
+        root.join("stems.local.yaml"),
+        "# mine\nconfiguration: quiet\nstems:\n  api: { env: { MINE: \"1\" } }\n",
+    )
+    .unwrap();
+    let (code, out, _) = invoke(&["configuration", "save", "mine"], false, root.clone());
+    assert_eq!(code, 0, "{out}");
+    let v = json(&out);
+    assert_eq!(v["data"]["relative"], "configurations/mine.yaml");
+    assert_eq!(v["data"]["keys"], serde_json::json!(["stems"]));
+    let saved = std::fs::read_to_string(root.join("configurations/mine.yaml")).unwrap();
+    assert!(
+        saved.contains("# mine\nstems:\n  api: { env: { MINE: \"1\" } }\n"),
+        "{saved}"
+    );
+    assert!(!saved.contains("configuration: quiet"));
+    let main = std::fs::read_to_string(root.join("stems.yaml")).unwrap();
+    assert!(
+        main.contains("  mine: configurations/mine.yaml\n"),
+        "{main}"
+    );
+    let (code, out, _) = invoke(&["configuration", "save", "mine"], false, root.clone());
+    assert_eq!(code, 2, "{out}");
+    let (code, _, _) = invoke(&["configuration", "use", "mine"], false, root.clone());
+    assert_eq!(code, 0);
+    let (_, out, _) = invoke(&["show", "api"], false, root.clone());
+    assert_eq!(json(&out)["data"]["env"]["MINE"], "1");
+    assert_eq!(json(&out)["data"]["env"]["FROM"], "base");
+}

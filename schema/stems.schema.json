@@ -147,6 +147,28 @@
         "null"
       ]
     },
+    "configurations": {
+      "description": "Named configurations: overlays with the shape of `stems.local.yaml`,\ninline or as a path (relative to this file) to a YAML file. The\nselected one is merged between this file and `stems.local.yaml`.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/Configuration"
+      },
+      "default": {}
+    },
+    "default_configuration": {
+      "description": "Configuration used when `configuration:` does not select one.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "configuration": {
+      "description": "The selected configuration (`none` for no configuration); meant for\n`stems.local.yaml`, wins over `default_configuration`.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "stems": {
       "description": "The stems, keyed by name.",
       "type": "object",
@@ -608,6 +630,19 @@
           "description": "A filesystem path.",
           "type": "string",
           "const": "path"
+        }
+      ]
+    },
+    "Configuration": {
+      "description": "One entry of `configurations:`: an inline overlay (the shape of\n`stems.local.yaml`) or the path of a YAML file holding one.",
+      "anyOf": [
+        {
+          "description": "Path of a YAML overlay file, relative to the file naming it.",
+          "type": "string"
+        },
+        {
+          "description": "An inline overlay.",
+          "$ref": "#"
         }
       ]
     },

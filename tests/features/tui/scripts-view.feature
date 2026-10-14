@@ -31,10 +31,17 @@ Feature: The Scripts view lists and runs every script, the workspace's too
     When I run "stems events --json --since 0"
     Then the JSON at "$[?@.kind=='script.started'].actor" contains "tui:"
 
-  Scenario: / filters by script name; Enter opens the form of a script with args
-    When I run "stems attach --headless --size 120x40 --script 'wait:healthy;6;/create<Enter>;frame;Enter;frame'"
+  Scenario: F filters by script name; Enter opens the form of a script with args
+    When I run "stems attach --headless --size 120x40 --script 'wait:healthy;6;Fcreate<Enter>;frame;Enter;frame'"
     Then the command succeeds
-    And frame 1 contains "Scripts · /create"
+    And frame 1 contains "Scripts · filter:create"
     And frame 1 contains "› create-test-user"
     And frame 1 does not contain "needs-api"
     And frame 2 contains "Run create-test-user (shop-api)"
+
+  Scenario: / searches the scripts and selects the match
+    When I run "stems attach --headless --size 120x40 --script 'wait:healthy;6;/create<Enter>;frame'"
+    Then the command succeeds
+    And the last frame contains "› create-test-user"
+    And the last frame contains "needs-api"
+    And the last frame contains "/create · 1/1 (n/N)"

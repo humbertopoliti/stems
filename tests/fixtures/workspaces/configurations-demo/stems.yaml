@@ -1,0 +1,50 @@
+# configurations-demo — named configurations (docs/config.md#configurations;
+# tests/features/config/configurations.feature). Like variants-demo (`api`
+# is examples/repos/shop-api as a local process with a `slow` variant),
+# plus two configurations: `slow` (inline: selects api's `slow` variant)
+# and `quiet` (a file: an extra env value and web disabled). Nothing is
+# selected by default; `stems configuration use <name>` picks one.
+schema_version: 1
+name: configurations-demo
+
+configurations:
+  slow:
+    stems:
+      api: { variant: slow }
+  quiet: configurations/quiet.yaml
+
+stems:
+  api:
+    type: process
+    description: shop-api, as a local process
+    codebase: ../../../../examples/repos/shop-api
+    command: python3 app.py
+    env: { SHOP_CHAOS: "1", FROM: base }
+    ports: [{ name: http, port: 18661 }]
+    health:
+      type: http
+      url: "http://127.0.0.1:${stem.api.port}/healthz"
+      interval: 200ms
+      timeout: 150ms
+      retries: 5
+      start_timeout: 10s
+    stop_grace: 1s
+    variants:
+      slow:
+        env: { SHOP_SLEEP_START: "1" }
+  web:
+    type: process
+    codebase: ../../../../examples/repos/shop-web
+    command: python3 serve.py
+    depends_on: [api]
+    env:
+      API_URL: "http://127.0.0.1:${stem.api.port}"
+    ports: [{ name: http, port: 18662 }]
+    health:
+      type: http
+      url: "http://127.0.0.1:${stem.web.port}/"
+      interval: 200ms
+      timeout: 150ms
+      retries: 5
+      start_timeout: 10s
+    stop_grace: 1s

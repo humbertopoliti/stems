@@ -1,0 +1,50 @@
+---
+source: crates/stems-cli/tests/help.rs
+expression: help
+---
+Save the current stems.local.yaml overrides as a new configuration file and declare it in stems.yaml
+(without selecting it)
+
+Usage: stems configuration save [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+          The new configuration's name
+
+Options:
+      --file <FILE>
+          Where to write it, relative to the integration repo (default: configurations/<name>.yaml)
+
+      --force
+          Overwrite an existing file or file-form configuration of that name
+
+  -h, --help
+          Print help
+
+Global options:
+      --workspace <PATH>
+          Workspace directory or stems.yaml path (default: $STEMS_WORKSPACE, else walk up from the
+          current directory)
+
+      --json
+          Emit the JSON envelope (the default when stdout is not a terminal)
+
+      --human
+          Emit human text even when stdout is not a terminal
+
+      --no-color
+          Disable colours in human output
+          
+          [env: STEMS_NO_COLOR]
+
+  -q, --quiet
+          Print only errors in human mode
+
+  -v, --verbose...
+          More detail (repeat for more: -vv)
+
+      --home <PATH>
+          Root for daemon state, sockets, locks and logs (default: ~/Library/Application
+          Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
+          
+          [env: STEMS_HOME]

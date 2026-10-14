@@ -14,7 +14,9 @@
 //!
 //! `j`/`k` move over the selectable rows of every section (the view
 //! scrolls to keep the row visible; past the first / last row they scroll);
-//! `PageUp`/`PageDown`, `g`/`G` and the wheel scroll.
+//! `PageUp`/`PageDown`, `g`/`G` and the wheel scroll. `/` searches the
+//! lines ([`crate::search`]): `n`/`N` scroll the next / previous matching
+//! line into view (selecting it when it is a row).
 
 use ratatui::Frame;
 use ratatui::layout::{Margin, Rect};
@@ -477,5 +479,11 @@ pub fn render(model: &Model, f: &mut Frame, area: Rect) {
     }
     f.render_widget(block, area);
     let scroll = (u16::try_from(off).unwrap_or(u16::MAX), 0);
-    f.render_widget(Paragraph::new(c.lines).scroll(scroll), inner);
+    let query = model.search.query.as_str();
+    let lines: Vec<Line<'static>> = c
+        .lines
+        .into_iter()
+        .map(|l| crate::search::highlight_line(l, query))
+        .collect();
+    f.render_widget(Paragraph::new(lines).scroll(scroll), inner);
 }

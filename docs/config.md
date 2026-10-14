@@ -7,7 +7,9 @@ and profiles (FR-WS-8), `stems config get|set|unset` (FR-CL-5), the
 include / extends error cases (FR-WS-9), and stem outputs (FR-ST-6, part B,
 [below](#outputs-fr-st-6)).
 [Variants](#variants-fr-st-8) (FR-ST-8, `stems switch`) came later: one
-stem, several forms, e.g. a local process or a docker container.
+stem, several forms, e.g. a local process or a docker container; and
+[configurations](#configurations) (`stems configuration`): named,
+selectable bundles of such choices.
 
 ## Profiles (FR-WS-8)
 
@@ -561,3 +563,144 @@ container, so the image still listens on 8080. Scenarios: `tests/features/varian
 `tests/fixtures/workspaces/variants-demo`; the Docker ones are `@docker`,
 run by `make e2e-docker`; `hello-shop-switch.feature` runs exactly this
 example).
+
+## Configurations
+
+A configuration is a named overlay with the shape of `stems.local.yaml` —
+variant choices, disabled stems, `env`, `vars`, `profile`, partial stem
+definitions, any workspace-level key — declared in `stems.yaml` so the whole
+team can switch between bundles of choices ("everything as containers",
+"CI", "the frontend team's setup") with one command, instead of editing
+several keys of `stems.local.yaml` by hand.
+
+```yaml
+# stems.yaml
+default_configuration: local          # optional: used when nobody has chosen
+configurations:
+  local: {}                           # the base config, by name
+  docker:                             # inline overlay
+    stems:
+      shop-api: { variant: docker }
+      shop-web: { enabled: false }
+  ci: configurations/ci.yaml          # a file (relative to this stems.yaml)
+```
+
+```yaml
+# configurations/ci.yaml — the same shape as stems.local.yaml
+env: { CI: "1" }
+profile: backend
+stems:
+  shop-api: { variant: docker, env: { LOG_LEVEL: warn } }
+```
+
+```yaml
+# stems.local.yaml — the developer's choice (wins over default_configuration)
+configuration: ci
+```
+
+### Selection rules
+
+* `configuration: <name>` selects one. In `stems.local.yaml` it is the
+  developer's choice; it is allowed in `stems.yaml` too (then it is the
+  team's choice), the local file's value winning. `configuration: none`
+  (or `null` in the local file) selects **no** configuration even when a
+  default exists; `none` is reserved as a name.
+* Else `default_configuration: <name>` (same precedence) selects one.
+* Else no configuration: the base config.
+* A name that `configurations:` does not declare is `UNKNOWN_CONFIGURATION`
+  (exit 2, at the selecting key — `configuration` or `default_configuration`
+  — with `details: {configuration, known}`); `validate` reports it and the
+  base is used meanwhile. A file that does not exist is
+  `CONFIGURATION_NOT_FOUND` (exit 2, at `configurations.<name>`) — only when
+  that configuration is selected.
+
+### Merge order
+
+Lowest first: `extends` base → `include`s → `stems.yaml` → **the selected
+configuration** → each stem's active [variant](#variants-fr-st-8) →
+`stems.local.yaml`. The overlay is merged with the usual [merge
+rules](../crates/stems-config/README.md#merge-rules) (maps recursively,
+lists replace, scripts per key, the `ports`/`container_port` rule). Because
+it is merged *before* variants are applied, a `stems.<n>.variant` it sets
+selects that variant (dropping the base's type-specific fields when the type
+changes, as usual), and `stems.local.yaml` still wins over everything — a
+local `variant: local` beats the configuration's `variant: docker`. `${…}`
+is substituted after the merge. A configuration's `env` is ordinary config
+env (`Stem::local_env` only records keys set by `stems.local.yaml`).
+
+A file-form configuration is loaded like an include: it appears in
+`sources` (so the daemon watches it: editing the selected file is a config
+change, see [reload](#reload-on-change-fr-wd-3)), its lines carry error
+locations, and it goes through the same schema (an unknown field is
+`SCHEMA_INVALID` at its path in that file). It is a single overlay:
+`include` / `extends` inside it are `SCHEMA_INVALID`, as is a configuration
+that sets `configuration`, `configurations` or `default_configuration`.
+Configurations declared in `stems.local.yaml` are allowed (they add to or
+replace the committed ones by name).
+
+`stems show --json` reports `configuration` (the active one, omitted when
+none), `default_configuration` and `configurations: [{name, source:
+"inline"|"file", file?}]` at the workspace level; `stems daemon status
+--json` and the `workspace.loaded` event carry `configuration` too, and the
+TUI's status bar shows `config <name>`.
+
+### `stems configuration [list] [--json]`
+
+Reads the config locally (no daemon). `*` marks the active one, `(default)`
+the `default_configuration`:
+
+```console
+$ stems configuration
+* docker  inline
+  ci      file  configurations/ci.yaml  (default)
+* = active; switch with `stems configuration use <name>|none`
+```
+
+`data: { active, default, configurations: [{name, source, file?, active}] }`
+(`file` is absolute, `file` sources only).
+
+### `stems configuration use <name>|none [--no-apply] [--json]`
+
+Writes `configuration: <name>` into `stems.local.yaml` with the
+comment-preserving editor (like `config set`), re-validates the workspace and
+restores the file on error. `none` removes the key (or writes
+`configuration: none` when `stems.yaml` selects a default). Then, if the
+daemon runs and `--no-apply` is not given, the daemon does the edit itself
+(`switch_configuration`) and applies the change (`config apply --yes`): every
+stem whose effective config changed restarts in its new form, the rest keep
+running. An unknown name is `UNKNOWN_CONFIGURATION` (exit 2, nothing
+written). `data: { from, to, path, file, changed, diff, daemon, applied }`
+(`from`/`to` are `null` for none; `applied` is the `config apply` result,
+`null` with `--no-apply` or without a daemon; `daemon: false` when none runs
+— the next `up` uses it). A stem that fails to start is reported as an error
+(`applied.failed`); `stems configuration use <previous>` goes back.
+
+### `stems configuration save <name> [--file <path>] [--force] [--json]`
+
+Turns the current local overrides into a shareable configuration: copies
+`stems.local.yaml` (its whole mapping minus the `configuration` key,
+comments kept) to `<path>` (default `configurations/<name>.yaml`, relative to
+the integration repo; refused if it exists unless `--force`) and adds
+`configurations.<name>: <path>` to `stems.yaml` with the comment-preserving
+editor (the `configurations:` block is created if absent; validated,
+restored on error). It does not select it: `stems.local.yaml` is left as it
+is, so `stems configuration use <name>` applies the same choices to anyone
+who checks the file in. A missing or empty `stems.local.yaml` is a `USAGE`
+error (nothing to save), as is a name already declared inline. `data: {
+name, configuration_file, relative, keys, path, value, file, changed, diff
+}` (`keys`: the top-level keys saved; `file`/`diff`: the `stems.yaml` edit).
+
+| Case | Result |
+|---|---|
+| `configuration` / `default_configuration` names an undeclared configuration | `UNKNOWN_CONFIGURATION` at that key, `details: {configuration, known}` (the base is used) |
+| the selected file-form configuration's file is missing | `CONFIGURATION_NOT_FOUND` at `configurations.<name>`, `details: {configuration, file}` |
+| the file exists but cannot be read | `CONFIG_READ_FAILED` |
+| a configuration named `none`, or one that sets `configuration`, `configurations`, `default_configuration`, `include` or `extends` | `SCHEMA_INVALID` at `configurations.<name>[.<key>]` |
+| a `configurations.<name>` that is neither a mapping nor a string, or an invalid field inside an overlay | `SCHEMA_INVALID` at its path (the file's line) |
+| `stems configuration use <unknown>` | `UNKNOWN_CONFIGURATION`, exit 2, nothing written |
+| `stems configuration save` with no `stems.local.yaml`, an existing file (without `--force`) or an inline name | `USAGE`, exit 2 |
+
+Scenarios: `tests/features/config/configurations.feature` (fixture
+`tests/fixtures/workspaces/configurations-demo`). Example:
+`examples/workspaces/hello-shop` declares a `docker` configuration
+(`stems configuration use docker` runs shop-api as a container).

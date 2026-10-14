@@ -917,30 +917,9 @@ impl LogPane {
 }
 
 /// `text` as spans, the case-insensitive matches of `query` (lowercase)
-/// highlighted.
+/// highlighted (the shared [`crate::search::highlight`]).
 fn highlight(text: &str, query: &str, base: Style) -> Vec<Span<'static>> {
-    let hl = base.bg(Color::Yellow).fg(Color::Black);
-    let lower = text.to_lowercase();
-    // Byte offsets only line up when lowercasing kept the lengths.
-    if query.is_empty() || lower.len() != text.len() {
-        return vec![Span::styled(text.to_string(), base)];
-    }
-    let mut out = Vec::new();
-    let mut at = 0;
-    for (i, _) in lower.match_indices(query) {
-        if i < at || !text.is_char_boundary(i) || !text.is_char_boundary(i + query.len()) {
-            continue;
-        }
-        if i > at {
-            out.push(Span::styled(text[at..i].to_string(), base));
-        }
-        out.push(Span::styled(text[i..i + query.len()].to_string(), hl));
-        at = i + query.len();
-    }
-    if at < text.len() {
-        out.push(Span::styled(text[at..].to_string(), base));
-    }
-    out
+    crate::search::highlight(text, query, base)
 }
 
 /// Cut a line into rows of `width` columns; rows after the first start

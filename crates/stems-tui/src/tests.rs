@@ -228,10 +228,17 @@ fn three_selects_the_first_stem_when_none_is() {
 fn number_keys_do_not_steal_typed_text() {
     // The table filter.
     let mut m = chain();
-    update(&mut m, ch('/'));
+    update(&mut m, ch('F'));
     update(&mut m, ch('1'));
     assert_eq!(m.view, ViewKind::Table);
     assert_eq!(m.filter, "1");
+    update(&mut m, k(KeyCode::Enter));
+    update(&mut m, k(KeyCode::Esc));
+    // The table search.
+    update(&mut m, ch('/'));
+    update(&mut m, ch('1'));
+    assert_eq!(m.view, ViewKind::Table);
+    assert_eq!(m.search.query, "1");
     update(&mut m, k(KeyCode::Enter));
     update(&mut m, ch('4'));
     assert_eq!(m.view, ViewKind::Logs, "after Enter the keys work again");
@@ -241,12 +248,17 @@ fn number_keys_do_not_steal_typed_text() {
     assert_eq!(m.view, ViewKind::Logs);
     assert_eq!(m.log_pane.search, "2");
     update(&mut m, k(KeyCode::Esc));
-    // The Events filter.
+    // The Events filter and search.
     update(&mut m, ch('5'));
-    update(&mut m, ch('/'));
+    update(&mut m, ch('F'));
     update(&mut m, ch('3'));
     assert_eq!(m.view, ViewKind::Events);
     assert_eq!(m.events_view.filter, "3");
+    update(&mut m, k(KeyCode::Esc));
+    update(&mut m, ch('/'));
+    update(&mut m, ch('3'));
+    assert_eq!(m.view, ViewKind::Events);
+    assert_eq!(m.search.query, "3");
     update(&mut m, k(KeyCode::Esc));
     // The help overlay and a modal (the palette's query).
     update(&mut m, ch('?'));
@@ -410,9 +422,9 @@ fn tab_cycles_views() {
 }
 
 #[test]
-fn slash_filters() {
+fn capital_f_filters() {
     let mut m = chain();
-    update(&mut m, ch('/'));
+    update(&mut m, ch('F'));
     assert!(m.filter_editing);
     update(&mut m, ch('b'));
     assert_eq!(m.filter, "b");
@@ -430,13 +442,232 @@ fn slash_filters() {
     // q while filtering types; after Enter it quits.
     update(&mut m, k(KeyCode::Esc));
     assert_eq!(m.filter, "", "Esc clears a kept filter");
-    update(&mut m, ch('/'));
+    update(&mut m, ch('F'));
     update(&mut m, ch('q'));
     assert_eq!(m.filter, "q");
     assert!(m.exit.is_none());
     update(&mut m, k(KeyCode::Esc));
     assert!(!m.filter_editing);
     assert_eq!(m.filter, "");
+}
+
+/// The search bar of the status line.
+fn search_bar(m: &Model) -> Option<String> {
+    // Wide enough for the hints to sit apart from it.
+    let line = render_text(m, 200, 40).lines().last()?.to_string();
+    let at = line.find(" · /")?;
+    let bar = &line[at + " · ".len()..];
+    Some(bar.split("  ").next().unwrap_or_default().to_string())
+}
+
+#[test]
+fn slash_searches_the_table_and_n_cycles() {
+    let mut m = chain();
+    assert_eq!(m.selected.as_deref(), Some("a"));
+    update(&mut m, ch('/'));
+    assert!(m.search.editing);
+    assert!(capturing_digits(&mut m));
+    for c in "healthy".chars() {
+        update(&mut m, ch(c));
+    }
+    assert_eq!(search_bar(&m).as_deref(), Some("/healthy_"));
+    // Enter: the first match at or after the cursor (a itself).
+    let cmds = update(&mut m, k(KeyCode::Enter));
+    assert!(cmds.is_empty());
+    assert!(!m.search.editing);
+    assert_eq!(m.selected.as_deref(), Some("a"));
+    assert_eq!(search_bar(&m).as_deref(), Some("/healthy · 1/2 (n/N)"));
+    update(&mut m, ch('n'));
+    assert_eq!(m.selected.as_deref(), Some("b"));
+    assert_eq!(search_bar(&m).as_deref(), Some("/healthy · 2/2 (n/N)"));
+    update(&mut m, ch('n'));
+    assert_eq!(m.selected.as_deref(), Some("a"), "n wraps");
+    update(&mut m, ch('N'));
+    assert_eq!(m.selected.as_deref(), Some("b"), "N wraps backwards");
+    update(&mut m, ch('N'));
+    assert_eq!(m.selected.as_deref(), Some("a"));
+    // Off a match the bar counts them.
+    update(&mut m, ch('G'));
+    assert_eq!(m.selected.as_deref(), Some("d"));
+    assert_eq!(search_bar(&m).as_deref(), Some("/healthy · 2 matches"));
+    // Esc clears the search before the filter.
+    update(&mut m, ch('F'));
+    update(&mut m, ch('b'));
+    update(&mut m, k(KeyCode::Enter));
+    assert_eq!(m.filter, "b");
+    update(&mut m, k(KeyCode::Esc));
+    assert_eq!(m.search.query, "");
+    assert_eq!(m.filter, "b", "the filter survives the first Esc");
+    update(&mut m, k(KeyCode::Esc));
+    assert_eq!(m.filter, "");
+    // No match: nothing moves, the bar says so.
+    for c in "/zzz".chars() {
+        update(&mut m, ch(c));
+    }
+    update(&mut m, k(KeyCode::Enter));
+    update(&mut m, ch('n'));
+    assert_eq!(m.selected.as_deref(), Some("b"), "where the filter left it");
+    assert_eq!(search_bar(&m).as_deref(), Some("/zzz · no match"));
+    // A new `/` starts empty; Esc while typing clears.
+    update(&mut m, ch('/'));
+    assert_eq!(m.search.query, "");
+    update(&mut m, ch('d'));
+    update(&mut m, k(KeyCode::Esc));
+    assert!(!m.search.active());
+    assert_eq!(search_bar(&m), None);
+}
+
+/// Typing `2` into the search stays text (and leaves it typed in).
+fn capturing_digits(m: &mut Model) -> bool {
+    let before = m.view;
+    update(m, ch('2'));
+    let ok = m.view == before && m.search.query.ends_with('2');
+    update(m, k(KeyCode::Backspace));
+    ok
+}
+
+#[test]
+fn search_in_graph_selects_the_box() {
+    let mut m = graph_model();
+    assert_eq!(m.view, ViewKind::Graph);
+    // Boxes match on their name and type (`d process`).
+    for c in "/d".chars() {
+        update(&mut m, ch(c));
+    }
+    update(&mut m, k(KeyCode::Enter));
+    assert_eq!(m.selected.as_deref(), Some("d"));
+    assert!(m.touched);
+    assert_eq!(search_bar(&m).as_deref(), Some("/d · 1/1 (n/N)"));
+    // The query survives a view switch: n cycles the table's matches
+    // (`ready (tcp)` of b, `stopped` of d; a is unhealthy here).
+    update(&mut m, ch('2'));
+    assert_eq!(m.view, ViewKind::Table);
+    assert_eq!(m.search.query, "d");
+    update(&mut m, ch('n'));
+    assert_eq!(m.selected.as_deref(), Some("b"), "wraps");
+    assert_eq!(search_bar(&m).as_deref(), Some("/d · 1/2 (n/N)"));
+}
+
+#[test]
+fn search_in_detail_scrolls_to_the_line() {
+    let mut m = detail_model();
+    m.size = (80, 14);
+    update(
+        &mut m,
+        Msg::Rpc(RpcResult::Catalog(Ok(vec![seed_script()]))),
+    );
+    let (c, h) = crate::view::detail_content(&m).unwrap();
+    let texts: Vec<String> = c.lines.iter().map(crate::search::line_text).collect();
+    // The script row, then `seed:` and `./seed.sh` in the config.
+    let hits: Vec<usize> = (0..texts.len())
+        .filter(|i| texts[*i].contains("seed"))
+        .collect();
+    assert_eq!(hits.len(), 3, "{texts:?}");
+    for c in "/SEED".chars() {
+        update(&mut m, ch(c));
+    }
+    update(&mut m, k(KeyCode::Enter));
+    assert_eq!(m.search_line, Some(hits[0]));
+    let row = c.rows.iter().position(|(_, l)| *l == hits[0]).unwrap();
+    assert_eq!(m.detail_row, row, "a matched row is selected");
+    update(&mut m, ch('n'));
+    let cfg = hits[1];
+    assert_eq!(m.search_line, Some(cfg));
+    let max = c.lines.len() - h;
+    assert_eq!(
+        m.detail_scroll,
+        cfg.saturating_sub(h / 2).min(max),
+        "centred"
+    );
+    assert!(m.detail_scroll <= cfg && cfg < m.detail_scroll + h);
+    assert_eq!(m.detail_row, row, "a plain line leaves the row alone");
+    assert_eq!(search_bar(&m).as_deref(), Some("/SEED · 2/3 (n/N)"));
+    update(&mut m, ch('n'));
+    update(&mut m, ch('n'));
+    assert_eq!(m.search_line, Some(hits[0]), "wraps");
+    update(&mut m, ch('N'));
+    assert_eq!(m.search_line, Some(hits[2]), "wraps backwards");
+    // Esc clears the search first, then leaves Detail.
+    update(&mut m, k(KeyCode::Esc));
+    assert_eq!(m.view, ViewKind::Detail);
+    assert!(m.search.query.is_empty());
+    update(&mut m, k(KeyCode::Esc));
+    assert_eq!(m.view, ViewKind::Table);
+}
+
+/// `seed`, a custom script of `b`.
+fn seed_script() -> MenuEntry {
+    MenuEntry {
+        stem: Some("b".into()),
+        name: "seed".into(),
+        description: Some("Seed the database".into()),
+        kind: stems_core::scriptargs::ScriptKind::Custom,
+        args: vec![],
+    }
+}
+
+#[test]
+fn frame_table_and_detail_searched() {
+    let mut m = chain();
+    for c in "/healthy".chars() {
+        update(&mut m, ch(c));
+    }
+    update(&mut m, k(KeyCode::Enter));
+    update(&mut m, ch('n'));
+    crate::assert_frame!(m, "table-searched", 120, 40);
+    let mut m = detail_model();
+    update(
+        &mut m,
+        Msg::Rpc(RpcResult::Catalog(Ok(vec![seed_script()]))),
+    );
+    for c in "/seed".chars() {
+        update(&mut m, ch(c));
+    }
+    update(&mut m, k(KeyCode::Enter));
+    update(&mut m, ch('n'));
+    crate::assert_frame!(m, "detail-searched", 120, 40);
+}
+
+#[test]
+fn search_in_events_selects_the_event() {
+    let mut m = events_model();
+    update(&mut m, Msg::SetView(ViewKind::Events));
+    for c in "/failed".chars() {
+        update(&mut m, ch(c));
+    }
+    update(&mut m, k(KeyCode::Enter));
+    // From the newest (seq 4, `failed: exit code 1`) backwards is inclusive.
+    assert_eq!(m.events_view.selected, Some(4));
+    update(&mut m, ch('n'));
+    assert_eq!(m.events_view.selected, Some(3), "wraps to healthy→failed");
+    update(&mut m, ch('N'));
+    assert_eq!(m.events_view.selected, Some(4));
+    assert_eq!(search_bar(&m).as_deref(), Some("/failed · 2/2 (n/N)"));
+    // A filter narrows what the search sees.
+    update(&mut m, ch('F'));
+    for c in "healthy".chars() {
+        update(&mut m, ch(c));
+    }
+    update(&mut m, k(KeyCode::Enter));
+    update(&mut m, ch('n'));
+    assert_eq!(m.events_view.selected, Some(3));
+    assert_eq!(search_bar(&m).as_deref(), Some("/failed · 1/1 (n/N)"));
+}
+
+#[test]
+fn logs_view_keeps_its_own_search() {
+    let mut m = logs_model();
+    assert_eq!(m.view, ViewKind::Logs);
+    for c in "/x".chars() {
+        update(&mut m, ch(c));
+    }
+    assert_eq!(m.log_pane.search, "x");
+    assert!(!m.search.active(), "the shared search is untouched");
+    update(&mut m, k(KeyCode::Enter));
+    update(&mut m, ch('n'));
+    update(&mut m, ch('N'));
+    assert_eq!(m.log_pane.search, "x");
+    assert!(!m.search.active());
 }
 
 #[test]
@@ -711,7 +942,7 @@ fn frame_table_process_chain() {
 #[test]
 fn frame_table_filtered() {
     let mut m = chain();
-    for c in "/b".chars() {
+    for c in "Fb".chars() {
         update(&mut m, ch(c));
     }
     crate::assert_frame!(m, "table-filtered", 80, 24);
@@ -1149,8 +1380,8 @@ fn events_view_loads_filters_and_jumps() {
         vec![0, 1, 2, 3, 4]
     );
     assert!(update(&mut m, Msg::SetView(ViewKind::Events)).is_empty());
-    // / filters (kind, stem, states, reason).
-    for c in "/failed".chars() {
+    // F filters (kind, stem, states, reason).
+    for c in "Ffailed".chars() {
         update(&mut m, ch(c));
     }
     update(&mut m, k(KeyCode::Enter));
@@ -1182,7 +1413,7 @@ fn frame_events_view() {
     let mut m = events_model();
     update(&mut m, Msg::SetView(ViewKind::Events));
     crate::assert_frame!(m, "events-view");
-    for c in "/restart".chars() {
+    for c in "Frestart".chars() {
         update(&mut m, ch(c));
     }
     crate::assert_frame!(m, "events-view-filtered", 80, 24);
@@ -1388,13 +1619,19 @@ fn split_pane_follows_brackets() {
 
 #[test]
 fn brackets_in_a_text_field_stay_text() {
-    // The table filter.
+    // The table filter and search.
     let mut m = chain();
-    for c in "/[".chars() {
+    for c in "F[".chars() {
         update(&mut m, ch(c));
     }
     assert_eq!(m.filter, "[");
     assert_eq!(m.selected.as_deref(), None, "no stem matches `[`");
+    update(&mut m, k(KeyCode::Esc));
+    for c in "/[]".chars() {
+        update(&mut m, ch(c));
+    }
+    assert_eq!(m.search.query, "[]");
+    assert_eq!(m.selected.as_deref(), Some("a"));
     // The Logs search.
     let mut m = chain();
     update(&mut m, ch('4'));
@@ -1407,7 +1644,7 @@ fn brackets_in_a_text_field_stay_text() {
     // The Events filter.
     let mut m = chain();
     update(&mut m, ch('5'));
-    for c in "/[]".chars() {
+    for c in "F[]".chars() {
         update(&mut m, ch(c));
     }
     assert_eq!(m.events_view.filter, "[]");

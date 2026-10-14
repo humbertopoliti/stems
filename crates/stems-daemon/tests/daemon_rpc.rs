@@ -346,3 +346,80 @@ async fn stale_lock_and_socket_are_reclaimed() {
         .unwrap();
     assert!(!f.paths.lock.exists());
 }
+
+#[tokio::test]
+async fn switch_configuration_edits_the_local_file_and_reports_the_active_one() {
+    let f = fixture();
+    let main = std::fs::read_to_string(f.ws.join("stems.yaml")).unwrap();
+    std::fs::write(
+        f.ws.join("stems.yaml"),
+        format!("{main}\nconfigurations:\n  loud: {{ stems: {{ echo-svc: {{ env: {{ LOUD: \"1\" }} }} }} }}\n"),
+    )
+    .unwrap();
+    let task = start(&f).await;
+    let client = Client::connect(&f.paths.socket, opts()).await.unwrap();
+
+    let list: Value = client
+        .call(Method::SWITCH_CONFIGURATION, json!({}))
+        .await
+        .unwrap();
+    assert_eq!(list["from"], Value::Null);
+    assert_eq!(list["configurations"][0]["name"], "loud");
+    assert_eq!(list["configurations"][0]["active"], false);
+    assert_eq!(list["file"], Value::Null);
+
+    let err = client
+        .call::<Value>(
+            Method::SWITCH_CONFIGURATION,
+            json!({"configuration": "nope"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::UnknownConfiguration);
+    assert!(!f.ws.join("stems.local.yaml").exists());
+
+    let r: Value = client
+        .call(
+            Method::SWITCH_CONFIGURATION,
+            json!({"configuration": "loud"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r["to"], "loud");
+    assert_eq!(r["changed"], true);
+    assert_eq!(r["diff"], json!(["+configuration: loud"]));
+    assert!(r["applied"].is_object(), "{r}");
+    assert_eq!(
+        std::fs::read_to_string(f.ws.join("stems.local.yaml")).unwrap(),
+        "configuration: loud\n"
+    );
+    let status: DaemonStatus = client.call(Method::DAEMON_STATUS, json!({})).await.unwrap();
+    assert_eq!(status.configuration.as_deref(), Some("loud"));
+    let cfg: Value = client
+        .call(Method::STEM_CONFIG, json!({"stem": "echo-svc"}))
+        .await
+        .unwrap();
+    assert_eq!(cfg["env"]["LOUD"], "1");
+
+    let r: Value = client
+        .call(
+            Method::SWITCH_CONFIGURATION,
+            json!({"configuration": "none"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r["to"], Value::Null);
+    assert!(
+        !f.ws.join("stems.local.yaml").exists()
+            || std::fs::read_to_string(f.ws.join("stems.local.yaml"))
+                .unwrap()
+                .trim()
+                .is_empty()
+    );
+
+    client
+        .call::<Value>(Method::SHUTDOWN, json!({}))
+        .await
+        .unwrap();
+    task.await.unwrap().unwrap();
+}

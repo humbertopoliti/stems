@@ -31,7 +31,20 @@ for stem in resolved.workspace.stems() { /* enabled stems, declaration order */ 
    including it) is `DUPLICATE_STEM` with both paths in
    `Diagnostic::details.files`; `extends` bases and `stems.local.yaml` may
    redefine stems (they are merged). See `docs/config.md`.
-4. **Variants** (FR-ST-8, `variants.rs`): each stem's active variant
+4. **Configurations** (`configurations.rs`, `docs/config.md#configurations`):
+   `configurations: { <name>: <overlay> | <path> }` declares named overlays
+   with the shape of `stems.local.yaml`, inline or in their own YAML file
+   (path relative to the file naming it; no `include`/`extends` inside). The
+   selected one — `configuration:` (the local file's wins; `none` selects
+   nothing), else `default_configuration` — is merged over the committed
+   tree with the merge rules below, before variants, so a
+   `stems.<n>.variant` it sets selects the variant. A file-form overlay is a
+   source (`Resolved::sources`, spans) like an include. An unknown name is a
+   non-fatal `UNKNOWN_CONFIGURATION` (the base is used); a missing file is
+   fatal `CONFIGURATION_NOT_FOUND`. The three keys are removed from the
+   merged tree afterwards; `Workspace::configuration` /
+   `default_configuration` / `configurations` record them.
+5. **Variants** (FR-ST-8, `variants.rs`): each stem's active variant
    (`stems.<n>.variant`, the local file's value winning) is merged over the
    stem of the committed tree with the merge rules below, except that a
    variant setting a different `type` first drops the base's type-specific
@@ -39,11 +52,11 @@ for stem in resolved.workspace.stems() { /* enabled stems, declaration order */ 
    `UNKNOWN_VARIANT` (the base is used). `variant`/`variants` are removed from
    the merged tree after the local overlay; `Stem::variant` / `variants`
    record them. See `docs/config.md#variants-fr-st-8`.
-5. **Local overlay**: `stems.local.yaml` next to `stems.yaml` (unless
+6. **Local overlay**: `stems.local.yaml` next to `stems.yaml` (unless
    `skip_local`) is expanded the same way and merged last (it still wins
-   over a variant).
-6. **Substitution** over every string of the merged tree (see below).
-7. **Resolution**: typed parse of the merged tree, defaults applied from
+   over a configuration and a variant).
+7. **Substitution** over every string of the merged tree (see below).
+8. **Resolution**: typed parse of the merged tree, defaults applied from
    `defaults.rs`, paths made absolute. A stem with no `type` after merging is
    fatal (`SCHEMA_INVALID`); a field that does not apply to the stem's type
    (e.g. `image` on a process stem) is a non-fatal diagnostic.
@@ -54,7 +67,8 @@ in `Resolved::diagnostics` (06 decides severity and maps both onto
 
 ## Merge rules
 
-Applied for `extends`, `include` and `stems.local.yaml` alike ("base" is what
+Applied for `extends`, `include`, configurations, variants and
+`stems.local.yaml` alike ("base" is what
 has been merged so far, "overlay" the file being merged on top):
 
 | Base | Overlay | Result |
@@ -79,7 +93,8 @@ rule is applied in `merge::merge` at `stems.<n>.ports`, so it covers
 path) and `stems.local.yaml` alike.
 
 Order of precedence, lowest first: `extends` base, `include`s (in order), the
-including file, `stems.local.yaml`. So `stems.local.yaml` with
+including file, the selected configuration (`docs/config.md#configurations`),
+each stem's active variant, `stems.local.yaml`. So `stems.local.yaml` with
 
 ```yaml
 stems:
