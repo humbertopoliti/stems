@@ -467,6 +467,59 @@ pub struct SwitchVariantResult {
     pub applied: Option<crate::reload::ConfigApplyResult>,
 }
 
+/// `switch_configuration` params: what `stems configuration use <name>`
+/// does, run by the daemon.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SwitchConfigurationParams {
+    /// The configuration to select (`none` for the base config); `None`
+    /// only lists the configurations (nothing is written).
+    #[serde(default)]
+    pub configuration: Option<String>,
+}
+
+/// One declared configuration.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigurationChoice {
+    /// Its name.
+    pub name: String,
+    /// `inline` or `file`.
+    pub source: String,
+    /// The overlay file (`file` source only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<String>")]
+    pub file: Option<std::path::PathBuf>,
+    /// The active configuration.
+    pub active: bool,
+}
+
+/// `switch_configuration` result.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct SwitchConfigurationResult {
+    /// The active configuration before the call (`null`: none).
+    pub from: Option<String>,
+    /// The active configuration after it (= `from` when only listing).
+    pub to: Option<String>,
+    /// `default_configuration`, if set.
+    pub default: Option<String>,
+    /// The declared configurations, in declaration order (as before the
+    /// call).
+    pub configurations: Vec<ConfigurationChoice>,
+    /// The config path written (`configuration`).
+    #[serde(default)]
+    pub path: String,
+    /// `stems.local.yaml` (`null` when only listing).
+    #[schemars(with = "Option<String>")]
+    pub file: Option<std::path::PathBuf>,
+    /// The file changed.
+    pub changed: bool,
+    /// Its line diff (`-old` / `+new`).
+    pub diff: Vec<String>,
+    /// `config_apply {yes: true}` after the edit (`null` when only
+    /// listing).
+    #[serde(default)]
+    pub applied: Option<crate::reload::ConfigApplyResult>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

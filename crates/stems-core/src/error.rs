@@ -147,6 +147,12 @@ error_codes! {
     /// A variant name the stem does not declare (FR-ST-8).
     UnknownVariant = "UNKNOWN_VARIANT", CONFIG,
         "`stems.<stem>.variant` or `stems switch <stem> <variant>` names a variant the stem does not declare";
+    /// A configuration name that `configurations:` does not declare.
+    UnknownConfiguration = "UNKNOWN_CONFIGURATION", CONFIG,
+        "`configuration:`, `default_configuration:` or `stems configuration use <name>` names a configuration that `configurations:` does not declare";
+    /// A file-form configuration whose file is missing.
+    ConfigurationNotFound = "CONFIGURATION_NOT_FOUND", CONFIG,
+        "the selected configuration's file (`configurations.<name>: <path>`) does not exist";
     /// Destructive op without confirmation.
     DestructiveNotConfirmed = "DESTRUCTIVE_NOT_CONFIRMED", CONFIG,
         "a destructive operation was requested without `--yes` / `confirm: true`";

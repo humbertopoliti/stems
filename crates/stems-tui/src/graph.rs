@@ -262,6 +262,7 @@ pub struct GraphWidget<'a> {
     edge_labels: bool,
     compact: Option<bool>,
     paused: Vec<NodeId>,
+    matched: Vec<NodeId>,
 }
 
 impl<'a> GraphWidget<'a> {
@@ -275,7 +276,16 @@ impl<'a> GraphWidget<'a> {
             edge_labels: false,
             compact: None,
             paused: Vec::new(),
+            matched: Vec::new(),
         }
+    }
+
+    /// Stems matching the search: their name is drawn in the match style
+    /// ([`crate::search::match_style`]).
+    #[must_use]
+    pub fn matched(mut self, nodes: Vec<NodeId>) -> Self {
+        self.matched = nodes;
+        self
     }
 
     /// Stems whose watchdog is paused: `⏸` (`||`) on their box's top
@@ -377,6 +387,28 @@ impl Widget for GraphWidget<'_> {
                 cell.set_style(style);
             }
         }
+        // The name of a matched stem, in the match style.
+        for b in self.matched.iter().filter_map(|n| grid.box_of(*n)) {
+            let name = &self.layout.nodes[b.node].name;
+            let n = name.chars().count();
+            for gy in b.y..b.y + b.height {
+                let Some(row) = grid.rows.get(gy) else { break };
+                let text: String = row.iter().skip(b.x).take(b.width).map(|c| c.ch).collect();
+                let Some(at) = text.find(name.as_str()) else {
+                    continue;
+                };
+                let x0 = b.x + text[..at].chars().count();
+                for gx in x0..x0 + n {
+                    if gx < ox || gy < oy || gx - ox >= vw || gy - oy >= vh {
+                        continue;
+                    }
+                    let cell = &mut buf[(area.x + (gx - ox) as u16, area.y + (gy - oy) as u16)];
+                    let style = cell.style();
+                    cell.set_style(crate::search::match_style(style));
+                }
+                break;
+            }
+        }
         // The paused marker on the top border, right-aligned.
         let mark = crate::view::paused_marker(!self.unicode);
         let mw = mark.chars().count();
@@ -476,8 +508,14 @@ pub fn render(model: &Model, f: &mut ratatui::Frame, area: Rect) {
         .filter(|s| s.watch.as_ref().is_some_and(|w| w.paused))
         .filter_map(|s| layout.node(&s.name))
         .collect();
+    let matched = if model.search.query.is_empty() {
+        Vec::new()
+    } else {
+        model.search.matches(crate::search::graph_rows(layout))
+    };
     let widget = GraphWidget::new(layout)
         .paused(paused)
+        .matched(matched)
         .status(&status)
         .selected(selected)
         .unicode(!model.ascii)

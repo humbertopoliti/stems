@@ -36,11 +36,14 @@ pub use health::{HealthParams, HealthResult, HealthStatus, ProbeOutcome, ProbeRe
 pub use images::{PullParams, PullResult, PullSkip, PulledImage};
 pub use lifecycle::{CascadeRef, CascadeReport};
 pub use lifecycle::{
+    ConfigurationChoice, SwitchConfigurationParams, SwitchConfigurationResult, SwitchVariantParams,
+    SwitchVariantResult, VariantChoice,
+};
+pub use lifecycle::{
     DownParams, DownResult, PortStatus, RestartParams, StartParams, StatusParams, StatusResult,
     StatusSummary, StemFailure, StemStatus, StopParams, UpParams, UpResult,
 };
 pub use lifecycle::{OutputValue, OutputsParams, OutputsResult, REDACTED, StemOutputs};
-pub use lifecycle::{SwitchVariantParams, SwitchVariantResult, VariantChoice};
 pub use logs::{
     ExportLogsParams, ExportLogsResult, LogFilter, LogRecord, QUERY_LOGS_CAP, QueryLogsParams,
     QueryLogsResult, SubscribeLogsAck, SubscribeLogsParams,
@@ -242,6 +245,11 @@ string_newtype! {
         /// validate, apply to that stem ([`SwitchVariantParams`] ->
         /// [`SwitchVariantResult`]).
         SWITCH_VARIANT = "switch_variant";
+        // --- configurations ------------------------------------------------------
+        /// List the configurations, or select one: edit `stems.local.yaml`,
+        /// validate, apply ([`SwitchConfigurationParams`] ->
+        /// [`SwitchConfigurationResult`]).
+        SWITCH_CONFIGURATION = "switch_configuration";
         // --- crash recovery (11) ----------------------------------------------
         /// Adopt orphaned processes as their stems (`{orphans: [{stem, pid}]}`
         /// -> `{adopted: [{stem, pid, pgid}], failed: [{stem, pid, error}]}`).
@@ -623,6 +631,10 @@ pub struct DaemonStatus {
     pub workspace_name: Option<String>,
     /// Number of stems in the loaded workspace.
     pub stem_count: usize,
+    /// The active configuration (`configuration:` / `default_configuration`),
+    /// if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration: Option<String>,
     /// Highest event seq emitted so far.
     pub last_seq: u64,
     /// Open event subscriptions.
@@ -892,6 +904,7 @@ mod tests {
             },
             workspace_name: Some("minimal".into()),
             stem_count: 1,
+            configuration: None,
             last_seq: 2,
             subscribers: 0,
             debug_rpc: false,

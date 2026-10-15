@@ -187,6 +187,9 @@ pub(crate) fn resolve_workspace(
         default_profile: raw.default_profile,
         strict_profiles: raw.strict_profiles.unwrap_or(d::STRICT_PROFILES),
         profile: raw.profile,
+        configuration: raw.configuration,
+        default_configuration: raw.default_configuration,
+        configurations: Vec::new(),
         agent: Agent {
             allow_destructive: agent
                 .allow_destructive

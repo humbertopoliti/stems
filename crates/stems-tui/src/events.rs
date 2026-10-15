@@ -1,17 +1,18 @@
 //! The Events view (29): the daemon's event stream as a table (TIME KIND
-//! STEM FROM→TO REASON ACTOR), newest at the bottom, filtered with `/`
-//! (stem, kind, states or reason); `Enter` jumps to the event's stem logs
-//! at the event time.
+//! STEM FROM→TO REASON ACTOR), newest at the bottom, filtered with `F`
+//! (stem, kind, states or reason), searched with `/` ([`crate::search`]);
+//! `Enter` jumps to the event's stem logs at the event time.
 
 use std::collections::VecDeque;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Span;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, HighlightSpacing, Paragraph, Row, Table, TableState};
 use stems_api::Event;
 
+use crate::search::highlight;
 use crate::view::truncate;
 
 /// Event table headers.
@@ -20,7 +21,7 @@ pub const EVENT_COLUMNS: [&str; 6] = ["TIME", "KIND", "STEM", "FROM→TO", "REAS
 /// State of the Events view.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EventsState {
-    /// Filter text (`/`): substring of the stem, kind, states or reason.
+    /// Filter text (`F`): substring of the stem, kind, states or reason.
     pub filter: String,
     /// Typing the filter.
     pub editing: bool,
@@ -115,10 +116,11 @@ pub fn event_widths(width: u16) -> [u16; 6] {
     [time, kind, stem, tr, reason, actor]
 }
 
-/// Draw the Events view.
+/// Draw the Events view (`query`: the search, highlighted in the cells).
 pub fn render(
     state: &EventsState,
     events: &VecDeque<Event>,
+    query: &str,
     ascii: bool,
     accent: Color,
     f: &mut Frame,
@@ -127,7 +129,7 @@ pub fn render(
     let mut title = format!(" Events · {} ", events.len());
     if state.editing || !state.filter.is_empty() {
         title = format!(
-            " Events · /{}{} ",
+            " Events · filter:{}{} ",
             state.filter,
             if state.editing { "_" } else { "" }
         );
@@ -145,7 +147,10 @@ pub fn render(
     let body: Vec<Row> = rows
         .iter()
         .map(|e| {
-            let t = |s: &str, i: usize| Cell::from(truncate(s, usize::from(widths[i]), ascii));
+            let t = |s: &str, i: usize| {
+                let text = truncate(s, usize::from(widths[i]), ascii);
+                Cell::from(Line::from(highlight(&text, query, Style::default())))
+            };
             let reason = e
                 .reason
                 .as_deref()
@@ -159,13 +164,14 @@ pub fn render(
             };
             let tr = truncate(&transition(e, ascii), usize::from(widths[3]), ascii);
             Row::new(vec![
-                Cell::from(e.ts.format("%H:%M:%S").to_string()),
+                t(&e.ts.format("%H:%M:%S").to_string(), 0),
                 t(&e.kind.to_string(), 1),
                 t(e.stem.as_deref().unwrap_or("-"), 2),
-                Cell::from(Span::styled(
-                    tr,
+                Cell::from(Line::from(highlight(
+                    &tr,
+                    query,
                     color.map_or_else(Style::default, |c| Style::default().fg(c)),
-                )),
+                ))),
                 t(&reason, 4),
                 t(&e.actor, 5),
             ])
@@ -184,7 +190,7 @@ pub fn render(
         let msg = if state.filter.is_empty() {
             "no events yet".to_string()
         } else {
-            format!("no event matches /{}", state.filter)
+            format!("no event matches filter:{}", state.filter)
         };
         let r = Rect::new(inner.x + 2, inner.y + 1, inner.width.saturating_sub(2), 1);
         f.render_widget(Paragraph::new(msg), r);

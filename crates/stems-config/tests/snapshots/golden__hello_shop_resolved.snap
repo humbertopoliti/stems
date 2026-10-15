@@ -38,6 +38,9 @@ workspace:
     - shop-web
   default_profile: null
   strict_profiles: false
+  configurations:
+  - name: docker
+    source: inline
   agent:
     allow_destructive: false
     allowed_tools: []

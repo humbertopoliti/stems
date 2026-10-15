@@ -1,0 +1,6 @@
+# The `quiet` configuration: the shape of stems.local.yaml.
+stems:
+  api:
+    env: { FROM: quiet }
+  web:
+    enabled: false

@@ -14,46 +14,48 @@ or usage error, 3 partial success or orphans, 4 daemon unavailable.
 Usage: stems [OPTIONS] [COMMAND]
 
 Commands:
-  init         Scaffold a new integration repo in the current (or --workspace) directory
-  validate     Check the workspace config without starting anything
-  show         Print the resolved workspace config (or one stem's)
-  completions  Print a shell completion script
-  up           Start stems (and their dependencies), attached or detached
-  down         Stop stems in reverse dependency order
-  start        Start stems (and unstarted hard dependencies)
-  stop         Stop stems
-  restart      Restart stems (stop, then start)
-  attach       Open the dashboard (TUI) on the workspace daemon
-  status       Show the state of every stem
-  logs         Show or follow stem and script logs
-  events       Show or follow the event stream (NDJSON with --json)
-  metrics      Show CPU, memory and disk usage per stem
-  health       Show the last health probe results per stem, with latency
-  graph        Draw the dependency graph
-  run          Run a stem or workspace script
-  scripts      List scripts
-  exec         Run an ad-hoc command in a stem's context (env, cwd or container)
-  shell        Open an interactive shell in a stem's context
-  reset        Run a stem's `reset` script and clear its stamps
-  build        Run build scripts (or docker builds)
-  pull         Pull the images of docker stems now (a moved tag such as `latest` included)
-  stamps       Show or clear setup/seed stamps
-  overlays     Show the overlays stems has written into codebases
-  doctor       Diagnose the environment: Docker, tool versions, ports, orphans
-  repos        Clone or update git codebases
-  watch        Pause or resume watchdogs
-  profiles     List profiles
-  outputs      Show values published by stems' `outputs:`
-  config       Read or change local config overrides
-  switch       Switch a stem to one of its variants (e.g. from a local process to a docker
-               container), or back to `local`
-  add          Add a stem to stems.yaml
-  remove       Remove a stem from stems.yaml
-  edit         Open $EDITOR at a stem's block in stems.yaml
-  mcp          Run the MCP server (agent interface)
-  upgrade      Upgrade stems (delegates to Homebrew when installed with brew)
-  daemon       Manage the workspace daemon
-  help         Print this message or the help of the given subcommand(s)
+  init           Scaffold a new integration repo in the current (or --workspace) directory
+  validate       Check the workspace config without starting anything
+  show           Print the resolved workspace config (or one stem's)
+  completions    Print a shell completion script
+  up             Start stems (and their dependencies), attached or detached
+  down           Stop stems in reverse dependency order
+  start          Start stems (and unstarted hard dependencies)
+  stop           Stop stems
+  restart        Restart stems (stop, then start)
+  attach         Open the dashboard (TUI) on the workspace daemon
+  status         Show the state of every stem
+  logs           Show or follow stem and script logs
+  events         Show or follow the event stream (NDJSON with --json)
+  metrics        Show CPU, memory and disk usage per stem
+  health         Show the last health probe results per stem, with latency
+  graph          Draw the dependency graph
+  run            Run a stem or workspace script
+  scripts        List scripts
+  exec           Run an ad-hoc command in a stem's context (env, cwd or container)
+  shell          Open an interactive shell in a stem's context
+  reset          Run a stem's `reset` script and clear its stamps
+  build          Run build scripts (or docker builds)
+  pull           Pull the images of docker stems now (a moved tag such as `latest` included)
+  stamps         Show or clear setup/seed stamps
+  overlays       Show the overlays stems has written into codebases
+  doctor         Diagnose the environment: Docker, tool versions, ports, orphans
+  repos          Clone or update git codebases
+  watch          Pause or resume watchdogs
+  profiles       List profiles
+  outputs        Show values published by stems' `outputs:`
+  config         Read or change local config overrides
+  switch         Switch a stem to one of its variants (e.g. from a local process to a docker
+                 container), or back to `local`
+  configuration  List, select or save named configurations (overlays declared under
+                 `configurations:` in stems.yaml)
+  add            Add a stem to stems.yaml
+  remove         Remove a stem from stems.yaml
+  edit           Open $EDITOR at a stem's block in stems.yaml
+  mcp            Run the MCP server (agent interface)
+  upgrade        Upgrade stems (delegates to Homebrew when installed with brew)
+  daemon         Manage the workspace daemon
+  help           Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help

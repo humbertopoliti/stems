@@ -1147,6 +1147,164 @@ impl Supervisor {
         Ok(out)
     }
 
+    /// `switch_configuration {configuration?}`: what `stems configuration
+    /// use` does, in the daemon. Without `configuration`: the declared
+    /// configurations. With one: write `configuration: <name>` to the
+    /// workspace's `stems.local.yaml` with the comment-preserving editor
+    /// (`none` removes the key unless `stems.yaml` selects a default
+    /// configuration), re-validate the workspace from disk (the file is
+    /// restored when that fails), then `config_apply {yes: true}`.
+    pub async fn switch_configuration(
+        &self,
+        p: stems_api::SwitchConfigurationParams,
+        actor: &str,
+    ) -> Result<stems_api::SwitchConfigurationResult, Error> {
+        use stems_config::{ConfigPath, ConfigurationSource, configurations, edit};
+        let applied = self.workspace(false, actor)?;
+        let root = applied.workspace.root.clone();
+        let first = |errs: stems_core::Errors| {
+            let all = errs.0.clone();
+            let mut e = errs.0.into_iter().next().unwrap_or_else(|| {
+                Error::internal("the workspace failed to load without an error")
+            });
+            if all.len() > 1 {
+                e.details = json!({ "errors": all });
+            }
+            e
+        };
+        let opts = stems_config::LoadOptions {
+            workspace: Some(root.clone()),
+            cwd: root.clone(),
+            env: std::env::vars().collect(),
+            skip_local: false,
+        };
+        let (config_file, committed) =
+            stems_config::committed_tree(&opts).map_err(|e| first(stems_core::Errors::from(e)))?;
+        let file = config_file
+            .parent()
+            .map_or_else(|| root.clone(), std::path::Path::to_path_buf)
+            .join(stems_config::LOCAL_FILE);
+        let original = match std::fs::read_to_string(&file) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => {
+                return Err(Error::new(
+                    ErrorCode::ConfigReadFailed,
+                    format!("{} cannot be read: {e}", file.display()),
+                )
+                .with_hint("check that the file is readable by the daemon's user"));
+            }
+        };
+        let current = self.host.load_candidate(actor, false).map_err(first)?;
+        let ws = &current.workspace;
+        let from = ws.configuration.clone();
+        let choices: Vec<stems_api::ConfigurationChoice> = ws
+            .configurations
+            .iter()
+            .map(|c| stems_api::ConfigurationChoice {
+                name: c.name.clone(),
+                source: match &c.source {
+                    ConfigurationSource::Inline => "inline".into(),
+                    ConfigurationSource::File(_) => "file".into(),
+                },
+                file: match &c.source {
+                    ConfigurationSource::Inline => None,
+                    ConfigurationSource::File(f) => Some(f.clone()),
+                },
+                active: from.as_deref() == Some(c.name.as_str()),
+            })
+            .collect();
+        let path = ConfigPath::root().key("configuration");
+        let mut out = stems_api::SwitchConfigurationResult {
+            from: from.clone(),
+            to: from.clone(),
+            default: ws.default_configuration.clone(),
+            configurations: choices,
+            path: path.to_string(),
+            ..Default::default()
+        };
+        let Some(target) = p.configuration else {
+            return Ok(out);
+        };
+        let to = (!configurations::is_none(&target)).then(|| target.clone());
+        if let Some(name) = &to
+            && !ws.configurations.iter().any(|c| &c.name == name)
+        {
+            let known: Vec<&str> = ws.configurations.iter().map(|c| c.name.as_str()).collect();
+            let hint = if known.is_empty() {
+                "no `configurations` are declared in stems.yaml (see docs/config.md#configurations)"
+                    .to_string()
+            } else {
+                format!(
+                    "configurations: {} (or `{}` for the base config)",
+                    known.join(", "),
+                    configurations::NONE
+                )
+            };
+            return Err(Error::new(
+                ErrorCode::UnknownConfiguration,
+                format!("no configuration named `{name}`"),
+            )
+            .with_path(path)
+            .with_hint(hint)
+            .with_details(json!({ "configuration": name, "known": known })));
+        }
+        let committed_default = configurations::committed_selection(&committed);
+        let no_base = |_: &ConfigPath| None;
+        let edited = match &to {
+            None if committed_default.is_none() => edit::unset(&original, &path).map(|(t, _)| t),
+            None => edit::set(&original, &path, configurations::NONE, &no_base),
+            Some(name) => edit::set(&original, &path, name, &no_base),
+        };
+        let new = edited.map_err(|e| {
+            Error::new(
+                ErrorCode::Usage,
+                format!("cannot edit `{path}` in {}: {}", file.display(), e.0),
+            )
+            .with_path(path.clone())
+            .with_hint(format!(
+                "set `configuration: {target}` at the top level of {} by hand",
+                file.display()
+            ))
+        })?;
+        out.to = to;
+        out.file = Some(file.clone());
+        out.changed = original != new;
+        out.diff = edit::diff_lines(&original, &new);
+        if out.changed {
+            let check = || self.host.load_candidate(actor, false).map(|_| ());
+            match edit::write_checked(&file, &new, check) {
+                Ok(()) => {}
+                Err(edit::WriteError::Io(e)) => {
+                    return Err(Error::new(
+                        ErrorCode::ConfigReadFailed,
+                        format!("cannot write {}: {e}", file.display()),
+                    )
+                    .with_hint("check the permissions of the integration repo directory")
+                    .with_details(json!({ "file": file })));
+                }
+                Err(edit::WriteError::Rejected(errs)) => {
+                    let mut e = first(errs);
+                    if e.hint.is_none() {
+                        e.hint = Some(format!("{} was left unchanged", stems_config::LOCAL_FILE));
+                    }
+                    return Err(e);
+                }
+            }
+        }
+        let r = self
+            .config_apply(
+                stems_api::ConfigApplyParams {
+                    stems: Vec::new(),
+                    yes: true,
+                },
+                actor,
+            )
+            .await?;
+        out.applied = Some(r);
+        Ok(out)
+    }
+
     /// Crash recovery (deliverable 11): adopt every stem the previous run
     /// recorded that is still alive (same pid *and* start time) as
     /// `healthy` (`stem.adopted`), drop the others (`stem.recovered_dead`),
@@ -1450,6 +1608,10 @@ impl SupervisorHooks for Supervisor {
             },
             m if m == Method::SWITCH_VARIANT => match params(m, p) {
                 Ok(p) => self.switch_variant(p, actor).await.and_then(to_value),
+                Err(e) => Err(e),
+            },
+            m if m == Method::SWITCH_CONFIGURATION => match params(m, p) {
+                Ok(p) => self.switch_configuration(p, actor).await.and_then(to_value),
                 Err(e) => Err(e),
             },
             _ => return None,

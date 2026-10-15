@@ -340,6 +340,16 @@ pub enum Command {
     /// active one. An unknown name is UNKNOWN_VARIANT (exit 2). See
     /// docs/config.md#variants-fr-st-8.
     Switch(SwitchArgs),
+    /// List, select or save named configurations (overlays declared under
+    /// `configurations:` in stems.yaml).
+    ///
+    /// A configuration is an overlay with the shape of stems.local.yaml
+    /// (variants, disabled stems, env, profile, ...), inline or in its own
+    /// YAML file; `default_configuration` picks one for everybody and
+    /// `configuration:` in stems.local.yaml wins. Merge order:
+    /// stems.yaml, the configuration, stems.local.yaml. Without a
+    /// subcommand, lists them. See docs/config.md#configurations.
+    Configuration(ConfigurationArgs),
     /// Add a stem to stems.yaml.
     Add(AddArgs),
     /// Remove a stem from stems.yaml.
@@ -414,6 +424,55 @@ pub struct SwitchArgs {
     /// Only edit stems.local.yaml; do not apply the change to a running daemon.
     #[arg(long)]
     pub no_apply: bool,
+}
+
+/// `stems configuration`.
+#[derive(Debug, Args)]
+pub struct ConfigurationArgs {
+    #[command(subcommand)]
+    pub command: Option<ConfigurationCommand>,
+}
+
+/// `stems configuration <subcommand>`.
+#[derive(Debug, Subcommand)]
+pub enum ConfigurationCommand {
+    /// List the configurations; `*` marks the active one.
+    List,
+    /// Select a configuration (or `none`) in stems.local.yaml.
+    ///
+    /// Writes `configuration: <name>` to stems.local.yaml (comments kept;
+    /// `none` removes the key), validates the workspace (the file is
+    /// restored on error) and, when the daemon runs, applies the change:
+    /// stems whose config changed restart (`--no-apply` only edits the
+    /// file). An unknown name is UNKNOWN_CONFIGURATION (exit 2).
+    Use(ConfigurationUseArgs),
+    /// Save the current stems.local.yaml overrides as a new configuration
+    /// file and declare it in stems.yaml (without selecting it).
+    Save(ConfigurationSaveArgs),
+}
+
+/// `stems configuration use`.
+#[derive(Debug, Args)]
+pub struct ConfigurationUseArgs {
+    /// A configuration name, or `none` for the base config.
+    pub name: String,
+    /// Only edit stems.local.yaml; do not apply the change to a running daemon.
+    #[arg(long)]
+    pub no_apply: bool,
+}
+
+/// `stems configuration save`.
+#[derive(Debug, Args)]
+pub struct ConfigurationSaveArgs {
+    /// The new configuration's name.
+    pub name: String,
+    /// Where to write it, relative to the integration repo (default:
+    /// configurations/<name>.yaml).
+    #[arg(long)]
+    pub file: Option<PathBuf>,
+    /// Overwrite an existing file or file-form configuration of that name.
+    #[arg(long)]
+    pub force: bool,
 }
 
 /// `stems completions`.

@@ -5,8 +5,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use stems_config::{
-    Codebase, ConfigErrors, ConfigPath, DeferredKind, HealthPort, LoadOptions, PortRef, Resolved,
-    ScriptSource, StemRuntime, Workspace, codes, load,
+    Codebase, ConfigErrors, ConfigPath, ConfigurationSource, DeferredKind, HealthPort, LoadOptions,
+    PortRef, Resolved, ScriptSource, StemRuntime, Workspace, codes, load,
 };
 
 struct Ws {
@@ -1023,4 +1023,237 @@ fn a_variant_can_pull_an_image_instead_of_running_locally() {
         other => panic!("{other:?}"),
     }
     assert_eq!(api.ports[0].container_port, Some(8080));
+}
+
+// ---------------------------------------------------------------------------
+// Configurations
+// ---------------------------------------------------------------------------
+
+const WITH_CONFIGURATIONS: &str = r#"
+name: demo
+default_configuration: ci
+configurations:
+  ci:
+    env: { CI: "1" }
+    stems:
+      api: { variant: slow, env: { FROM: configuration } }
+      web: { enabled: false }
+  docker: configurations/docker.yaml
+stems:
+  api:
+    type: process
+    command: python3 app.py
+    env: { FROM: base }
+    variants:
+      slow: { env: { SLOW: "1" } }
+      docker: { type: docker, image: api }
+  web:
+    type: process
+    command: python3 serve.py
+"#;
+
+const DOCKER_CONFIGURATION: &str = "stems:\n  api: { variant: docker, env: { FROM: file } }\n";
+
+fn configuration_names(ws: &Workspace) -> Vec<&str> {
+    ws.configurations.iter().map(|c| c.name.as_str()).collect()
+}
+
+#[test]
+fn the_default_configuration_is_an_inline_overlay_merged_before_variants() {
+    let ws = Ws::new(&[("stems.yaml", WITH_CONFIGURATIONS)]);
+    let r = ws.load();
+    assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+    let w = &r.workspace;
+    assert_eq!(w.configuration.as_deref(), Some("ci"));
+    assert_eq!(w.default_configuration.as_deref(), Some("ci"));
+    assert_eq!(configuration_names(w), ["ci", "docker"]);
+    assert_eq!(
+        w.configurations[1].source,
+        ConfigurationSource::File(ws.root.join("configurations/docker.yaml"))
+    );
+    assert_eq!(w.configurations[0].source, ConfigurationSource::Inline);
+    let api = w.stem("api").unwrap();
+    assert_eq!(api.variant.as_deref(), Some("slow"));
+    assert_eq!(env(w, "api", "FROM"), "configuration");
+    assert_eq!(env(w, "api", "SLOW"), "1");
+    assert_eq!(env(w, "api", "CI"), "1");
+    assert!(!w.stem("web").unwrap().enabled);
+    // A configuration's env is ordinary config env, not a local override.
+    assert!(api.local_env.is_empty());
+    assert_eq!(r.sources, [ws.root.join("stems.yaml")]);
+    // Spans of the inline overlay are the root's.
+    let at = r
+        .spans
+        .get(
+            &ConfigPath::root()
+                .key("stems")
+                .key("api")
+                .key("env")
+                .key("FROM"),
+        )
+        .unwrap();
+    assert_eq!(at.line, 8, "{at}");
+}
+
+#[test]
+fn a_file_configuration_selected_locally_is_a_source_and_loses_to_the_local_file() {
+    let ws = Ws::new(&[
+        ("stems.yaml", WITH_CONFIGURATIONS),
+        ("configurations/docker.yaml", DOCKER_CONFIGURATION),
+        (
+            "stems.local.yaml",
+            "configuration: docker\nstems:\n  api: { env: { FROM: local } }\n",
+        ),
+    ]);
+    let r = ws.load();
+    assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+    let w = &r.workspace;
+    assert_eq!(w.configuration.as_deref(), Some("docker"));
+    assert_eq!(w.default_configuration.as_deref(), Some("ci"));
+    let api = w.stem("api").unwrap();
+    assert_eq!(api.variant.as_deref(), Some("docker"));
+    assert!(matches!(api.runtime, StemRuntime::Docker(_)));
+    assert_eq!(env(w, "api", "FROM"), "local");
+    assert_eq!(api.local_env.get("FROM").map(String::as_str), Some("local"));
+    assert!(
+        w.stem("web").unwrap().enabled,
+        "the ci overlay is not applied"
+    );
+    assert!(api.env.get("CI").is_none());
+    assert_eq!(
+        r.sources,
+        [
+            ws.root.join("stems.yaml"),
+            ws.root.join("configurations/docker.yaml"),
+            ws.root.join("stems.local.yaml"),
+        ]
+    );
+    let at = r
+        .spans
+        .get(
+            &ConfigPath::root()
+                .key("stems")
+                .key("api")
+                .key("env")
+                .key("FROM"),
+        )
+        .unwrap();
+    assert_eq!(at.file, ws.root.join("stems.local.yaml"));
+}
+
+#[test]
+fn the_local_file_overrides_a_variant_chosen_by_the_configuration_and_can_select_none() {
+    let ws = Ws::new(&[
+        ("stems.yaml", WITH_CONFIGURATIONS),
+        ("stems.local.yaml", "stems:\n  api: { variant: local }\n"),
+    ]);
+    let r = ws.load();
+    assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+    let api = r.workspace.stem("api").unwrap();
+    assert_eq!(r.workspace.configuration.as_deref(), Some("ci"));
+    assert_eq!(api.variant.as_deref(), Some("local"));
+    assert_eq!(env(&r.workspace, "api", "FROM"), "configuration");
+    assert!(api.env.get("SLOW").is_none());
+
+    for local in ["configuration: none\n", "configuration: ~\n"] {
+        let ws = Ws::new(&[
+            ("stems.yaml", WITH_CONFIGURATIONS),
+            ("stems.local.yaml", local),
+        ]);
+        let r = ws.load();
+        assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+        assert_eq!(r.workspace.configuration, None, "{local}");
+        assert_eq!(r.workspace.default_configuration.as_deref(), Some("ci"));
+        assert_eq!(env(&r.workspace, "api", "FROM"), "base");
+        assert!(r.workspace.stem("web").unwrap().enabled);
+        assert_eq!(configuration_names(&r.workspace), ["ci", "docker"]);
+    }
+}
+
+#[test]
+fn an_unknown_configuration_is_a_located_diagnostic_and_the_base_is_used() {
+    let ws = Ws::new(&[
+        ("stems.yaml", WITH_CONFIGURATIONS),
+        ("stems.local.yaml", "# mine\nconfiguration: nope\n"),
+    ]);
+    let r = ws.load();
+    assert_eq!(r.diagnostics.len(), 1, "{:?}", r.diagnostics);
+    let d = &r.diagnostics[0];
+    assert_eq!(d.code, codes::UNKNOWN_CONFIGURATION);
+    assert_eq!(d.path.as_ref().unwrap().to_string(), "configuration");
+    let at = d.location.as_ref().unwrap();
+    assert_eq!(at.file, ws.root.join("stems.local.yaml"));
+    assert_eq!(at.line, 2);
+    assert_eq!(
+        d.details.as_ref().unwrap()["known"],
+        serde_json::json!(["ci", "docker"])
+    );
+    assert_eq!(r.workspace.configuration, None);
+    assert_eq!(env(&r.workspace, "api", "FROM"), "base");
+
+    let ws = Ws::new(&[("stems.yaml", "default_configuration: x\nstems: {}\n")]);
+    let r = ws.load();
+    assert_eq!(r.diagnostics[0].code, codes::UNKNOWN_CONFIGURATION);
+    assert_eq!(
+        r.diagnostics[0].path.as_ref().unwrap().to_string(),
+        "default_configuration"
+    );
+    assert_eq!(r.diagnostics[0].location.as_ref().unwrap().line, 1);
+}
+
+#[test]
+fn a_missing_configuration_file_is_an_error_only_when_selected() {
+    let ws = Ws::new(&[("stems.yaml", WITH_CONFIGURATIONS)]);
+    assert_eq!(ws.load().workspace.configuration.as_deref(), Some("ci"));
+    let ws = Ws::new(&[
+        ("stems.yaml", WITH_CONFIGURATIONS),
+        ("stems.local.yaml", "configuration: docker\n"),
+    ]);
+    let e = ws.fail();
+    assert_eq!(e.errors.len(), 1, "{e:?}");
+    assert_eq!(e.errors[0].code, codes::CONFIGURATION_NOT_FOUND);
+    assert_eq!(
+        e.errors[0].path.as_ref().unwrap().to_string(),
+        "configurations.docker"
+    );
+    assert_eq!(e.errors[0].location.as_ref().unwrap().line, 10);
+    assert!(
+        e.errors[0].message.contains("configurations/docker.yaml"),
+        "{e}"
+    );
+}
+
+#[test]
+fn configuration_overlays_cannot_include_or_select() {
+    let ws = Ws::new(&[
+        (
+            "stems.yaml",
+            "configurations:\n  a: a.yaml\nconfiguration: a\nstems: {}\n",
+        ),
+        ("a.yaml", "include: [b.yaml]\n"),
+        ("b.yaml", ""),
+    ]);
+    let e = ws.fail();
+    assert_eq!(e.errors[0].code, codes::SCHEMA_INVALID);
+    assert!(
+        e.errors[0].message.contains("`include` is not supported"),
+        "{e}"
+    );
+    assert_eq!(
+        e.errors[0].location.as_ref().unwrap().file,
+        ws.root.join("a.yaml")
+    );
+
+    let ws = Ws::new(&[(
+        "stems.yaml",
+        "configurations:\n  a: { configuration: b }\n  b: 3\nstems: {}\n",
+    )]);
+    let e = ws.fail();
+    assert_eq!(e.errors[0].code, codes::SCHEMA_INVALID);
+    assert!(
+        e.errors[0]
+            .message
+            .contains("expected a string or a mapping, found number `3`"),
+        "{e}"
+    );
 }

@@ -1,6 +1,5 @@
 ---
 source: crates/stems-tui/src/tests/sections.rs
-assertion_line: 674
 expression: text
 ---
  stems · process-ch…  1 Graph  2 [Table]  3 Detail  4 Logs  5 Events  6 Scripts
@@ -26,4 +25,4 @@ expression: text
 
 
  ■ x stop  ↻ r restart  : scripts (2+1)  v variant local ▸ slow  p watch on …
- process-chain · profile - · daemon pid 4242 · ✓2 !0 ✗0 ↯0 ·1 ?0 ↻1 ? help · q …
+ process-chain · profile - · daemon pid 4242 · ✓2 !0 ✗0 ↯0 ·1 ?0 ↻1 / search · …

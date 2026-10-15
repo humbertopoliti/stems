@@ -50,6 +50,19 @@ profiles:
   process-only: [shop-api, shop-worker, shop-web]
 
 # ---------------------------------------------------------------------------
+# Named configurations (docs/config.md#configurations): overlays with the
+# shape of stems.local.yaml that the whole team can switch between.
+# `stems configuration use docker` runs shop-api as a container (its
+# `docker` variant below); `stems configuration use none` goes back. The
+# choice lives in stems.local.yaml (`configuration: docker`);
+# `default_configuration: <name>` would pick one for everybody.
+# ---------------------------------------------------------------------------
+configurations:
+  docker:
+    stems:
+      shop-api: { variant: docker }
+
+# ---------------------------------------------------------------------------
 # Workspace-level scripts. Run with `stems run --workspace <name>`.
 # ---------------------------------------------------------------------------
 scripts:

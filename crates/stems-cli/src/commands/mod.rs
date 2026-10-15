@@ -3,6 +3,7 @@
 
 pub mod completions;
 pub mod config;
+pub mod configuration;
 pub mod daemon;
 pub mod doctor;
 pub mod events;
@@ -119,6 +120,7 @@ pub fn dispatch(cmd: Command, ctx: &Ctx, mode: Mode, stdout: &mut dyn Write) -> 
         Command::Config(crate::cli::ConfigCommand::Diff) => config::diff(ctx),
         Command::Config(crate::cli::ConfigCommand::Apply(a)) => config::apply(ctx, &a, mode),
         Command::Switch(a) => switch::run(ctx, &a),
+        Command::Configuration(a) => configuration::run(ctx, a.command.as_ref()),
         Command::Completions(a) => completions::run(&a),
         Command::Upgrade(a) => upgrade::run(ctx, &a),
         Command::Man { outdir } => man::run(&ctx.cwd, &outdir),

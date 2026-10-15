@@ -29,6 +29,12 @@ pub mod codes {
     pub const DUPLICATE_STEM: &str = "DUPLICATE_STEM";
     /// `stems.<n>.variant` names a variant the stem does not declare (FR-ST-8).
     pub const UNKNOWN_VARIANT: &str = "UNKNOWN_VARIANT";
+    /// `configuration:` / `default_configuration:` names a configuration
+    /// that `configurations:` does not declare.
+    pub const UNKNOWN_CONFIGURATION: &str = "UNKNOWN_CONFIGURATION";
+    /// A file-form configuration (`configurations.<n>: <path>`) points at a
+    /// file that does not exist.
+    pub const CONFIGURATION_NOT_FOUND: &str = "CONFIGURATION_NOT_FOUND";
 }
 
 /// A source location (1-based line and column).

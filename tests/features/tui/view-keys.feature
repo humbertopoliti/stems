@@ -2,7 +2,7 @@
 Feature: Number keys and header tabs jump straight to a view
   `1` Graph, `2` Table, `3` Detail, `4` Logs, `5` Events, `6` Scripts, in
   every view, unless a text field or a modal has the keys: a digit typed
-  into the table filter stays in the filter. The header numbers the tabs
+  into the table filter or search stays there. The header numbers the tabs
   (`1 Graph  2 [Table]  3 Detail  4 Logs  5 Events  6 Scripts`); with
   `ui.mouse` a click on a tab switches to it (reducer tests: no headless
   mouse token).
@@ -25,10 +25,18 @@ Feature: Number keys and header tabs jump straight to a view
     And frame 5 contains "6 [Scripts]"
 
   Scenario: a digit typed into the filter does not switch views
-    When I run "stems attach --view table --headless --script 'wait:healthy;/1<Enter>;frame;Esc;4;frame'"
+    When I run "stems attach --view table --headless --script 'wait:healthy;F1<Enter>;frame;Esc;4;frame'"
     Then the command succeeds
     And frame 1 contains "2 [Table]"
-    And frame 1 contains "/1"
+    And frame 1 contains "filter:1"
     And frame 1 does not contain "[Logs]"
     And frame 1 does not contain "› a"
+    And frame 2 contains "4 [Logs]"
+
+  Scenario: a digit typed into the search does not switch views
+    When I run "stems attach --view table --headless --size 120x30 --script 'wait:healthy;/b2<Enter>;frame;Esc;4;frame'"
+    Then the command succeeds
+    And frame 1 contains "2 [Table]"
+    And frame 1 contains "/b2 · no match"
+    And frame 1 does not contain "[Logs]"
     And frame 2 contains "4 [Logs]"

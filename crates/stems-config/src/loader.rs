@@ -25,6 +25,9 @@ pub(crate) struct Loader {
     pub spans: SpanIndex,
     pub errors: Vec<Diagnostic>,
     stack: Vec<PathBuf>,
+    /// Loading a configuration overlay file: `include` / `extends` are
+    /// `SCHEMA_INVALID` instead of being expanded.
+    overlay: bool,
 }
 
 /// Turn a serde_yaml_ng error into a located `SCHEMA_INVALID` diagnostic.
@@ -75,6 +78,15 @@ impl Loader {
     /// collected in `self.errors`; `None` means the file could not be used.
     pub fn load(&mut self, file: &Path, from: Option<&Path>) -> Option<Value> {
         self.load_file(file, from, 0).map(|(v, _)| v)
+    }
+
+    /// Load a configuration overlay file (`configurations.<n>: <path>`):
+    /// like [`Self::load`], but `include` / `extends` in it are rejected.
+    pub fn load_overlay(&mut self, file: &Path, from: Option<&Path>) -> Option<Value> {
+        self.overlay = true;
+        let v = self.load(file, from);
+        self.overlay = false;
+        v
     }
 
     /// [`Self::load`], also returning which file defined each stem, with
@@ -153,6 +165,33 @@ impl Loader {
         };
 
         let dir = file.parent().map(Path::to_path_buf).unwrap_or_default();
+        if self.overlay {
+            let mut bad = false;
+            for (key, present) in [
+                ("extends", raw.extends.is_some()),
+                ("include", !raw.include.is_empty()),
+            ] {
+                if present {
+                    bad = true;
+                    let path = ConfigPath::root().key(key);
+                    self.errors.push(
+                        Diagnostic::new(
+                            codes::SCHEMA_INVALID,
+                            format!(
+                                "`{key}` is not supported in a configuration file ({})",
+                                file.display()
+                            ),
+                        )
+                        .with_path(path.clone())
+                        .with_location(local_spans.get(&path).cloned())
+                        .with_hint("a configuration file is a single overlay: move the shared parts into stems.yaml"),
+                    );
+                }
+            }
+            if bad {
+                return None;
+            }
+        }
         self.stack.push(file.clone());
         let mut result = Value::Mapping(Mapping::new());
         let mut origins = Origins::new();
@@ -209,6 +248,15 @@ impl Loader {
         if let Value::Mapping(m) = &mut own {
             m.remove("extends");
             m.remove("include");
+            // File-form configurations are relative to this file: make them
+            // absolute now, the merged tree no longer knows the file.
+            if let Some(Value::Mapping(cfgs)) = m.get_mut("configurations") {
+                for (_, v) in cfgs.iter_mut() {
+                    if let Value::String(p) = v {
+                        *p = normalize(&dir.join(p.as_str())).display().to_string();
+                    }
+                }
+            }
         }
         merge(&mut result, own, &ConfigPath::root());
         self.spans_extend(local_spans);

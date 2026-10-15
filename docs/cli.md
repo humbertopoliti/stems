@@ -35,46 +35,48 @@ or usage error, 3 partial success or orphans, 4 daemon unavailable.
 Usage: stems [OPTIONS] [COMMAND]
 
 Commands:
-  init         Scaffold a new integration repo in the current (or --workspace) directory
-  validate     Check the workspace config without starting anything
-  show         Print the resolved workspace config (or one stem's)
-  completions  Print a shell completion script
-  up           Start stems (and their dependencies), attached or detached
-  down         Stop stems in reverse dependency order
-  start        Start stems (and unstarted hard dependencies)
-  stop         Stop stems
-  restart      Restart stems (stop, then start)
-  attach       Open the dashboard (TUI) on the workspace daemon
-  status       Show the state of every stem
-  logs         Show or follow stem and script logs
-  events       Show or follow the event stream (NDJSON with --json)
-  metrics      Show CPU, memory and disk usage per stem
-  health       Show the last health probe results per stem, with latency
-  graph        Draw the dependency graph
-  run          Run a stem or workspace script
-  scripts      List scripts
-  exec         Run an ad-hoc command in a stem's context (env, cwd or container)
-  shell        Open an interactive shell in a stem's context
-  reset        Run a stem's `reset` script and clear its stamps
-  build        Run build scripts (or docker builds)
-  pull         Pull the images of docker stems now (a moved tag such as `latest` included)
-  stamps       Show or clear setup/seed stamps
-  overlays     Show the overlays stems has written into codebases
-  doctor       Diagnose the environment: Docker, tool versions, ports, orphans
-  repos        Clone or update git codebases
-  watch        Pause or resume watchdogs
-  profiles     List profiles
-  outputs      Show values published by stems' `outputs:`
-  config       Read or change local config overrides
-  switch       Switch a stem to one of its variants (e.g. from a local process to a docker
-               container), or back to `local`
-  add          Add a stem to stems.yaml
-  remove       Remove a stem from stems.yaml
-  edit         Open $EDITOR at a stem's block in stems.yaml
-  mcp          Run the MCP server (agent interface)
-  upgrade      Upgrade stems (delegates to Homebrew when installed with brew)
-  daemon       Manage the workspace daemon
-  help         Print this message or the help of the given subcommand(s)
+  init           Scaffold a new integration repo in the current (or --workspace) directory
+  validate       Check the workspace config without starting anything
+  show           Print the resolved workspace config (or one stem's)
+  completions    Print a shell completion script
+  up             Start stems (and their dependencies), attached or detached
+  down           Stop stems in reverse dependency order
+  start          Start stems (and unstarted hard dependencies)
+  stop           Stop stems
+  restart        Restart stems (stop, then start)
+  attach         Open the dashboard (TUI) on the workspace daemon
+  status         Show the state of every stem
+  logs           Show or follow stem and script logs
+  events         Show or follow the event stream (NDJSON with --json)
+  metrics        Show CPU, memory and disk usage per stem
+  health         Show the last health probe results per stem, with latency
+  graph          Draw the dependency graph
+  run            Run a stem or workspace script
+  scripts        List scripts
+  exec           Run an ad-hoc command in a stem's context (env, cwd or container)
+  shell          Open an interactive shell in a stem's context
+  reset          Run a stem's `reset` script and clear its stamps
+  build          Run build scripts (or docker builds)
+  pull           Pull the images of docker stems now (a moved tag such as `latest` included)
+  stamps         Show or clear setup/seed stamps
+  overlays       Show the overlays stems has written into codebases
+  doctor         Diagnose the environment: Docker, tool versions, ports, orphans
+  repos          Clone or update git codebases
+  watch          Pause or resume watchdogs
+  profiles       List profiles
+  outputs        Show values published by stems' `outputs:`
+  config         Read or change local config overrides
+  switch         Switch a stem to one of its variants (e.g. from a local process to a docker
+                 container), or back to `local`
+  configuration  List, select or save named configurations (overlays declared under
+                 `configurations:` in stems.yaml)
+  add            Add a stem to stems.yaml
+  remove         Remove a stem from stems.yaml
+  edit           Open $EDITOR at a stem's block in stems.yaml
+  mcp            Run the MCP server (agent interface)
+  upgrade        Upgrade stems (delegates to Homebrew when installed with brew)
+  daemon         Manage the workspace daemon
+  help           Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help
@@ -2261,6 +2263,201 @@ Options:
 
   -h, --help
           Print help (see a summary with '-h')
+
+Global options:
+      --workspace <PATH>
+          Workspace directory or stems.yaml path (default: $STEMS_WORKSPACE, else walk up from the
+          current directory)
+
+      --json
+          Emit the JSON envelope (the default when stdout is not a terminal)
+
+      --human
+          Emit human text even when stdout is not a terminal
+
+      --no-color
+          Disable colours in human output
+          
+          [env: STEMS_NO_COLOR]
+
+  -q, --quiet
+          Print only errors in human mode
+
+  -v, --verbose...
+          More detail (repeat for more: -vv)
+
+      --home <PATH>
+          Root for daemon state, sockets, locks and logs (default: ~/Library/Application
+          Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
+          
+          [env: STEMS_HOME]
+```
+
+### `stems configuration`
+
+```text
+List, select or save named configurations (overlays declared under `configurations:` in stems.yaml).
+
+A configuration is an overlay with the shape of stems.local.yaml (variants, disabled stems, env,
+profile, ...), inline or in its own YAML file; `default_configuration` picks one for everybody and
+`configuration:` in stems.local.yaml wins. Merge order: stems.yaml, the configuration,
+stems.local.yaml. Without a subcommand, lists them. See docs/config.md#configurations.
+
+Usage: stems configuration [OPTIONS] [COMMAND]
+
+Commands:
+  list  List the configurations; `*` marks the active one
+  use   Select a configuration (or `none`) in stems.local.yaml
+  save  Save the current stems.local.yaml overrides as a new configuration file and declare it in
+        stems.yaml (without selecting it)
+  help  Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+Global options:
+      --workspace <PATH>
+          Workspace directory or stems.yaml path (default: $STEMS_WORKSPACE, else walk up from the
+          current directory)
+
+      --json
+          Emit the JSON envelope (the default when stdout is not a terminal)
+
+      --human
+          Emit human text even when stdout is not a terminal
+
+      --no-color
+          Disable colours in human output
+          
+          [env: STEMS_NO_COLOR]
+
+  -q, --quiet
+          Print only errors in human mode
+
+  -v, --verbose...
+          More detail (repeat for more: -vv)
+
+      --home <PATH>
+          Root for daemon state, sockets, locks and logs (default: ~/Library/Application
+          Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
+          
+          [env: STEMS_HOME]
+```
+
+### `stems configuration list`
+
+```text
+List the configurations; `*` marks the active one
+
+Usage: stems configuration list [OPTIONS]
+
+Options:
+  -h, --help
+          Print help
+
+Global options:
+      --workspace <PATH>
+          Workspace directory or stems.yaml path (default: $STEMS_WORKSPACE, else walk up from the
+          current directory)
+
+      --json
+          Emit the JSON envelope (the default when stdout is not a terminal)
+
+      --human
+          Emit human text even when stdout is not a terminal
+
+      --no-color
+          Disable colours in human output
+          
+          [env: STEMS_NO_COLOR]
+
+  -q, --quiet
+          Print only errors in human mode
+
+  -v, --verbose...
+          More detail (repeat for more: -vv)
+
+      --home <PATH>
+          Root for daemon state, sockets, locks and logs (default: ~/Library/Application
+          Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
+          
+          [env: STEMS_HOME]
+```
+
+### `stems configuration use`
+
+```text
+Select a configuration (or `none`) in stems.local.yaml.
+
+Writes `configuration: <name>` to stems.local.yaml (comments kept; `none` removes the key),
+validates the workspace (the file is restored on error) and, when the daemon runs, applies the
+change: stems whose config changed restart (`--no-apply` only edits the file). An unknown name is
+UNKNOWN_CONFIGURATION (exit 2).
+
+Usage: stems configuration use [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+          A configuration name, or `none` for the base config
+
+Options:
+      --no-apply
+          Only edit stems.local.yaml; do not apply the change to a running daemon
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Global options:
+      --workspace <PATH>
+          Workspace directory or stems.yaml path (default: $STEMS_WORKSPACE, else walk up from the
+          current directory)
+
+      --json
+          Emit the JSON envelope (the default when stdout is not a terminal)
+
+      --human
+          Emit human text even when stdout is not a terminal
+
+      --no-color
+          Disable colours in human output
+          
+          [env: STEMS_NO_COLOR]
+
+  -q, --quiet
+          Print only errors in human mode
+
+  -v, --verbose...
+          More detail (repeat for more: -vv)
+
+      --home <PATH>
+          Root for daemon state, sockets, locks and logs (default: ~/Library/Application
+          Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
+          
+          [env: STEMS_HOME]
+```
+
+### `stems configuration save`
+
+```text
+Save the current stems.local.yaml overrides as a new configuration file and declare it in stems.yaml
+(without selecting it)
+
+Usage: stems configuration save [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+          The new configuration's name
+
+Options:
+      --file <FILE>
+          Where to write it, relative to the integration repo (default: configurations/<name>.yaml)
+
+      --force
+          Overwrite an existing file or file-form configuration of that name
+
+  -h, --help
+          Print help
 
 Global options:
       --workspace <PATH>

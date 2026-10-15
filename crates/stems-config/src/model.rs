@@ -63,6 +63,16 @@ pub struct Workspace {
     /// the profile `up` uses when none is given; wins over `default_profile`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
+    /// The active configuration (`configuration:`, usually in
+    /// `stems.local.yaml`, else `default_configuration`), if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration: Option<String>,
+    /// `default_configuration`, if set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_configuration: Option<String>,
+    /// Every declared configuration, in declaration order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub configurations: Vec<ConfigurationInfo>,
     /// Agent guard rails.
     pub agent: Agent,
     /// Log retention.
@@ -102,6 +112,26 @@ impl Workspace {
     pub fn stems_in_order(&self) -> Vec<&Stem> {
         self.stems().collect()
     }
+}
+
+/// A declared configuration (`configurations.<name>`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConfigurationInfo {
+    /// Its name.
+    pub name: String,
+    /// Inline, or the overlay file.
+    #[serde(flatten)]
+    pub source: ConfigurationSource,
+}
+
+/// Where a configuration's overlay is written.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "source", content = "file", rename_all = "lowercase")]
+pub enum ConfigurationSource {
+    /// A mapping under `configurations.<name>`.
+    Inline,
+    /// A YAML file (absolute path).
+    File(PathBuf),
 }
 
 /// A profile.

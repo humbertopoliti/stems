@@ -1,6 +1,5 @@
 ---
 source: crates/stems-tui/src/tests.rs
-assertion_line: 1274
 expression: text
 ---
  stems · minimal                                              1 Graph  2 Table  3 [Detail]  4 Logs  5 Events  6 Scripts
@@ -42,4 +41,4 @@ expression: text
 │                                                                                                                      │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
  ■ x stop  ↻ r restart  : scripts  o editor  ? more
- minimal · profile - · daemon pid 4242 · ✓1 !0 ✗0 ↯0 ·0 ?0 ↻0 j/k row · Enter act · [ ] stem · Esc back · ? help · q qu…
+ minimal · profile - · daemon pid 4242 · ✓1 !0 ✗0 ↯0 ·0 ?0 ↻0 j/k row · Enter act · [ ] stem · / search · Esc back · ? …

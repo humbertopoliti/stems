@@ -782,7 +782,7 @@ fn scripts_view_enter_runs_or_opens_the_form() {
 #[test]
 fn scripts_view_filters_by_script_or_owner() {
     let mut m = rich_scripts();
-    update(&mut m, ch('/'));
+    update(&mut m, ch('F'));
     for c in "flk".chars() {
         update(&mut m, ch(c));
     }
@@ -798,13 +798,36 @@ fn scripts_view_filters_by_script_or_owner() {
         args: serde_json::Map::new(),
     })));
     // By owner; Esc clears.
-    update(&mut m, ch('/'));
+    update(&mut m, ch('F'));
     for c in "workspace".chars() {
         update(&mut m, ch(c));
     }
     assert_eq!(listed(&m), vec![(None, "needs-api")]);
     update(&mut m, k(KeyCode::Esc));
     assert_eq!(listed(&m).len(), 4);
+}
+
+#[test]
+fn scripts_view_search_selects_the_script() {
+    let mut m = rich_scripts();
+    assert_eq!(m.scripts_view.selected, 0);
+    for c in "/flaky".chars() {
+        update(&mut m, ch(c));
+    }
+    assert_eq!(listed(&m).len(), 4, "a search hides nothing");
+    update(&mut m, k(KeyCode::Enter));
+    assert_eq!(m.scripts_view.selected, 2);
+    assert_eq!(m.selected.as_deref(), Some("b"), "the stem follows");
+    update(&mut m, ch('n'));
+    assert_eq!(m.scripts_view.selected, 2, "one match wraps onto itself");
+    // By owner and by description.
+    for c in "/workspace".chars() {
+        update(&mut m, ch(c));
+    }
+    update(&mut m, k(KeyCode::Enter));
+    assert_eq!(m.scripts_view.selected, 0);
+    let text = render_text(&m, 120, 40);
+    assert!(text.contains("/workspace · 1/1 (n/N)"), "{text}");
 }
 
 #[test]

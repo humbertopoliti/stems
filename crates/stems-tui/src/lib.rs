@@ -3,7 +3,7 @@
 //! Elm-style architecture:
 //!
 //! * [`Model`]: everything shown (stems from `status`, selection, view,
-//!   filter, sort, help, the [`Modal`] dialog, toasts, detail data, recent
+//!   filter, search, sort, help, the [`Modal`] dialog, toasts, detail data, recent
 //!   events, prefs);
 //! * [`Msg`]: inputs (keys, mouse, ticks, daemon events, RPC results,
 //!   resize, signals);
@@ -30,6 +30,7 @@ pub mod prefs;
 pub mod runner;
 pub mod script;
 pub mod scripts;
+pub mod search;
 pub mod terminal;
 pub mod toast;
 pub mod update;
@@ -52,6 +53,7 @@ pub use runner::{
 };
 pub use script::{Token, WaitFor};
 pub use scripts::ScriptsState;
+pub use search::Search;
 pub use toast::{Toast, ToastKind, Toasts};
 pub use update::{init, update};
 pub use view::{render_text, view};

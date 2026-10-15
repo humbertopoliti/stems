@@ -191,6 +191,20 @@ fn sample(code: ErrorCode) -> Error {
             "stem `shop-api` has no variant `dockr`",
             "variants of `shop-api`: docker (or `local` for the base definition; see `stems switch shop-api`)",
         ),
+        UnknownConfiguration => cfg(
+            code,
+            "configuration",
+            2,
+            "no configuration named `prod`",
+            "configurations: ci, docker (or `none` for the base config; see `stems configuration list`)",
+        ),
+        ConfigurationNotFound => cfg(
+            code,
+            "configurations.docker",
+            7,
+            "configuration `docker`: /work/integration/configurations/docker.yaml not found",
+            "fix the path (it is relative to the file that names it), create the file, or select another configuration",
+        ),
         DestructiveNotConfirmed => rt(
             code,
             "`down --volumes` deletes data and needs confirmation",

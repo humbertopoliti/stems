@@ -74,7 +74,8 @@ stop everything in attached `up` and just leave in `attach`. A plain
   `✓`, degraded `!`, failed `✗`, unhealthy `↯`, stopped `·`, unknown `?`,
   transitioning `↻`; unhealthy stems, running or external with a failing
   probe, are counted apart from failed ones, as in `stems status`), the
-  filter (`/b`), then key hints or the last notice/error.
+  filter (`filter:b`), the search (`/api · 2/5 (n/N)`, below), then key
+  hints or the last notice/error.
 
 ### The action bar
 
@@ -234,6 +235,35 @@ switch and after `config.applied`. The palette has `switch variant of
 to one (in every view, except while typing a filter or search or with a
 dialog open, where the digit is typed).
 
+### Search (`/`, `n` / `N`) and filter (`F`)
+
+Every view has a vim-style search: `/` starts a query (typed in the
+status bar as `/api_`; digits are typed too), `Enter` keeps it and jumps
+to the first match at or after the cursor, `n` / `N` go to the next /
+previous match, wrapping, `Esc` clears it (while typing, `Esc` cancels).
+Table, Graph, Detail, Events and Scripts share one search register, so
+switching views keeps the query and `n` cycles the matches of the view on
+screen; the Logs view searches its own pane (below). Matching is a
+case-insensitive substring test over each view's rows, and the matched
+text is highlighted:
+
+| View | A row is | The jump |
+|---|---|---|
+| Table | a visible stem: name, type, state, reason, ports, variant | selects the stem |
+| Graph | a drawn box: name and type | selects the box |
+| Detail | a line of the selected stem's sections | scrolls the line into view (centred); a script, variant or watchdog row is selected too |
+| Events | a shown event (an active filter narrows it): time, kind, stem, from→to, reason, actor | selects the event |
+| Scripts | a listed script: name, description, owner | selects the script (and its stem) |
+
+The status bar shows `/api · 2/5 (n/N)` on a match, `/api · 5 matches`
+off one, `/api · no match` when nothing matches; the search never hides
+rows. `F` is the filter, which does: in Table, Graph and Detail it keeps
+the stems whose name contains the text (`filter:web` in the status bar,
+`no stem matches filter:web` when none), in Events and Scripts their own
+filters (below). `Enter` keeps a filter, `Esc` clears it: with both a
+search and a filter the first `Esc` clears the search, the next the
+filter.
+
 Terminals smaller than 40x10 show "terminal too small" instead.
 
 With the **split layout** (`Ctrl-L`) the bottom 40 % of Table, Graph,
@@ -349,9 +379,11 @@ and the description.
 `Enter` runs the selected script exactly as the `:` menu does: its form
 first when it declares `args`, else `run_script {wait: false}`; the split
 log pane opens on its output (a workspace script's under the log stem
-`_workspace`) and `script.finished` becomes a toast. `/` filters (fuzzy,
-on the script name and its owner: `seed`, `seed postgres`, `workspace`);
-`Enter` keeps the filter, `Esc` clears it. Moving onto a stem's script
+`_workspace`) and `script.finished` becomes a toast. `F` filters (fuzzy,
+on the script name and its owner: `seed`, `seed postgres`, `workspace`;
+`Scripts · filter:seed` in the title); `Enter` keeps the filter, `Esc`
+clears it. `/` searches the name, description and owner (`n`/`N` move the
+selection between the matches). Moving onto a stem's script
 selects that stem, so the split pane and the other views follow; a
 workspace script leaves the stem selection alone. The view has no action
 bar (the stem keys act in Table, Graph and Detail); `Ctrl-P` and `[`/`]`
@@ -361,7 +393,7 @@ work as everywhere. The catalogue is reloaded when the view opens, and on
 ### The Events view (29)
 
 ```
-┌ Events · /failed ────────────────────────────────────────────────────────────┐
+┌ Events · filter:failed ──────────────────────────────────────────────────────┐
 │  TIME     KIND            STEM       FROM→TO             REASON      ACTOR   │
 │› 12:00:03 stem.state      echo-svc   healthy→failed      exit code 1 daemon  │
 └──────────────────────────────────────────────────────────────────────────────┘
@@ -370,7 +402,8 @@ work as everywhere. The catalogue is reloaded when the view opens, and on
 * The daemon's events (the buffered ones, fetched with `events` when the
   view first opens, then live ones; the last 2000 are kept), oldest first,
   the newest selected until you move.
-* `/` filters by a substring of the stem, kind, from/to state or reason.
+* `F` filters by a substring of the stem, kind, from/to state or reason;
+  `/` searches the shown rows (`n`/`N` select the next / previous match).
 * `Enter` opens the event's stem in the Logs view replayed from a minute
   before the event (`subscribe_logs` with `since`), the selection on the
   last line at (or up to 2 s after) the event time, not following.
@@ -402,9 +435,10 @@ its own line (and never runs a clipboard command). The status bar says
 | `v` | the variant picker of the selected stem (Table, Graph, Detail) |
 | `Tab` / `Shift-Tab` | next / previous view |
 | `1` `2` `3` `4` `5` `6` | Graph / Table / Detail / Logs / Events / Scripts, from any view (not while typing into a filter, search or dialog). `3` with no stem selected selects the first one; `Esc` in Detail goes back to the Table or Graph it came from |
-| `/` | filter by name: type, `Enter` keeps it, `Esc` clears it |
+| `/`, `n` / `N` | search the view (above): type, `Enter` keeps it and jumps to the first match; next / previous match, wrapping |
+| `F` | filter by name: type, `Enter` keeps it, `Esc` clears it |
 | `O` | cycle the sort: config order, name, state (failed first), uptime (was `s` before 30) |
-| `Esc` | dismiss the toasts, close the help / dialog, back from Detail, clear the filter |
+| `Esc` | clear the search, then the filter; dismiss the toasts, close the help / dialog, back from Detail |
 | `?` | toggle the help overlay |
 | `q`, `Ctrl-C` | quit (see above) |
 | `Ctrl-L` | split layout: the selected stem's log pane under Table/Graph/Detail/Scripts (saved in `ui.toml`) |
@@ -430,13 +464,15 @@ In the Logs view:
 | `Esc` | leave the range, clear the search |
 
 In the Events view: `j`/`k`, `PgUp`/`PgDn`, `g`/`G` and the wheel move,
-`/` filters, `Enter` jumps to the logs, `Esc` clears the filter, `[`/`]`
-move the shared stem selection. In the Scripts view: `j`/`k`,
-`PgUp`/`PgDn`, `g`/`G` and the wheel move, `Enter` runs the script, `/`
-filters, `Esc` clears the filter. In these views `Tab` and `1`-`6` switch
-views (not while typing a search or filter). `?` shows the keys of the
-current view. The status bar's hints name the keys of Detail, Logs,
-Events and Scripts (`j/k row · Enter act`, `Space pause`, `[ ] stem`).
+`/` searches (`n`/`N` next / previous), `F` filters, `Enter` jumps to the
+logs, `Esc` clears the search, then the filter, `[`/`]` move the shared
+stem selection. In the Scripts view: `j`/`k`, `PgUp`/`PgDn`, `g`/`G` and
+the wheel move, `Enter` runs the script, `/` searches, `F` filters, `Esc`
+clears the search, then the filter. In these views `Tab` and `1`-`6`
+switch views (not while typing a search or filter). `?` shows the keys of
+the current view. The status bar's hints name the keys of Detail, Logs,
+Events and Scripts (`j/k row · Enter act`, `Space pause`, `[ ] stem`,
+`/ search · F filter`).
 
 ## Actions (30, FR-UI-2)
 
@@ -583,7 +619,7 @@ is refreshed, so the frame shows the daemon's current state.
 | `wait:lines>=<n>` | wait until the log pane (Logs view or split pane) holds `n` lines (paused ones included) |
 | `wait:log=<text>` | wait until a log pane line contains `<text>` |
 | `wait:event=<kind>[:<stem>]` | wait until an event of that kind (and stem) arrives after the last key token (30), e.g. `wait:event=script.finished:shop-api` |
-| `type:<text>` | the characters of `<text>` as keys, verbatim (spaces, `<`, `>` included): typing into the focused field, filter or palette (30), e.g. `type:rest api` |
+| `type:<text>` | the characters of `<text>` as keys, verbatim (spaces, `<`, `>` included): typing into the focused field, filter, search or palette (30), e.g. `type:rest api` |
 | `chaos:<path>` | `GET http://127.0.0.1:<port>/__chaos/<path>` on the selected stem's first port (the shop-api chaos endpoints of the test workspaces; errors become a notice) |
 | `view:<name>` | switch view (`table`, `detail`, `graph`, `logs`, `events`, `scripts`) |
 | `frame` | dump the frame |

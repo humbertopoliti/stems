@@ -7,6 +7,7 @@
 
 mod codebase;
 pub mod compat;
+pub mod configurations;
 pub mod defaults;
 mod diagnostic;
 mod discover;
@@ -79,7 +80,8 @@ impl LoadOptions {
 pub struct Resolved {
     /// The resolved model.
     pub workspace: Workspace,
-    /// Files read, in merge order (extends base, includes, main, local).
+    /// Files read, in merge order (extends base, includes, main, the
+    /// selected configuration's file, local).
     pub sources: Vec<PathBuf>,
     /// Non-fatal problems (e.g. `UNRESOLVED_VARIABLE`); `stems_core::validate`
     /// reports every one of them as an error.
@@ -102,18 +104,47 @@ pub fn load(opts: LoadOptions) -> Result<Resolved, ConfigErrors> {
     let mut loader = Loader::default();
     let main = loader.load(&config_file, None);
     let local_file = root.join(LOCAL_FILE);
+    // The local file has its own loader: the selected configuration file
+    // is loaded after it is known, but its sources and spans go between
+    // the committed files and the local file (merge order).
+    let mut local_loader = Loader::default();
     let local = (!opts.skip_local && local_file.is_file())
-        .then(|| loader.load(&local_file, None))
+        .then(|| local_loader.load(&local_file, None))
         .flatten();
-    if !loader.errors.is_empty() {
+    if !loader.errors.is_empty() || !local_loader.errors.is_empty() {
+        let mut errors = loader.errors;
+        errors.extend(local_loader.errors);
+        return Err(ConfigErrors { errors });
+    }
+    let mut merged = main.unwrap_or_else(|| Value::Mapping(Mapping::new()));
+    // Configurations: base -> selected configuration (-> variants -> local).
+    let mut cfg_diags = Vec::new();
+    let selected = configurations::apply(&mut merged, local.as_ref(), &mut loader, &mut cfg_diags);
+    let Loader {
+        mut sources,
+        mut spans,
+        errors,
+        ..
+    } = loader;
+    let Loader {
+        sources: local_sources,
+        spans: local_spans,
+        ..
+    } = local_loader;
+    sources.extend(local_sources);
+    spans.extend(local_spans);
+    if !errors.is_empty() {
         return Err(ConfigErrors {
-            errors: loader.errors,
+            errors: errors.into_iter().map(|d| locate(d, &spans)).collect(),
         });
     }
-    let Loader {
-        sources, mut spans, ..
-    } = loader;
-    let mut merged = main.unwrap_or_else(|| Value::Mapping(Mapping::new()));
+    if let Some(name) = &selected.inline {
+        spans.alias(
+            &ConfigPath::root().key("configurations").key(name),
+            &ConfigPath::root(),
+            &local_file,
+        );
+    }
     let local_keys = local.as_ref().map(LocalEnvKeys::of).unwrap_or_default();
     // Variants (FR-ST-8): base -> active variant -> stems.local.yaml.
     let mut variant_diags = Vec::new();
@@ -128,6 +159,7 @@ pub fn load(opts: LoadOptions) -> Result<Resolved, ConfigErrors> {
         merge::merge(&mut merged, l, &ConfigPath::root());
     }
     variants::strip(&mut merged);
+    configurations::strip(&mut merged);
 
     let schema_err = |e: serde_yaml_ng::Error| ConfigErrors::one(yaml_error(&e, None, &spans));
     let prelim: RawWorkspace = serde_yaml_ng::from_value(merged.clone()).map_err(schema_err)?;
@@ -199,6 +231,9 @@ pub fn load(opts: LoadOptions) -> Result<Resolved, ConfigErrors> {
             errors: errors.into_iter().map(|d| locate(d, &spans)).collect(),
         })?;
     local_keys.apply(&mut workspace);
+    workspace.configuration = selected.active;
+    workspace.default_configuration = selected.default;
+    workspace.configurations = selected.infos;
     for (name, v) in stem_variants {
         if let Some(stem) = workspace.stems.get_mut(&name) {
             stem.variant = Some(
@@ -209,8 +244,9 @@ pub fn load(opts: LoadOptions) -> Result<Resolved, ConfigErrors> {
         }
     }
 
-    let diagnostics = variant_diags
+    let diagnostics = cfg_diags
         .into_iter()
+        .chain(variant_diags)
         .chain(sub_diags)
         .chain(ctx.diagnostics)
         .map(|d| locate(d, &spans))

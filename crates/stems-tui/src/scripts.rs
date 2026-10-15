@@ -6,9 +6,10 @@
 //! Each row shows the name, the kind, the last run the dashboard saw
 //! (`script.*` events, any actor), the arguments and the description.
 //! `j`/`k` move, `Enter` runs the script (its form first when it declares
-//! `args`), `/` filters (fuzzy, on the script and its owner). Moving onto a
-//! stem's script selects that stem, so the split log pane and the other
-//! views follow.
+//! `args`), `F` filters (fuzzy, on the script and its owner), `/` searches
+//! (name, description, owner; [`crate::search`]). Moving onto a stem's
+//! script selects that stem, so the split log pane and the other views
+//! follow.
 
 use ratatui::Frame;
 use ratatui::layout::{Margin, Rect};
@@ -22,6 +23,7 @@ use crate::detail::{activity_text, args_summary, fit, stem_scripts};
 use crate::fuzzy;
 use crate::graph::glyph_color;
 use crate::model::Model;
+use crate::search::highlight;
 use crate::view::{accent, truncate};
 
 /// The group label of the workspace-level scripts.
@@ -30,7 +32,7 @@ pub const WORKSPACE_GROUP: &str = "workspace";
 /// State of the Scripts view.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ScriptsState {
-    /// Filter text (`/`): fuzzy on `<script> <owner>`.
+    /// Filter text (`F`): fuzzy on `<script> <owner>`.
     pub filter: String,
     /// Typing the filter.
     pub editing: bool,
@@ -88,6 +90,7 @@ fn content(model: &Model, width: u16) -> (Vec<Line<'static>>, Option<usize>) {
         .fg(accent(model))
         .add_modifier(Modifier::BOLD);
     let all = entries(model);
+    let query = model.search.query.as_str();
     let sel = model.scripts_view.selected.min(all.len().saturating_sub(1));
     let nw = all
         .iter()
@@ -104,7 +107,7 @@ fn content(model: &Model, width: u16) -> (Vec<Line<'static>>, Option<usize>) {
                 lines.push(Line::from(""));
             }
             group = Some(owner(e));
-            let mut spans = vec![Span::styled(owner(e).to_string(), head)];
+            let mut spans = highlight(owner(e), query, head);
             match &e.stem {
                 None => spans.push(Span::styled(" · global", dim)),
                 Some(name) => {
@@ -131,11 +134,13 @@ fn content(model: &Model, width: u16) -> (Vec<Line<'static>>, Option<usize>) {
         let act = model.script_activity.get(&(e.stem.clone(), e.name.clone()));
         let (act_text, act_style) = activity_text(act, a);
         let args = args_summary(e);
-        let mut spans = vec![
-            Span::raw(marker.to_string()),
-            Span::raw(format!("{:<nw$} ", truncate(&e.name, nw, a))),
-            Span::styled(format!("{kind:<9} "), dim),
-        ];
+        let mut spans = vec![Span::raw(marker.to_string())];
+        spans.extend(highlight(
+            &format!("{:<nw$} ", truncate(&e.name, nw, a)),
+            query,
+            Style::default(),
+        ));
+        spans.push(Span::styled(format!("{kind:<9} "), dim));
         if !act_text.is_empty() {
             spans.push(Span::styled(format!("{act_text} "), act_style));
         }
@@ -143,7 +148,7 @@ fn content(model: &Model, width: u16) -> (Vec<Line<'static>>, Option<usize>) {
             spans.push(Span::raw(format!("({args}) ")));
         }
         if let Some(desc) = &e.description {
-            spans.push(Span::styled(desc.clone(), dim));
+            spans.extend(highlight(desc, query, dim));
         }
         if is_sel {
             selected_line = Some(lines.len());
@@ -159,7 +164,7 @@ pub fn render(model: &Model, f: &mut Frame, area: Rect) {
     let a = model.ascii;
     let title = if st.editing || !st.filter.is_empty() {
         format!(
-            " Scripts · /{}{} ",
+            " Scripts · filter:{}{} ",
             st.filter,
             if st.editing { "_" } else { "" }
         )
@@ -177,7 +182,7 @@ pub fn render(model: &Model, f: &mut Frame, area: Rect) {
         let msg = if model.catalog.is_none() {
             if a { "loading..." } else { "loading…" }.to_string()
         } else if !st.filter.is_empty() {
-            format!("no script matches /{}", st.filter)
+            format!("no script matches filter:{}", st.filter)
         } else {
             "no scripts (declare `scripts:` in stems.yaml)".to_string()
         };
