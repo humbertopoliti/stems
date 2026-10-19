@@ -429,12 +429,25 @@ impl Supervisor {
         metrics::spawn_sampler(&sup);
         // The config watcher (33).
         reload::spawn_watcher(&sup);
+        // Desktop notifications when stems fail for good (34).
+        crate::notify::spawn(&sup);
         sup
     }
 
     /// This daemon run's id (`STEMS_RUN_ID`).
     pub fn run_id(&self) -> &str {
         &self.core.run_id
+    }
+
+    /// The event bus (the notifier task subscribes to it, 34).
+    pub(crate) fn events(&self) -> &Arc<EventBus> {
+        &self.core.events
+    }
+
+    /// The host: the applied workspace at any time (34 re-reads it at
+    /// every notification flush, so a reload applies).
+    pub(crate) fn host(&self) -> &Arc<dyn Host> {
+        &self.host
     }
 
     /// The cell of `name`, created (with its actor) on first use.

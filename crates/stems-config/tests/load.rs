@@ -1257,3 +1257,87 @@ fn configuration_overlays_cannot_include_or_select() {
         "{e}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Notifications (34)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn notifications_default_when_absent() {
+    let ws = Ws::new(&[("stems.yaml", "stems:\n  a: { type: process, command: x }\n")]);
+    let r = load(ws.opts()).unwrap();
+    let n = &r.workspace.notifications;
+    assert!(n.is_default());
+    assert!(n.enabled);
+    assert_eq!(n.debounce.to_string(), "2s");
+    assert_eq!(n.cooldown.to_string(), "30s");
+    assert_eq!(n.command, None);
+    // Omitted from `show` while default.
+    let v = serde_json::to_value(&r.workspace).unwrap();
+    assert!(v.get("notifications").is_none());
+}
+
+#[test]
+fn notifications_override_and_local_file() {
+    let ws = Ws::new(&[
+        (
+            "stems.yaml",
+            "notifications: { debounce: 500ms, command: 'echo hi' }\nstems:\n  a: { type: process, command: x }\n",
+        ),
+        (
+            "stems.local.yaml",
+            "notifications: { enabled: false, cooldown: 3s }\n",
+        ),
+    ]);
+    let r = load(ws.opts()).unwrap();
+    let n = &r.workspace.notifications;
+    assert!(!n.enabled);
+    assert_eq!(n.debounce.to_string(), "500ms");
+    assert_eq!(n.cooldown.to_string(), "3s");
+    assert_eq!(n.command.as_deref(), Some("echo hi"));
+    let v = serde_json::to_value(&r.workspace).unwrap();
+    assert_eq!(v["notifications"]["enabled"], false);
+}
+
+#[test]
+fn notifications_empty_command_is_none() {
+    let ws = Ws::new(&[(
+        "stems.yaml",
+        "notifications: { command: '  ' }\nstems:\n  a: { type: process, command: x }\n",
+    )]);
+    let r = load(ws.opts()).unwrap();
+    assert_eq!(r.workspace.notifications.command, None);
+}
+
+#[test]
+fn notifications_bad_duration_is_a_schema_error_with_location() {
+    let ws = Ws::new(&[(
+        "stems.yaml",
+        "name: n\nnotifications:\n  debounce: soon\nstems:\n  a: { type: process, command: x }\n",
+    )]);
+    let e = load(ws.opts()).unwrap_err();
+    let d = &e.errors[0];
+    assert_eq!(d.code, codes::SCHEMA_INVALID);
+    assert_eq!(
+        d.path.as_ref().unwrap().to_string(),
+        "notifications.debounce"
+    );
+    assert!(d.message.contains("soon"), "{}", d.message);
+    let loc = d.location.as_ref().unwrap();
+    assert_eq!(loc.line, 3);
+}
+
+#[test]
+fn notifications_unknown_field_is_rejected() {
+    let ws = Ws::new(&[(
+        "stems.yaml",
+        "notifications: { sound: true }\nstems:\n  a: { type: process, command: x }\n",
+    )]);
+    let e = load(ws.opts()).unwrap_err();
+    assert_eq!(e.errors[0].code, codes::SCHEMA_INVALID);
+    assert!(
+        e.errors[0].message.contains("sound"),
+        "{}",
+        e.errors[0].message
+    );
+}

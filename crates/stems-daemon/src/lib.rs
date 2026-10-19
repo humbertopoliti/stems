@@ -29,6 +29,7 @@ mod handler;
 pub mod lock;
 pub mod logging;
 pub mod logs;
+pub mod notify;
 pub mod orphans;
 pub mod paths;
 pub mod repos;

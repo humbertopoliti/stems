@@ -255,6 +255,15 @@ config:
 
 The setting of the *new* config counts (turning it on applies that edit).
 
+### Workspace-level settings that reload
+
+`logs`, `metrics`, `agent`, `requires`, workspace `scripts`, `config` and
+`notifications` are hot, workspace-level changes (`<key>_changed` in the
+plan, never a restart). Desktop notifications
+([notifications.md](notifications.md)) read the applied config at every
+notification, so `notifications.enabled`, `debounce`, `cooldown` and
+`command` take effect as soon as the change is applied.
+
 ### Interplay with `up`, `start`, `restart`, `run`
 
 These always use the latest **applied** config. Before they run, the daemon

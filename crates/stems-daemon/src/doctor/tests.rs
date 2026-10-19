@@ -351,3 +351,53 @@ fn docker_config_path_follows_the_environment() {
     );
     assert_eq!(docker_config_path(&env(&[])), None);
 }
+
+#[test]
+fn notifications_check_golden() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tempfile::tempdir().unwrap();
+    let bin = d.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let osa = bin.join("osascript");
+    std::fs::write(&osa, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&osa, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::join_paths([bin.clone()]).unwrap();
+    let empty = std::env::join_paths([d.path().join("nothing")]).unwrap();
+    let defaults = stems_config::NotificationSettings::default();
+    let off = stems_config::NotificationSettings {
+        enabled: false,
+        ..defaults.clone()
+    };
+    let custom = stems_config::NotificationSettings {
+        command: Some("notify.sh".into()),
+        ..defaults.clone()
+    };
+    let checks = vec![
+        checks::notifications_result(&defaults, Some(path.as_os_str()), "macos"),
+        checks::notifications_result(&defaults, Some(empty.as_os_str()), "macos"),
+        checks::notifications_result(&defaults, Some(empty.as_os_str()), "linux"),
+        checks::notifications_result(&defaults, None, "freebsd"),
+        checks::notifications_result(&off, Some(path.as_os_str()), "macos"),
+        checks::notifications_result(&custom, Some(path.as_os_str()), "macos"),
+    ];
+    assert_eq!(checks[0].details["path"], json!(osa));
+    let text = DoctorReport::new(checks, false)
+        .render_human()
+        .replace(&bin.display().to_string(), "<bin>");
+    insta::assert_snapshot!(text, @r"
+    CHECK          STATUS  MESSAGE
+    notifications  ✓ ok    osascript (<bin>/osascript)
+    notifications  ! warn  no notification backend found
+    notifications  ! warn  no notification backend found
+    notifications  ! warn  no notification backend found
+    notifications  ✓ ok    disabled (notifications.enabled: false)
+    notifications  ✓ ok    custom command `notify.sh`
+
+    hints:
+      notifications: install terminal-notifier (`brew install terminal-notifier`) or make sure /usr/bin is on PATH (osascript); or set notifications.command
+      notifications: install libnotify (notify-send); or set notifications.command
+      notifications: desktop notifications need macOS or Linux; set notifications.command to post them another way
+
+    3 ok, 3 warn, 0 fail
+    ");
+}

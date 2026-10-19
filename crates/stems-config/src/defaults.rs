@@ -24,6 +24,12 @@ pub const METRICS_INTERVAL: Dur = Dur::from_secs(2);
 pub const METRICS_PERSIST: bool = false;
 /// `config.reload.auto_apply` (33): changes wait for `stems config apply`.
 pub const RELOAD_AUTO_APPLY: AutoApply = AutoApply::Off;
+/// `notifications.enabled` (34).
+pub const NOTIFICATIONS_ENABLED: bool = true;
+/// `notifications.debounce` (34): quiet time before a notification is posted.
+pub const NOTIFICATIONS_DEBOUNCE: Dur = Dur::from_secs(2);
+/// `notifications.cooldown` (34): failures inside it wait for the next one.
+pub const NOTIFICATIONS_COOLDOWN: Dur = Dur::from_secs(30);
 /// `repos_dir`, relative to the workspace root.
 pub const REPOS_DIR: &str = ".stems/repos";
 
@@ -142,6 +148,13 @@ pub fn defaults_table() -> Vec<(&'static str, String)> {
         ("metrics.interval", t(METRICS_INTERVAL)),
         ("metrics.persist", METRICS_PERSIST.to_string()),
         ("config.reload.auto_apply", "false".into()),
+        ("notifications.enabled", NOTIFICATIONS_ENABLED.to_string()),
+        ("notifications.debounce", t(NOTIFICATIONS_DEBOUNCE)),
+        ("notifications.cooldown", t(NOTIFICATIONS_COOLDOWN)),
+        (
+            "notifications.command",
+            "<none: terminal-notifier / osascript / notify-send on PATH>".into(),
+        ),
         ("repos_dir", REPOS_DIR.into()),
         ("stems.<n>.enabled", STEM_ENABLED.to_string()),
         ("stems.<n>.stop_grace", t(STOP_GRACE)),

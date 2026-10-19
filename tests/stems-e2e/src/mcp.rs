@@ -137,6 +137,8 @@ pub async fn connect(w: &mut E2eWorld, auto_start: bool) {
         }
     }
     cmd.env("STEMS_HOME", &w.home).env("STEMS_NO_COLOR", "1");
+    // The MCP server may auto-start a daemon: never a real notification (34).
+    cmd.env("STEMS_NOTIFICATIONS", "0");
     let stderr = std::fs::File::create(w.root.join("mcp-server.stderr"))
         .map(Stdio::from)
         .unwrap_or_else(|_| Stdio::null());

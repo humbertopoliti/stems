@@ -60,7 +60,7 @@ check id); with `--strict`, so is every warning that has a code.
 | status | meaning |
 |---|---|
 | `ok` | fine |
-| `warn` | works, but deserves attention (a foreign process on a port, an orphan, a stale overlay, low disk, hot-reload overlap) |
+| `warn` | works, but deserves attention (a foreign process on a port, an orphan, a stale overlay, low disk, hot-reload overlap, no notification backend) |
 | `fail` | will not work (a tool version, Docker, a missing codebase or script, a stale lock) |
 
 Exit **0** when nothing fails (warnings included), **1** when anything
@@ -87,6 +87,7 @@ Only enabled stems are checked.
 | `orphans` | always | none | processes on declared ports not in state, stems-labelled containers not in state (containers only when Docker is needed and reachable) (`ORPHANS_FOUND`) | | when one looks like its stem's start command, or is a container |
 | `disk.home` | always | ≥ 1 GB free under `$STEMS_HOME` | < 1 GB | | no |
 | `disk.codebase.<stem>` | each distinct codebase | ≥ 1 GB free | < 1 GB | | no |
+| `notifications` | the workspace loads | the backend desktop notifications would use (`osascript (/usr/bin/osascript)`, `notify-send`, a custom `notifications.command`), or `disabled` ([notifications.md](notifications.md)) | no backend on `PATH` (hint: install `terminal-notifier`/libnotify or set `notifications.command`) | | no |
 | `watch.hot-reload.<stem>` | each stem with `watch` | no overlap | the start command hot-reloads (`vite`, `next dev`, `nodemon`, `cargo watch`, `air`, `uvicorn --reload`, `flask run --reload`, `webpack --watch`) **and** a watch covers `src/**` or `**` (FR-WD-4) | | no |
 
 ## `--fix`
