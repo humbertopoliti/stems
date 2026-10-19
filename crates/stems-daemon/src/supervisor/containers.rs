@@ -133,6 +133,9 @@ pub struct Containers {
     kinds: Mutex<HashMap<String, StemType>>,
     /// Containers stopped by `restart`, to `docker restart` (or recreate).
     restart_ids: Mutex<HashMap<String, String>>,
+    /// The effective `build` flag each compose stem was last started with
+    /// (35): the crash guard only applies to `false`.
+    builds: Mutex<HashMap<String, bool>>,
     /// Last `State.Health.Status` per running stem.
     health: Mutex<HashMap<String, String>>,
 }
@@ -162,8 +165,14 @@ impl Containers {
             compose_dir: compose_dir.into(),
             kinds: Mutex::new(HashMap::new()),
             restart_ids: Mutex::new(HashMap::new()),
+            builds: Mutex::new(HashMap::new()),
             health: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The `build` flag compose stem `stem` was last started with.
+    pub fn compose_build(&self, stem: &str) -> Option<bool> {
+        lock(&self.builds).get(stem).copied()
     }
 
     /// The production runtimes ([`default_connector`]).
@@ -463,6 +472,7 @@ pub fn compose_spec(
     spec.env = env.clone();
     spec.stop_grace = stem.stop_grace.as_duration();
     spec.adopt = c.adopt;
+    spec.build = c.build;
     Ok(spec)
 }
 
@@ -618,8 +628,9 @@ fn containers(core: &Core) -> Result<&Arc<Containers>, Error> {
     })
 }
 
-/// The start spec of a docker or compose stem (the progress sink of a
-/// docker spec emits `docker.pull`/`docker.build`).
+/// The start spec of a docker or compose stem (the progress sink emits
+/// `docker.pull`/`docker.build`; a compose spec's `build` is the
+/// `--build`/`--no-build` of the operation in progress, else the config).
 pub(crate) fn start_spec(
     core: &Core,
     ws: &Workspace,
@@ -628,12 +639,13 @@ pub(crate) fn start_spec(
     host_ports: &[(String, u16)],
 ) -> Result<StartSpec, Error> {
     match stem.kind() {
-        StemType::Compose => Ok(StartSpec::Compose(Box::new(compose_spec(
-            ws,
-            stem,
-            &core.run_id,
-            env,
-        )?))),
+        StemType::Compose => {
+            let mut spec = compose_spec(ws, stem, &core.run_id, env)?;
+            let param = *lock(&core.build_override);
+            spec.build = super::stale::effective_build(param, spec.build);
+            spec.progress = progress_sink(core, &stem.name);
+            Ok(StartSpec::Compose(Box::new(spec)))
+        }
         _ => {
             let mut spec = container_spec(ws, stem, &core.run_id, env, host_ports)?;
             spec.progress = progress_sink(core, &stem.name);
@@ -654,6 +666,11 @@ pub(crate) async fn start(
 ) -> Result<Handle, Error> {
     let c = containers(core)?;
     let kept = lock(&c.restart_ids).remove(stem);
+    if let StartSpec::Compose(cs) = spec {
+        lock(&c.builds).insert(stem.to_string(), cs.build);
+        // Without a rebuild, a stale image is reported (35): a warning.
+        super::stale::warn_before_start(core, cs).await;
+    }
     let h = match (kept, spec) {
         (Some(id), StartSpec::Docker(cs)) => {
             let docker = c.docker().await.map_err(|e| runtime_error(stem, e))?;
@@ -850,7 +867,10 @@ pub(crate) async fn adopt(
     Some(h)
 }
 
-fn config_env(stem: &Stem) -> BTreeMap<String, String> {
+/// A stem's config env (`env` plus local overrides), without the
+/// daemon's substitutions: enough for compose interpolation off the
+/// start path (adoption, `doctor`).
+pub(crate) fn config_env(stem: &Stem) -> BTreeMap<String, String> {
     stem.env
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))

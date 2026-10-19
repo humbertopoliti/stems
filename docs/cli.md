@@ -112,6 +112,11 @@ Global options:
 
   -V, --version
           Print version information (`--json` adds commit and build date)
+
+Lifecycle hooks (fixed `scripts:` names stems runs itself): setup, pre_start, start, health,
+post_start, seed, pre_stop, stop, post_stop, build, reset; workspace: bootstrap, teardown.
+Any other script name is a custom script (`stems run`). `stems scripts --lifecycle`
+lists every hook with when it runs and who defines it.
 ```
 
 ### `stems init`
@@ -359,6 +364,13 @@ Options:
       --no-watch
           Do not start watchdogs
 
+      --build
+          Rebuild compose services' images (`compose up --build`; the config's `build:`, default
+          true, decides otherwise)
+
+      --no-build
+          Do not rebuild compose services' images for this run
+
       --sync
           Fetch git codebases before starting
 
@@ -480,6 +492,13 @@ Options:
       --no-deps
           Do not start unstarted dependencies
 
+      --build
+          Rebuild compose services' images (`compose up --build`; the config's `build:`, default
+          true, decides otherwise)
+
+      --no-build
+          Do not rebuild compose services' images for this run
+
       --timeout <DURATION>
           Deadline (e.g. 60s)
 
@@ -581,7 +600,12 @@ Options:
           Do not start unstarted dependencies
 
       --build
-          Re-run the `build` script first
+          Re-run the `build` script first, and rebuild compose services' images (`compose up
+          --build`)
+
+      --no-build
+          Do not rebuild compose services' images for this run (the config's `build:`, default true,
+          decides otherwise)
 
       --timeout <DURATION>
           Deadline (e.g. 60s)
@@ -1076,7 +1100,7 @@ workspace-level script (`--workspace-script` is an alias; `--workspace` stays th
 selects the workspace). Arguments after `--` are validated against the script's `args` schema
 (`SCRIPT_ARGS_INVALID`, exit 2) and passed as `--name value` flags plus `STEMS_ARG_<NAME>` env;
 scripts without a schema get them untouched. Exit 0 when the script succeeded, else 1
-(`SCRIPT_FAILED`). See docs/scripts.md.
+(`SCRIPT_FAILED`). Lifecycle hooks (below) can be run by name too. See docs/scripts.md.
 
 Usage: stems run [OPTIONS] [STEM] [SCRIPT] [-- <ARGS>...]
 
@@ -1134,6 +1158,22 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+Lifecycle hooks, in lifecycle order (every other `scripts:` name is a custom script):
+  bootstrap   (workspace) once per `up`, before any stem starts
+  setup       before the first start, again when its stamp (inputs, stamp_env) changes
+  pre_start   before every start of the process, policy restarts included
+  start       the process itself (instead of `command`); `starting` until the health check passes
+  health      reserved for the `health: {type: command}` probe's output; never a custom script
+  post_start  after every start, once the stem is healthy
+  seed        after post_start, once; again when its stamp changes (state `seeding`)
+  pre_stop    before every stop, before the process is signalled
+  stop        how to stop the process (instead of SIGTERM), bounded by `stop_grace`
+  post_stop   after every stop, once the process is gone
+  build       on `stems build` and `restart --build` (between stop and start); never automatic
+  reset       on `stems reset` and `up --fresh`, after the stop; its stamps are cleared
+  teardown    (workspace) on `down --all`, after every stem stopped, before the daemon exits
+`stems scripts --lifecycle` prints this table with the stems that define each hook.
 ```
 
 ### `stems scripts`
@@ -1143,7 +1183,9 @@ List scripts.
 
 Workspace and stem scripts, lifecycle and custom, with their arguments. Reads the config locally (no
 daemon needed). `--json` prints the catalogue the TUI and MCP server use: `data: {scripts: [{stem,
-name, description, args, requires, kind, timeout, retries, concurrent, mcp_tool, input_schema}]}`.
+name, description, args, requires, kind, timeout, retries, concurrent, mcp_tool, input_schema}],
+lifecycle_hooks: [names]}`. `--lifecycle` lists every lifecycle hook instead, defined or not, in
+lifecycle order: `data: {lifecycle: [{name, scope, when, defined_by}]}`.
 
 Usage: stems scripts [OPTIONS] [STEM]
 
@@ -1152,6 +1194,11 @@ Arguments:
           Only this stem's scripts
 
 Options:
+      --lifecycle
+          List the lifecycle hooks (setup, seed, build, start, stop, reset, health, pre_start,
+          post_start, pre_stop, post_stop; workspace bootstrap, teardown) with when each runs and
+          who defines it, set or not, instead of the script catalogue
+
   -h, --help
           Print help (see a summary with '-h')
 
@@ -1182,6 +1229,22 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+Lifecycle hooks, in lifecycle order (every other `scripts:` name is a custom script):
+  bootstrap   (workspace) once per `up`, before any stem starts
+  setup       before the first start, again when its stamp (inputs, stamp_env) changes
+  pre_start   before every start of the process, policy restarts included
+  start       the process itself (instead of `command`); `starting` until the health check passes
+  health      reserved for the `health: {type: command}` probe's output; never a custom script
+  post_start  after every start, once the stem is healthy
+  seed        after post_start, once; again when its stamp changes (state `seeding`)
+  pre_stop    before every stop, before the process is signalled
+  stop        how to stop the process (instead of SIGTERM), bounded by `stop_grace`
+  post_stop   after every stop, once the process is gone
+  build       on `stems build` and `restart --build` (between stop and start); never automatic
+  reset       on `stems reset` and `up --fresh`, after the stop; its stamps are cleared
+  teardown    (workspace) on `down --all`, after every stem stopped, before the daemon exits
+`stems scripts --lifecycle` prints this table with the stems that define each hook.
 ```
 
 ### `stems exec`
@@ -1292,7 +1355,7 @@ Options:
           Confirm (reset is destructive)
 
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -1321,6 +1384,22 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+Lifecycle hooks, in lifecycle order (every other `scripts:` name is a custom script):
+  bootstrap   (workspace) once per `up`, before any stem starts
+  setup       before the first start, again when its stamp (inputs, stamp_env) changes
+  pre_start   before every start of the process, policy restarts included
+  start       the process itself (instead of `command`); `starting` until the health check passes
+  health      reserved for the `health: {type: command}` probe's output; never a custom script
+  post_start  after every start, once the stem is healthy
+  seed        after post_start, once; again when its stamp changes (state `seeding`)
+  pre_stop    before every stop, before the process is signalled
+  stop        how to stop the process (instead of SIGTERM), bounded by `stop_grace`
+  post_stop   after every stop, once the process is gone
+  build       on `stems build` and `restart --build` (between stop and start); never automatic
+  reset       on `stems reset` and `up --fresh`, after the stop; its stamps are cleared
+  teardown    (workspace) on `down --all`, after every stem stopped, before the daemon exits
+`stems scripts --lifecycle` prints this table with the stems that define each hook.
 ```
 
 ### `stems build`
@@ -1336,7 +1415,7 @@ Arguments:
 
 Options:
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -1365,6 +1444,22 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+Lifecycle hooks, in lifecycle order (every other `scripts:` name is a custom script):
+  bootstrap   (workspace) once per `up`, before any stem starts
+  setup       before the first start, again when its stamp (inputs, stamp_env) changes
+  pre_start   before every start of the process, policy restarts included
+  start       the process itself (instead of `command`); `starting` until the health check passes
+  health      reserved for the `health: {type: command}` probe's output; never a custom script
+  post_start  after every start, once the stem is healthy
+  seed        after post_start, once; again when its stamp changes (state `seeding`)
+  pre_stop    before every stop, before the process is signalled
+  stop        how to stop the process (instead of SIGTERM), bounded by `stop_grace`
+  post_stop   after every stop, once the process is gone
+  build       on `stems build` and `restart --build` (between stop and start); never automatic
+  reset       on `stems reset` and `up --fresh`, after the stop; its stamps are cleared
+  teardown    (workspace) on `down --all`, after every stem stopped, before the daemon exits
+`stems scripts --lifecycle` prints this table with the stems that define each hook.
 ```
 
 ### `stems pull`

@@ -46,6 +46,8 @@ use crate::output::{CommandOutput, Mode};
 const LONG: Duration = Duration::from_secs(3600);
 /// Extra time on top of the teardown deadline for the reply and daemon exit.
 const TEARDOWN_SLACK: Duration = Duration::from_secs(5);
+/// Most output lines `up` prints under a failed stem (36).
+const UP_TAIL_LINES: usize = 3;
 
 fn parse_timeout(raw: Option<&str>) -> Result<Option<Duration>, Error> {
     raw.map(|s| {
@@ -175,9 +177,19 @@ fn up_human(r: &UpResult) -> String {
     );
     for f in &r.failed {
         s.push_str(&format!("  failed  {}: {}\n", f.stem, f.error.message));
+        // The last lines the process wrote (36), at most UP_TAIL_LINES.
+        for l in
+            stems_daemon::supervisor::tail::human_lines(&f.error.details, &f.stem, UP_TAIL_LINES)
+        {
+            s.push_str(&format!("          {l}\n"));
+        }
     }
     for n in &r.skipped {
         s.push_str(&format!("  skipped {n}\n"));
+    }
+    for w in &r.warnings {
+        let stem = w.details["stem"].as_str().unwrap_or("?");
+        s.push_str(&format!("  warning {stem}: {}\n", w.message));
     }
     if let Some(c) = &r.cascade {
         s.push_str(&cascade_human(c));
@@ -479,6 +491,7 @@ async fn up_async(
         force_overlays: args.force_overlays,
         sync: args.sync,
         no_watch: args.no_watch,
+        build: args.build_flag(),
     };
     let rpc_timeout = timeout.map_or(LONG, |d| d + Duration::from_secs(10));
     let call = c.call_with_timeout::<UpResult>(Method::UP, &params, rpc_timeout);
@@ -805,6 +818,7 @@ pub fn start(ctx: &Ctx, args: &StartArgs) -> CommandOutput {
             stems: args.stems.clone(),
             no_deps: args.no_deps,
             timeout_ms: ms(timeout),
+            build: args.build_flag(),
         };
         let bound = timeout.map_or(LONG, |d| d + Duration::from_secs(10));
         let res: UpResult = c.call_with_timeout(Method::START, &params, bound).await?;
@@ -838,7 +852,7 @@ pub fn restart(ctx: &Ctx, args: &RestartArgs) -> CommandOutput {
         let params = RestartParams {
             stems: args.stems.clone(),
             no_deps: args.no_deps,
-            build: args.build,
+            build: args.build_flag(),
             timeout_ms: ms(timeout),
             cascade: args.cascade_flag(),
         };
@@ -1204,6 +1218,58 @@ mod tests {
         let out = up_output(&r);
         assert_eq!(out.exit_code(), 1);
         assert_eq!(out.envelope()["data"]["failed"][0]["stem"], "b");
+    }
+
+    #[test]
+    fn up_human_warning_golden() {
+        let r = UpResult {
+            ok: true,
+            requested: vec!["api".into()],
+            ready: vec!["api".into()],
+            warnings: vec![
+                Error::new(
+                    stems_core::ErrorCode::ImageStale,
+                    "`api`'s image stems-shop-api was built before its build inputs last changed (app.py modified 2026-10-19 10:02:11 UTC, image built 2026-10-19 09:40:00 UTC)",
+                )
+                .with_details(serde_json::json!({ "stem": "api" })),
+            ],
+            ..UpResult::default()
+        };
+        insta::assert_snapshot!(up_human(&r), @r"
+        up: 1 ready, 0 failed, 0 skipped
+          warning api: `api`'s image stems-shop-api was built before its build inputs last changed (app.py modified 2026-10-19 10:02:11 UTC, image built 2026-10-19 09:40:00 UTC)
+        ");
+        // JSON: absent when empty.
+        let plain = serde_json::to_value(UpResult::default()).unwrap();
+        assert!(plain.get("warnings").is_none());
+        assert_eq!(
+            serde_json::to_value(&r).unwrap()["warnings"][0]["code"],
+            "IMAGE_STALE"
+        );
+    }
+
+    #[test]
+    fn up_human_with_output_tail_golden() {
+        let r = UpResult {
+            ok: false,
+            requested: vec!["api".into(), "web".into()],
+            ready: vec!["web".into()],
+            failed: vec![StemFailure {
+                stem: "api".into(),
+                error: Error::new(
+                    ErrorCode::StartFailed,
+                    "`api` exited with code 3 before it became ready",
+                )
+                .with_details(json!({
+                    "stem": "api",
+                    "exit_code": 3,
+                    "stderr_tail": ["a", "b", "c", "d", "e"],
+                    "output_truncated": false
+                })),
+            }],
+            ..UpResult::default()
+        };
+        insta::assert_snapshot!("up-human-tail", up_human(&r));
     }
 
     #[test]

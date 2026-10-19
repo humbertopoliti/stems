@@ -1,0 +1,28 @@
+# compose-build — one compose stem whose service has `build:` (deliverable
+# 35, tests/features/compose/{build,no-build,stale-*,build-false-fresh}
+# .feature; needs Docker with compose v2: `make e2e-docker`).
+#
+# `build` defaults to true: `up`/`start`/`restart` run `compose up --build`.
+# Scenarios set `build: false` through a local override and prebuild the
+# image by hand to exercise the stale-image report and the no-loop guard.
+# The image compose builds is `stems-compose-build-api`.
+schema_version: 1
+name: compose-build
+
+stems:
+  api:
+    type: compose
+    file: compose.yml
+    service: api
+    env:
+      API_PORT: "${stem.self.port}"
+    ports: [{ name: http, port: 18535, container_port: 8080 }]
+    health:
+      type: http
+      url: "http://127.0.0.1:18535/healthz"
+      interval: 400ms
+      timeout: 300ms
+      retries: 5
+      start_timeout: 180s
+    restart: { max: 3, window: 5m }
+    stop_grace: 2s

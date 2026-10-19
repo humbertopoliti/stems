@@ -5,9 +5,14 @@
 //! root; a pattern that matches a directory excludes everything under it.
 //! `.git` is always skipped. The Dockerfile and `.dockerignore` are always
 //! sent (as Docker does).
+//!
+//! [`context_files`] is the walk itself, an iterator shared by the tarball
+//! and the stale-image scan (`crate::stale`), so both agree on what a
+//! build input is.
 
+use std::fs::Metadata;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use globset::{GlobBuilder, GlobMatcher};
 
@@ -71,31 +76,31 @@ fn prefixes(rel: &str) -> impl Iterator<Item = &str> {
         .chain(std::iter::once(rel))
 }
 
+/// The Dockerfile's path relative to the context (`/`-separated), or
+/// `None` when it lives outside the context.
+fn dockerfile_rel(context: &Path, dockerfile: &Path) -> Option<String> {
+    dockerfile
+        .strip_prefix(context)
+        .ok()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+}
+
 /// Tar the build context. Returns the archive and the Dockerfile path to
 /// pass to the build API (relative to the context).
 pub fn context_tar(context: &Path, dockerfile: &Path) -> io::Result<(Vec<u8>, String)> {
-    let ignore = match std::fs::read_to_string(context.join(".dockerignore")) {
-        Ok(t) => DockerIgnore::parse(&t),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => DockerIgnore::default(),
-        Err(e) => return Err(e),
-    };
-    let dockerfile_rel = dockerfile
-        .strip_prefix(context)
-        .ok()
-        .map(|p| p.to_string_lossy().replace('\\', "/"));
-
     let mut builder = tar::Builder::new(Vec::new());
     builder.follow_symlinks(false);
     builder.mode(tar::HeaderMode::Deterministic);
-    walk(
-        context,
-        "",
-        &ignore,
-        dockerfile_rel.as_deref(),
-        &mut builder,
-    )?;
+    for entry in context_files(context, dockerfile)? {
+        let entry = entry?;
+        if entry.meta.is_dir() {
+            builder.append_dir(&entry.rel, &entry.path)?;
+        } else {
+            builder.append_path_with_name(&entry.path, &entry.rel)?;
+        }
+    }
 
-    let name = match dockerfile_rel {
+    let name = match dockerfile_rel(context, dockerfile) {
         Some(rel) => rel,
         None => {
             builder.append_path_with_name(dockerfile, EXTERNAL_DOCKERFILE)?;
@@ -105,43 +110,114 @@ pub fn context_tar(context: &Path, dockerfile: &Path) -> io::Result<(Vec<u8>, St
     Ok((builder.into_inner()?, name))
 }
 
-fn walk(
-    dir: &Path,
-    rel_dir: &str,
-    ignore: &DockerIgnore,
-    dockerfile: Option<&str>,
-    b: &mut tar::Builder<Vec<u8>>,
-) -> io::Result<()> {
-    let mut entries: Vec<_> = std::fs::read_dir(dir)?.collect::<Result<_, _>>()?;
-    entries.sort_by_key(|e| e.file_name());
-    for entry in entries {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name == ".git" {
-            continue;
-        }
-        let rel = if rel_dir.is_empty() {
-            name
-        } else {
-            format!("{rel_dir}/{name}")
-        };
-        let always = rel == ".dockerignore" || Some(rel.as_str()) == dockerfile;
-        let ignored = !always && ignore.is_ignored(&rel);
-        let ft = entry.file_type()?;
-        if ft.is_dir() {
-            // With negations, something below an ignored dir may be re-included.
-            let dockerfile_below = dockerfile.is_some_and(|d| d.starts_with(&format!("{rel}/")));
-            if ignored && !ignore.has_negations() && !dockerfile_below {
+/// One file or directory of a build context, as `docker build` would send
+/// it: `meta` is the entry's own metadata (symlinks are not followed).
+#[derive(Debug)]
+pub struct ContextEntry {
+    /// Absolute path.
+    pub path: PathBuf,
+    /// Context-relative, `/`-separated.
+    pub rel: String,
+    pub meta: Metadata,
+}
+
+/// The build inputs under `context`, in the order [`context_tar`] archives
+/// them: sorted per directory, depth first, `.dockerignore` applied,
+/// `.git` skipped, the Dockerfile (when inside the context) and
+/// `.dockerignore` always included. A Dockerfile outside the context is
+/// not yielded (the tarball adds it as [`EXTERNAL_DOCKERFILE`]). Lazy: a
+/// consumer that stops early reads no further directory.
+pub fn context_files(context: &Path, dockerfile: &Path) -> io::Result<ContextFiles> {
+    let ignore = match std::fs::read_to_string(context.join(".dockerignore")) {
+        Ok(t) => DockerIgnore::parse(&t),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => DockerIgnore::default(),
+        Err(e) => return Err(e),
+    };
+    let mut files = ContextFiles {
+        ignore,
+        dockerfile: dockerfile_rel(context, dockerfile),
+        stack: Vec::new(),
+    };
+    files.push_dir(context, "")?;
+    Ok(files)
+}
+
+/// Iterator of [`context_files`].
+pub struct ContextFiles {
+    ignore: DockerIgnore,
+    dockerfile: Option<String>,
+    /// Directories being walked: their remaining entries (sorted, reversed
+    /// so `pop` yields the first) and their context-relative path.
+    stack: Vec<(Vec<std::fs::DirEntry>, String)>,
+}
+
+impl ContextFiles {
+    fn push_dir(&mut self, dir: &Path, rel_dir: &str) -> io::Result<()> {
+        let mut entries: Vec<_> = std::fs::read_dir(dir)?.collect::<Result<_, _>>()?;
+        entries.sort_by_key(|e| std::cmp::Reverse(e.file_name()));
+        self.stack.push((entries, rel_dir.to_string()));
+        Ok(())
+    }
+
+    fn step(&mut self) -> io::Result<Option<ContextEntry>> {
+        loop {
+            let Some((entries, rel_dir)) = self.stack.last_mut() else {
+                return Ok(None);
+            };
+            let Some(entry) = entries.pop() else {
+                self.stack.pop();
+                continue;
+            };
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name == ".git" {
                 continue;
             }
-            if !ignored {
-                b.append_dir(&rel, entry.path())?;
+            let rel = if rel_dir.is_empty() {
+                name
+            } else {
+                format!("{rel_dir}/{name}")
+            };
+            let dockerfile = self.dockerfile.as_deref();
+            let always = rel == ".dockerignore" || Some(rel.as_str()) == dockerfile;
+            let ignored = !always && self.ignore.is_ignored(&rel);
+            let meta = entry.metadata()?;
+            if meta.is_dir() {
+                // With negations, something below an ignored dir may be re-included.
+                let dockerfile_below =
+                    dockerfile.is_some_and(|d| d.starts_with(&format!("{rel}/")));
+                if ignored && !self.ignore.has_negations() && !dockerfile_below {
+                    continue;
+                }
+                let path = entry.path();
+                self.push_dir(&path, &rel)?;
+                if !ignored {
+                    return Ok(Some(ContextEntry { path, rel, meta }));
+                }
+            } else if !ignored {
+                return Ok(Some(ContextEntry {
+                    path: entry.path(),
+                    rel,
+                    meta,
+                }));
             }
-            walk(&entry.path(), &rel, ignore, dockerfile, b)?;
-        } else if !ignored {
-            b.append_path_with_name(entry.path(), &rel)?;
         }
     }
-    Ok(())
+}
+
+impl Iterator for ContextFiles {
+    type Item = io::Result<ContextEntry>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.step() {
+            Ok(Some(e)) => Some(Ok(e)),
+            Ok(None) => None,
+            Err(e) => {
+                // Do not retry a failing directory forever.
+                self.stack.clear();
+                Some(Err(e))
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -209,6 +285,42 @@ mod tests {
                 "src/main.rs"
             ]
         );
+    }
+
+    #[test]
+    fn context_files_yields_the_archive_order_lazily() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(root, "Dockerfile", "FROM alpine:3\n");
+        write(root, "b/2.txt", "2\n");
+        write(root, "b/1.txt", "1\n");
+        write(root, "a.txt", "a\n");
+        write(root, ".git/HEAD", "x\n");
+        write(root, "node_modules/x.js", "x\n");
+        write(root, ".dockerignore", "node_modules\n");
+        let rels: Vec<String> = context_files(root, &root.join("Dockerfile"))
+            .unwrap()
+            .map(|e| e.unwrap().rel)
+            .collect();
+        assert_eq!(
+            rels,
+            vec![
+                ".dockerignore",
+                "Dockerfile",
+                "a.txt",
+                "b",
+                "b/1.txt",
+                "b/2.txt"
+            ]
+        );
+        // The same list the tarball holds (the refactor keeps it byte-identical).
+        let (bytes, _) = context_tar(root, &root.join("Dockerfile")).unwrap();
+        assert_eq!(entries(&bytes), rels);
+        // Stopping early reads nothing more: the first entry comes without
+        // walking `b/`.
+        let mut it = context_files(root, &root.join("Dockerfile")).unwrap();
+        assert_eq!(it.next().unwrap().unwrap().rel, ".dockerignore");
+        assert_eq!(it.stack.len(), 1, "only the root directory was read");
     }
 
     #[test]

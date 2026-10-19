@@ -25,7 +25,8 @@ use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, ValueEnum};
     name = "stems",
     bin_name = "stems",
     disable_version_flag = true,
-    term_width = 100
+    term_width = 100,
+    after_help = crate::help::after_help()
 )]
 pub struct Cli {
     /// Global flags, accepted before or after the subcommand.
@@ -281,7 +282,9 @@ pub enum Command {
     /// the script's `args` schema (`SCRIPT_ARGS_INVALID`, exit 2) and passed as
     /// `--name value` flags plus `STEMS_ARG_<NAME>` env; scripts without a
     /// schema get them untouched. Exit 0 when the script succeeded, else 1
-    /// (`SCRIPT_FAILED`). See docs/scripts.md.
+    /// (`SCRIPT_FAILED`). Lifecycle hooks (below) can be run by name too.
+    /// See docs/scripts.md.
+    #[command(after_long_help = crate::help::hooks_long_help())]
     Run(RunArgs),
     /// List scripts.
     ///
@@ -289,15 +292,20 @@ pub enum Command {
     /// Reads the config locally (no daemon needed). `--json` prints the
     /// catalogue the TUI and MCP server use: `data: {scripts: [{stem, name,
     /// description, args, requires, kind, timeout, retries, concurrent,
-    /// mcp_tool, input_schema}]}`.
+    /// mcp_tool, input_schema}], lifecycle_hooks: [names]}`. `--lifecycle`
+    /// lists every lifecycle hook instead, defined or not, in lifecycle
+    /// order: `data: {lifecycle: [{name, scope, when, defined_by}]}`.
+    #[command(after_long_help = crate::help::hooks_long_help())]
     Scripts(ScriptsArgs),
     /// Run an ad-hoc command in a stem's context (env, cwd or container).
     Exec(ExecArgs),
     /// Open an interactive shell in a stem's context.
     Shell(ShellArgs),
     /// Run a stem's `reset` script and clear its stamps.
+    #[command(after_long_help = crate::help::hooks_long_help())]
     Reset(ResetArgs),
     /// Run build scripts (or docker builds).
+    #[command(after_long_help = crate::help::hooks_long_help())]
     Build(BuildArgs),
     /// Pull the images of docker stems now (a moved tag such as `latest`
     /// included).
@@ -516,6 +524,13 @@ pub struct UpArgs {
     /// Do not start watchdogs.
     #[arg(long)]
     pub no_watch: bool,
+    /// Rebuild compose services' images (`compose up --build`; the config's
+    /// `build:`, default true, decides otherwise).
+    #[arg(long, conflicts_with = "no_build")]
+    pub build: bool,
+    /// Do not rebuild compose services' images for this run.
+    #[arg(long)]
+    pub no_build: bool,
     /// Fetch git codebases before starting.
     #[arg(long)]
     pub sync: bool,
@@ -564,6 +579,13 @@ pub struct StartArgs {
     /// Do not start unstarted dependencies.
     #[arg(long)]
     pub no_deps: bool,
+    /// Rebuild compose services' images (`compose up --build`; the config's
+    /// `build:`, default true, decides otherwise).
+    #[arg(long, conflicts_with = "no_build")]
+    pub build: bool,
+    /// Do not rebuild compose services' images for this run.
+    #[arg(long)]
+    pub no_build: bool,
     /// Deadline (e.g. 60s).
     #[arg(long, value_name = "DURATION")]
     pub timeout: Option<String>,
@@ -592,9 +614,14 @@ pub struct RestartArgs {
     /// Do not start unstarted dependencies.
     #[arg(long)]
     pub no_deps: bool,
-    /// Re-run the `build` script first.
-    #[arg(long)]
+    /// Re-run the `build` script first, and rebuild compose services'
+    /// images (`compose up --build`).
+    #[arg(long, conflicts_with = "no_build")]
     pub build: bool,
+    /// Do not rebuild compose services' images for this run (the config's
+    /// `build:`, default true, decides otherwise).
+    #[arg(long)]
+    pub no_build: bool,
     /// Deadline (e.g. 60s).
     #[arg(long, value_name = "DURATION")]
     pub timeout: Option<String>,
@@ -615,6 +642,34 @@ impl RestartArgs {
             (_, true) => Some(false),
             _ => None,
         }
+    }
+
+    /// `--build` / `--no-build` / neither (the config decides).
+    pub fn build_flag(&self) -> Option<bool> {
+        build_flag(self.build, self.no_build)
+    }
+}
+
+impl UpArgs {
+    /// `--build` / `--no-build` / neither (the config decides).
+    pub fn build_flag(&self) -> Option<bool> {
+        build_flag(self.build, self.no_build)
+    }
+}
+
+impl StartArgs {
+    /// `--build` / `--no-build` / neither (the config decides).
+    pub fn build_flag(&self) -> Option<bool> {
+        build_flag(self.build, self.no_build)
+    }
+}
+
+/// `--build` wins, then `--no-build`, else `None` (clap rejects both).
+pub fn build_flag(build: bool, no_build: bool) -> Option<bool> {
+    match (build, no_build) {
+        (true, _) => Some(true),
+        (_, true) => Some(false),
+        _ => None,
     }
 }
 
@@ -793,6 +848,12 @@ pub struct RunArgs {
 pub struct ScriptsArgs {
     /// Only this stem's scripts.
     pub stem: Option<String>,
+    /// List the lifecycle hooks (setup, seed, build, start, stop, reset,
+    /// health, pre_start, post_start, pre_stop, post_stop; workspace
+    /// bootstrap, teardown) with when each runs and who defines it, set or
+    /// not, instead of the script catalogue.
+    #[arg(long, conflicts_with = "stem")]
+    pub lifecycle: bool,
 }
 
 /// `stems exec`.

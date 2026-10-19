@@ -13,7 +13,12 @@
 //!   every enabled stem's, lifecycle and custom, with descriptions and
 //!   argument schemas). It needs no daemon: the config is loaded locally.
 //!   `data = ScriptCatalogResult { scripts: [{stem, name, description, args,
-//!   requires, kind, timeout, retries, concurrent, mcp_tool, input_schema}] }`.
+//!   requires, kind, timeout, retries, concurrent, mcp_tool, input_schema}],
+//!   lifecycle_hooks: [names] }`; the human table ends with a `lifecycle
+//!   hooks:` footer. **`scripts --lifecycle`** (36) lists every lifecycle
+//!   hook instead, set or not, in lifecycle order: `data = { lifecycle:
+//!   [{name, scope, when, defined_by}] }`, human `HOOK SCOPE DEFINED BY
+//!   WHEN`.
 
 use std::io::Write;
 use std::time::Duration;
@@ -23,10 +28,10 @@ use serde::Serialize;
 use serde_json::Value;
 use stems_api::{
     CatalogScript, LogFilter, Method, RunScriptAccepted, RunScriptParams, RunScriptResult,
-    ScriptArgsInput, ScriptCatalogResult, SubscribeLogsParams,
+    ScriptArgsInput, SubscribeLogsParams,
 };
 use stems_config::ArgType;
-use stems_core::scriptargs::ScriptKind;
+use stems_core::scriptargs::{LifecycleHookInfo, ScriptKind};
 use stems_core::{Error, Errors};
 
 use crate::cli::{RunArgs, ScriptsArgs};
@@ -218,6 +223,56 @@ fn arg_label(a: &stems_config::ScriptArg) -> String {
     s
 }
 
+/// The `stems scripts --lifecycle` table: HOOK SCOPE DEFINED BY WHEN.
+pub fn lifecycle_table(hooks: &[LifecycleHookInfo]) -> String {
+    let rows: Vec<[String; 4]> = hooks
+        .iter()
+        .map(|h| {
+            [
+                h.name.clone(),
+                h.scope.to_string(),
+                if h.defined_by.is_empty() {
+                    "-".into()
+                } else {
+                    h.defined_by.join(", ")
+                },
+                h.when.clone(),
+            ]
+        })
+        .collect();
+    let header = ["HOOK", "SCOPE", "DEFINED BY", "WHEN"];
+    let mut w = header.map(str::len);
+    for r in &rows {
+        for (i, c) in r.iter().enumerate() {
+            w[i] = w[i].max(c.chars().count());
+        }
+    }
+    let line = |cells: [&str; 4]| {
+        let mut s = String::new();
+        for (i, c) in cells.iter().enumerate() {
+            if i == 3 {
+                s.push_str(c);
+            } else {
+                s.push_str(&format!("{c:<width$}  ", width = w[i]));
+            }
+        }
+        s.trim_end().to_string() + "\n"
+    };
+    let mut out = line(header);
+    for r in &rows {
+        out.push_str(&line([&r[0], &r[1], &r[2], &r[3]]));
+    }
+    out
+}
+
+/// The footer of the `stems scripts` table: the hook names and the pointer.
+fn lifecycle_footer(hooks: &[String]) -> String {
+    format!(
+        "\nlifecycle hooks: {} (stems scripts --lifecycle)\n",
+        hooks.join(", ")
+    )
+}
+
 /// The `stems scripts` table: STEM SCRIPT KIND DESCRIPTION ARGS.
 pub fn catalog_table(scripts: &[CatalogScript]) -> String {
     if scripts.is_empty() {
@@ -270,16 +325,21 @@ pub fn catalog_table(scripts: &[CatalogScript]) -> String {
 
 /// `stems scripts` (no daemon needed).
 pub fn scripts(ctx: &Ctx, args: &ScriptsArgs) -> CommandOutput {
-    let r: Result<ScriptCatalogResult, Errors> = (|| {
-        let ws = stems_config::load(ctx.load_options()).map_err(Errors::from)?;
-        Ok(stems_daemon::supervisor::run::catalog(
-            &ws,
-            args.stem.as_deref(),
-        )?)
-    })();
-    match r {
-        Ok(r) => CommandOutput::data(to_value(&r)).with_human(catalog_table(&r.scripts)),
-        Err(e) => CommandOutput::failed(e),
+    let ws = match stems_config::load(ctx.load_options()) {
+        Ok(ws) => ws,
+        Err(e) => return CommandOutput::failed(Errors::from(e)),
+    };
+    if args.lifecycle {
+        let hooks = stems_core::scriptargs::lifecycle_hooks(&ws.workspace);
+        return CommandOutput::data(serde_json::json!({ "lifecycle": hooks }))
+            .with_human(lifecycle_table(&hooks));
+    }
+    match stems_daemon::supervisor::run::catalog(&ws, args.stem.as_deref()) {
+        Ok(r) => {
+            let human = catalog_table(&r.scripts) + &lifecycle_footer(&r.lifecycle_hooks);
+            CommandOutput::data(to_value(&r)).with_human(human)
+        }
+        Err(e) => CommandOutput::failed(Errors::from(e)),
     }
 }
 
@@ -324,7 +384,16 @@ mod tests {
             "hello_shop_catalog",
             serde_json::to_string_pretty(&r).unwrap()
         );
-        insta::assert_snapshot!("hello_shop_catalog_table", catalog_table(&r.scripts));
+        insta::assert_snapshot!(
+            "hello_shop_catalog_table",
+            catalog_table(&r.scripts) + &lifecycle_footer(&r.lifecycle_hooks)
+        );
+        insta::assert_snapshot!(
+            "hello_shop_lifecycle_table",
+            lifecycle_table(&stems_core::scriptargs::lifecycle_hooks(
+                &hello_shop().workspace
+            ))
+        );
         let one = stems_daemon::supervisor::run::catalog(&hello_shop(), Some("postgres")).unwrap();
         assert!(
             one.scripts

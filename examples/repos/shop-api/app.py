@@ -26,15 +26,15 @@ CHAOS = os.environ.get("SHOP_CHAOS") == "1"
 _log_lock = threading.Lock()
 
 
-def log(level, msg, **fields):
-    """Write one log line to stdout: `LEVEL msg k=v` or one JSON object."""
+def log(level, text, **fields):
+    """Write one log line to stdout: `LEVEL text k=v` or one JSON object."""
     if LOG_JSON:
-        obj = {"ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"), "level": level.lower(), "msg": msg}
+        obj = {"ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"), "level": level.lower(), "msg": text}
         obj.update(fields)
         line = json.dumps(obj)
     else:
         extra = "".join(" %s=%s" % (k, v) for k, v in fields.items())
-        line = "%s %s%s" % (level.upper(), msg, extra)
+        line = "%s %s%s" % (level.upper(), text, extra)
     with _log_lock:
         sys.stdout.write(line + "\n")
         sys.stdout.flush()
@@ -132,7 +132,14 @@ def chaos(handler, action, q):
 
     if action == "crash":
         code = int(arg("code", "1"))
-        log("ERROR", "chaos crash requested", code=code)
+        msg = arg("msg")
+        fields = {"code": code}
+        if msg:
+            fields["msg"] = msg
+        log("ERROR", "chaos crash requested", **fields)
+        # The same line on stderr: what a real crash leaves behind, and what
+        # stems shows in the failure's `stderr_tail`.
+        sys.stderr.write("chaos crash requested%s\n" % "".join(" %s=%s" % kv for kv in fields.items()))
         handler.send_json(200, {"ok": True, "effect": "exiting with code %d" % code})
         handler.wfile.flush()
         sys.stdout.flush()

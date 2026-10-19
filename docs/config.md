@@ -425,8 +425,9 @@ local override still wins over a variant.
 * A variant that sets a **different `type`** first drops every
   type-specific field of the base — `cwd`, `command`, `shell`, `stdin`
   (process), `image`, `pull`, `build`, `volumes`, `entrypoint`, `network`,
-  `labels`, `healthcheck` (docker), `file`, `service`, `project_name`, `adopt`
-  (compose) — and keeps the shared ones: `description`, `codebase`, `env`,
+  `labels`, `healthcheck` (docker), `file`, `service`, `project_name`, `adopt`,
+  `build` (compose; a bool there, see [compose.md](compose.md#build)) — and
+  keeps the shared ones: `description`, `codebase`, `env`,
   `env_files`, `ports`, `depends_on`, `health`, `restart`, `watch`,
   `overlays`, `outputs`, `tags`, `limits`, `stop_grace`, `scripts` (custom
   scripts keep working; a docker stem ignores `scripts.start`).

@@ -111,6 +111,11 @@ pub(crate) struct StemInfo {
     pub runtime: Option<Arc<dyn Runtime>>,
     pub ports: Vec<(String, u16)>,
     pub started_at: Option<(Instant, DateTime<Utc>)>,
+    /// Taken just before the current attempt's unit was started: the
+    /// output tail of an exit-caused failure (36) only shows lines received
+    /// after it, never an earlier attempt's. Kept after the exit (the tail
+    /// is built once the process state is cleared).
+    pub output_since: Option<DateTime<Utc>>,
     pub restarts: u32,
     pub env: BTreeMap<String, String>,
     pub error: Option<Error>,
@@ -155,6 +160,7 @@ impl StemCell {
                 runtime: None,
                 ports: Vec::new(),
                 started_at: None,
+                output_since: None,
                 restarts: 0,
                 env: BTreeMap::new(),
                 error: None,
@@ -722,6 +728,9 @@ pub(crate) async fn spawn(
         })
         .or_else(|| ports.first().map(|(_, p)| *p));
 
+    // Before the unit starts (its first lines may be read before `start`
+    // returns): the lower bound of this attempt's output tail (36).
+    cell.info().output_since = Some(Utc::now());
     let handle = if matches!(stem.kind(), StemType::Docker | StemType::Compose) {
         // Containers (14/15): spec from config, errors mapped to §7.5.
         let spec = super::containers::start_spec(core, workspace, stem, &env.own, &ports)?;
@@ -928,6 +937,9 @@ async fn on_exit(core: &Arc<Core>, cell: &Arc<StemCell>, generation: u64, status
     // `stopped` or `failed`. A user stop never gets here (it bumped the
     // generation before signalling), so the intent is always a crash.
     let unit = cell.clear_process();
+    // Let the dying attempt's output reach the log ring first, so a failure
+    // can carry its last lines (36).
+    super::tail::settle(core, &cell.name).await;
     super::restart::on_exit(core, cell, state, status, unit).await;
 }
 

@@ -38,7 +38,6 @@ use tokio_util::sync::CancellationToken;
 
 use super::Core;
 use super::actor::{Cmd, StemCell};
-use super::waiter::exited_error;
 use crate::events::EventDraft;
 
 /// Per-stem restart bookkeeping, kept in the actor's `StemInfo`.
@@ -300,13 +299,23 @@ pub(crate) async fn on_exit(
     let data = json!({ "exit_code": status.code, "signal": status.signal });
     match decision {
         Some(RestartDecision::Restart { delay, attempt }) => {
+            // A compose stem started with `build: false` whose image is
+            // stale would restart the same image: fail it instead (35).
+            if let Some(e) = super::stale::crash_guard(core, cell).await {
+                {
+                    let mut info = cell.info();
+                    info.restarts = info.restarts.saturating_sub(1);
+                }
+                give_up_stale(core, cell, e, status);
+                return;
+            }
             schedule(core, cell, delay, attempt, true, Cause::Exit(status), actor);
         }
         Some(RestartDecision::GiveUp) => give_up(core, cell, &Cause::Exit(status)),
-        None => cell.fail(core, exited_error(&cell.name, status), actor),
+        None => cell.fail(core, exited_error(core, cell, status), actor),
         // A respawn that dies before it is ready and is not restarted.
         Some(RestartDecision::Stop | RestartDecision::Fail) if state == StemState::Starting => {
-            cell.fail(core, exited_error(&cell.name, status), actor);
+            cell.fail(core, exited_error(core, cell, status), actor);
         }
         Some(RestartDecision::Stop) => {
             cell.transition(core, StemState::Stopped, how(status), actor, data);
@@ -373,7 +382,14 @@ fn schedule(
     });
 }
 
-/// `failed` with `MAX_RESTARTS`, event `stem.gave_up`.
+/// `START_FAILED` for a process that exited before it was ready, with the
+/// last lines it wrote (36, [`super::tail`]).
+fn exited_error(core: &Core, cell: &StemCell, status: ExitStatus) -> Error {
+    super::tail::with_tail(core, cell, super::waiter::exited_error(&cell.name, status))
+}
+
+/// `failed` with `MAX_RESTARTS`, event `stem.gave_up`. Both carry the last
+/// lines of the attempt that died (36, [`super::tail`]).
 fn give_up(core: &Core, cell: &StemCell, cause: &Cause) {
     let actor = stems_api::DAEMON_ACTOR;
     let (attempts, max, window) = {
@@ -392,6 +408,7 @@ fn give_up(core: &Core, cell: &StemCell, cause: &Cause) {
     details["attempts"] = json!(attempts);
     details["max"] = json!(max);
     details["window_ms"] = json!(window_ms);
+    super::tail::merge(&mut details, super::tail::details(core, cell));
     let e = Error::new(
         ErrorCode::MaxRestarts,
         format!(
@@ -408,6 +425,25 @@ fn give_up(core: &Core, cell: &StemCell, cause: &Cause) {
             .stem(name)
             .reason(e.message.clone())
             .data(details),
+    );
+    cell.fail(core, e, actor);
+}
+
+/// A crash that is not restarted because the image is stale (35): the
+/// stem fails with `IMAGE_STALE`, announced as `stem.gave_up {reason:
+/// "image_stale"}` so the notification (34) and the usual handling of a
+/// stem given up on apply.
+fn give_up_stale(core: &Core, cell: &StemCell, e: Error, status: ExitStatus) {
+    let actor = stems_api::DAEMON_ACTOR;
+    let mut data = e.details.clone();
+    data["reason"] = json!("image_stale");
+    data["exit_code"] = json!(status.code);
+    data["signal"] = json!(status.signal);
+    core.events.emit(
+        EventDraft::new(EventKind::STEM_GAVE_UP, actor)
+            .stem(&cell.name)
+            .reason(e.message.clone())
+            .data(data),
     );
     cell.fail(core, e, actor);
 }

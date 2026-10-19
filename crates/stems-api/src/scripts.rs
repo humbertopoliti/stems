@@ -250,6 +250,11 @@ impl From<stems_core::scriptargs::ScriptCatalogEntry> for CatalogScript {
 pub struct ScriptCatalogResult {
     /// Workspace scripts first (sorted), then each enabled stem's (sorted).
     pub scripts: Vec<CatalogScript>,
+    /// The fixed lifecycle script names in lifecycle order (36: so a client
+    /// can tell hooks from custom scripts without a second call; the full
+    /// table is `stems scripts --lifecycle`).
+    #[serde(default)]
+    pub lifecycle_hooks: Vec<String>,
 }
 
 impl ScriptCatalogResult {
@@ -265,6 +270,7 @@ impl ScriptCatalogResult {
                 .filter(|e| stem.is_none_or(|s| e.stem.as_deref() == Some(s)))
                 .map(CatalogScript::from)
                 .collect(),
+            lifecycle_hooks: stems_core::scriptargs::lifecycle_hook_names(),
         }
     }
 }

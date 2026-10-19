@@ -51,7 +51,9 @@ Every transition emits a `stem.state` event with `from`, `to`, `reason` and
 observed, e.g. `starting → healthy` or a crash).
 
 A process that exits while `starting` is `failed` with `START_FAILED` (exit
-code and signal in `details`). One that exits later, without being asked to,
+code, signal and the last lines it wrote — `stderr_tail`, `stdout_tail`,
+`output_truncated` — in `details`; [restart.md](restart.md#the-output-tail-of-an-exit-caused-failure)).
+One that exits later, without being asked to,
 goes to its restart policy ([restart.md](restart.md), FR-LC-6): with the
 default `on-failure` a non-zero exit is restarted with backoff (the stem is
 `starting`, reason `restarting in 500ms (attempt 1)`, event

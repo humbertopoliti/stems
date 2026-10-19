@@ -257,6 +257,34 @@ step!(then_json_contains(w, m) {
     );
 });
 
+// `the JSON array at "<path>" has an|no element containing "<text>"`:
+// substring match over the elements of the array (or arrays) at `path`
+// (`contains` on an array is a whole-element match, so a tail line can
+// be checked by a fragment here).
+step!(then_json_array_element_containing(w, m) {
+    let text = w.expand(&m[3]);
+    let want = &m[2] == "has an";
+    let got = nodes(w, &m[1]);
+    let elements: Vec<&Value> = got
+        .iter()
+        .flat_map(|v| match v {
+            Value::Array(a) => a.iter().collect::<Vec<_>>(),
+            other => vec![*other],
+        })
+        .collect();
+    let hit = elements
+        .iter()
+        .any(|e| e.as_str().map_or_else(|| e.to_string(), str::to_string).contains(&text));
+    assert!(
+        hit == want,
+        "JSON array at {} ({}) {} an element containing {text:?}\n{}",
+        m[1],
+        serde_json::to_string(&got).unwrap_or_default(),
+        if want { "has no" } else { "has" },
+        w.last().describe()
+    );
+});
+
 step!(then_json_semver(w, m) {
     let got = nodes(w, &m[1]);
     assert!(
@@ -2124,6 +2152,10 @@ pub const STEPS: &[(&str, Step<E2eWorld>)] = &[
         then_json_contains,
     ),
     (
+        r#"^the JSON array at "([^"]+)" (has an|has no) element containing "(.*)"$"#,
+        then_json_array_element_containing,
+    ),
+    (
         r#"^the JSON at "([^"]+)" matches semver$"#,
         then_json_semver,
     ),
@@ -2613,6 +2645,7 @@ mod tests {
             r#"within 5s the output of "stems logs --json --since 1s" has no JSON at "$[?@.level == 'warn']""#,
             r#"the JSON at "$[*].ts" is in ascending order"#,
             r#"the JSON nodes at "$[*].text" equal ["a", "b"]"#,
+            r#"the JSON array at "$.data.stems[0].error.details.stderr_tail" has no element containing "first-crash""#,
             r#"the background command's CPU is below 2 %"#,
             r#"the file "${tmp}/examples/repos/shop-api/VERSION" is written with "2""#,
             r#"the file "hooks.log" contains "pre_start""#,

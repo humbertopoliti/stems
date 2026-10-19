@@ -12,6 +12,7 @@ pub mod defaults;
 mod diagnostic;
 mod discover;
 pub mod edit;
+pub mod lifecycle;
 mod loader;
 mod merge;
 mod model;
@@ -32,6 +33,9 @@ use serde_yaml_ng::{Mapping, Value};
 pub use codebase::{expand_tilde, is_git_url, normalize};
 pub use diagnostic::{ConfigErrors, Diagnostic, Span, codes};
 pub use discover::{CONFIG_FILE, ENV_WORKSPACE, LOCAL_FILE, discover};
+pub use lifecycle::{
+    HOOKS, Hook, HookScope, LIFECYCLE_SCRIPTS, WORKSPACE_LIFECYCLE_SCRIPTS, is_lifecycle_script,
+};
 pub use loader::MAX_EXTENDS_DEPTH;
 pub use merge::merge as merge_values;
 pub use model::*;

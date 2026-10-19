@@ -1,6 +1,7 @@
 ---
 source: crates/stems-cli/src/commands/run.rs
-expression: catalog_table(&r.scripts)
+assertion_line: 387
+expression: catalog_table(&r.scripts) + &lifecycle_footer(&r.lifecycle_hooks)
 ---
 STEM         SCRIPT            KIND       DESCRIPTION                                             ARGS
 (workspace)  bootstrap         lifecycle  -                                                       -
@@ -15,3 +16,5 @@ shop-api     setup             lifecycle  -                                     
 shop-api     start             lifecycle  -                                                       -
 shop-worker  start             lifecycle  -                                                       -
 shop-web     start             lifecycle  -                                                       -
+
+lifecycle hooks: bootstrap, setup, pre_start, start, health, post_start, seed, pre_stop, stop, post_stop, build, reset, teardown (stems scripts --lifecycle)

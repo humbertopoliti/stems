@@ -1,5 +1,6 @@
 ---
 source: crates/stems-cli/src/commands/run.rs
+assertion_line: 383
 expression: "serde_json::to_string_pretty(&r).unwrap()"
 ---
 {
@@ -272,5 +273,20 @@ expression: "serde_json::to_string_pretty(&r).unwrap()"
         "additionalProperties": false
       }
     }
+  ],
+  "lifecycle_hooks": [
+    "bootstrap",
+    "setup",
+    "pre_start",
+    "start",
+    "health",
+    "post_start",
+    "seed",
+    "pre_stop",
+    "stop",
+    "post_stop",
+    "build",
+    "reset",
+    "teardown"
   ]
 }

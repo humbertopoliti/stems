@@ -41,13 +41,41 @@ the stem goes `starting` with reason `restarting in <delay> (attempt n)`
 
 and after the delay the stem is started again. Otherwise the stem is
 `failed` with `MAX_RESTARTS` (details `{stem, attempts, max, window_ms,
-exit_code, signal}`) and the daemon emits `stem.gave_up` with the same
-data. Nothing of the stem is left running either way.
+exit_code, signal}` plus the output tail below) and the daemon emits
+`stem.gave_up` with the same data. Nothing of the stem is left running
+either way.
 
 A process that exits before its **first** start is ready is not a crash
 but a failed start: `failed` with `START_FAILED`, reported by `up` (exit
 3). A stem that crashes again while a *restart* is starting goes through
 the policy again (crash loops back off and give up).
+
+### The output tail of an exit-caused failure
+
+Every failure caused by an exit — `START_FAILED` (an exit before the stem
+was ready, or a policy-`never` crash) and `MAX_RESTARTS` — carries the
+last lines the process wrote, so a client sees *why* without a `stems
+logs` round trip:
+
+| `error.details` | meaning |
+|---|---|
+| `stderr_tail` | the last 10 stderr lines of the attempt that died, oldest first; always present (possibly empty) |
+| `stdout_tail` | only when `stderr_tail` is empty and stdout had lines (many apps log to stdout); absent otherwise |
+| `output_truncated` | `true` when more lines existed than shown |
+
+Lines are cut at 500 characters (`…`). The lines come from the daemon's
+in-memory log ring ([logs.md](logs.md)) and only from the attempt that
+died (a `MAX_RESTARTS` tail is the *last* attempt's; an earlier attempt's
+lines are never shown). The ring is in memory: after a crash recovery the
+tail is empty and `output_truncated` is `false`. `START_TIMEOUT` and
+health failures do not carry a tail (the process is alive; `stems health`
+and `stems logs` are the tools). Log text is not redacted.
+
+`stems status` prints the tail under the table for each such stem
+(`error <stem>: <message>`, then `stderr | <line>` / `stdout | <line>`),
+`stems up` prints at most the last 3 lines under `failed <stem>: …`, and
+the TUI shows the message and hint (not the tail). The `stem.gave_up`
+event `data` carries the same fields.
 
 ## Backoff
 
@@ -227,7 +255,7 @@ aborted}`; the human output prints one line per dependant (`restarted b
 | `cascade.queued` | a cascade waits for the running one | `id`, `origin`, `origins`, `reason`, `behind` (the running cascade's id) |
 | `cascade.finished` | every layer was handled | `id`, `origin`, `restarted` (names), `layers`, `failed`, `skipped`, `ok` |
 | `cascade.aborted` | the origin did not become healthy; dependants untouched | `id`, `origin`, `stem`, `error` |
-| `stem.gave_up` | `max` restarts in the window were used up | `stem`, `attempts`, `max`, `window_ms`, `reason`, `exit_code`/`signal` |
+| `stem.gave_up` | `max` restarts in the window were used up; or a crash of a compose stem whose stale image would be restarted unchanged (`reason: "image_stale"`, `image`, `image_created`, `newest_input`, `newest_input_path`) | `stem`, `attempts`, `max`, `window_ms`, `reason`, `exit_code`/`signal`, `stderr_tail`/`stdout_tail`/`output_truncated` (the last attempt's output, see above) |
 | `notification.sent` / `notification.skipped` | the stem went `failed` for good (after `stem.gave_up`, a policy-`never` crash, `START_TIMEOUT`, …): one desktop notification per burst of failures ([notifications.md](notifications.md)) | `stems`, `codes`, `backend`, `title`, `body`, `folded` / `reason` |
 | `process.exited` | before either, for an exit | `pid`, `code`, `signal` |
 
@@ -235,6 +263,12 @@ aborted}`; the human output prints one line per dependant (`restarted b
 
 - A restart that never becomes healthy fails like any start
   (`START_TIMEOUT`); it is not retried by the policy.
+- A compose stem started with `build: false` (or `--no-build`) whose
+  image is **stale** (older than its build inputs) is not restarted after
+  a crash: the policy would run the same image again. It fails with
+  `IMAGE_STALE` and `stem.gave_up {reason: "image_stale"}` instead
+  (deliverable 35, [compose.md](compose.md#stale-images)); `stems restart
+  <stem> --build` rebuilds it. A fresh image is restarted as usual.
 - Policy restarts themselves are silent: the desktop notification
   ([notifications.md](notifications.md)) is posted only when the stem is
   given up on (`failed`), never per restart attempt.

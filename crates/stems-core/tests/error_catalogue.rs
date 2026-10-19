@@ -295,6 +295,11 @@ fn sample(code: ErrorCode) -> Error {
             "`docker compose -p hello-shop up -d redis` exited with status 1",
             "see the compose output in details; run the same command by hand to reproduce",
         ),
+        ImageStale => rt(
+            code,
+            "`api`'s image stems-hello-shop-api was built before its build inputs last changed (app.py modified 2026-10-19 10:02:11 UTC, image built 2026-10-19 09:40:00 UTC)",
+            "`stems restart api --build`, or set `build: true` on `stems.api` so every start rebuilds it",
+        ),
         ComposeProjectInUse => rt(
             code,
             "compose project `hello-shop` is already running outside stems",

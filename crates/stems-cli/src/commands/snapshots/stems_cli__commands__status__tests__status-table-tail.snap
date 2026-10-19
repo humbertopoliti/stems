@@ -1,0 +1,19 @@
+---
+source: crates/stems-cli/src/commands/status.rs
+assertion_line: 519
+expression: "table(&st, &Style::default())"
+---
+STEM    TYPE     STATUS    REASON                                    PID  PORTS  UPTIME  RESTARTS
+api     process  ✗ failed  `api` exited with code 3 before it beca…  -    -      -       7
+quiet   process  ✗ failed  `api` exited with code 3 before it beca…  -    -      -       7
+silent  process  ✗ failed  `api` exited with code 3 before it beca…  -    -      -       7
+
+0 healthy, 0 degraded, 3 failed, 0 unhealthy, 0 starting, 0 stopped, 0 unknown
+
+error api: `api` exited with code 3 before it became ready
+  stderr | … (earlier lines: stems logs api)
+  stderr | Traceback (most recent call last):
+  stderr | ValueError: boom
+
+error quiet: `quiet` exited with code 3
+  stdout | only-stdout

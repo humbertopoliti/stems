@@ -1,0 +1,11 @@
+---
+source: crates/stems-cli/src/commands/lifecycle.rs
+assertion_line: 1238
+expression: up_human(&r)
+---
+up: 1 ready, 1 failed, 0 skipped
+  failed  api: `api` exited with code 3 before it became ready
+          stderr | … (earlier lines: stems logs api)
+          stderr | c
+          stderr | d
+          stderr | e

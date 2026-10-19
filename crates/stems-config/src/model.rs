@@ -13,29 +13,6 @@ use crate::types::{
     Requirement, RestartPolicy, Scalar, StemType, WatchAction, WatchRoot,
 };
 
-/// Fixed lifecycle script names for stems (FR-SC-1).
-pub const LIFECYCLE_SCRIPTS: [&str; 11] = [
-    "setup",
-    "seed",
-    "build",
-    "start",
-    "stop",
-    "reset",
-    "health",
-    "pre_start",
-    "post_start",
-    "pre_stop",
-    "post_stop",
-];
-
-/// Fixed workspace-level script names (FR-SC-6).
-pub const WORKSPACE_LIFECYCLE_SCRIPTS: [&str; 2] = ["bootstrap", "teardown"];
-
-/// True if `name` is a stem lifecycle script (otherwise it is a custom script).
-pub fn is_lifecycle_script(name: &str) -> bool {
-    LIFECYCLE_SCRIPTS.contains(&name)
-}
-
 /// A fully resolved workspace.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Workspace {
@@ -730,4 +707,6 @@ pub struct ComposeSpec {
     pub project_name: String,
     /// Adopt a running service.
     pub adopt: bool,
+    /// Rebuild the service's image on every start (`compose up --build`).
+    pub build: bool,
 }

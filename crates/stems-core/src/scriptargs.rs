@@ -18,8 +18,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use stems_config::{
-    ArgType, Dur, LIFECYCLE_SCRIPTS, Scalar, Script, ScriptArg, WORKSPACE_LIFECYCLE_SCRIPTS,
-    Workspace,
+    ArgType, Dur, HOOKS, HookScope, LIFECYCLE_SCRIPTS, Scalar, Script, ScriptArg,
+    WORKSPACE_LIFECYCLE_SCRIPTS, Workspace,
 };
 
 use crate::{Error, ErrorCode};
@@ -126,6 +126,57 @@ pub fn build_catalog(ws: &Workspace) -> Vec<ScriptCatalogEntry> {
         }
     }
     out
+}
+
+/// One lifecycle hook as listed by `stems scripts --lifecycle` (36): the
+/// fixed name, who it belongs to, when stems runs it and who defines it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct LifecycleHookInfo {
+    /// The script name (`setup`, `pre_start`, …).
+    pub name: String,
+    /// `stem` or `workspace`.
+    pub scope: HookScope,
+    /// When stems runs it (one sentence).
+    pub when: String,
+    /// The enabled stems whose `scripts:` define it (declaration order), or
+    /// `["workspace"]` for a workspace hook the workspace defines; empty
+    /// when nothing defines it.
+    pub defined_by: Vec<String>,
+}
+
+/// Every hook name in lifecycle order (`lifecycle_hooks` of the catalogue).
+pub fn lifecycle_hook_names() -> Vec<String> {
+    HOOKS.iter().map(|h| h.name.to_string()).collect()
+}
+
+/// Every lifecycle hook in lifecycle order, defined or not, with the stems
+/// (or the workspace) that define it.
+pub fn lifecycle_hooks(ws: &Workspace) -> Vec<LifecycleHookInfo> {
+    HOOKS
+        .iter()
+        .map(|h| {
+            let defined_by = match h.scope {
+                HookScope::Workspace => {
+                    if ws.scripts.contains_key(h.name) {
+                        vec!["workspace".to_string()]
+                    } else {
+                        Vec::new()
+                    }
+                }
+                HookScope::Stem => ws
+                    .stems()
+                    .filter(|s| s.scripts.contains_key(h.name))
+                    .map(|s| s.name.clone())
+                    .collect(),
+            };
+            LifecycleHookInfo {
+                name: h.name.to_string(),
+                scope: h.scope,
+                when: h.when.to_string(),
+                defined_by,
+            }
+        })
+        .collect()
 }
 
 /// A validated argument value.

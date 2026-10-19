@@ -47,12 +47,13 @@ compose file's directory (goldens in
 |---|---|---|
 | version | `compose version --format json` (no prefix) | once per runtime before the first start (a success is cached) |
 | project check | `-p <project> ps --format json -a` (no `-f`) | every start |
-| up | `up -d --no-deps <service>` | start |
+| up | `up -d --no-deps [--build] <service>` | start (`--build` when the stem's `build` is true, the default; see [Build](#build)) |
 | find container | `ps --format json -a <service>` | right after `up` |
 | stop | `stop -t <grace, rounded up to seconds> <service>` | `stop` (the container is kept) |
 | remove | `rm -f -s -v <service>` (`-v`: the container's anonymous volumes, never named ones) | `ComposeRuntime::remove(handle)`, i.e. `down` |
 | prune | `-p <project> down` (no `-f`, `-v` or `--rmi`) | after a remove, when the project is stems-owned and `ps -a` shows no container left: removes its `<project>_default` network |
 | config | `config --services` | available, not used by the lifecycle |
+| service facts | `config --format json` | the stale-image check (`ComposeRuntime::service_config`): `services.<svc>.image` (a built image without `image:` is `<project>-<service>`) and `services.<svc>.build.{context, dockerfile}` as absolute paths |
 
 `ps --format json` output is accepted both as a JSON array (compose before
 2.21) and as NDJSON (one object per line, 2.21+); non-JSON lines (warnings)
@@ -66,6 +67,73 @@ container if it is still running afterwards (`StopOutcome::Killed`).
 `DOCKER_HOST` is exported to every compose process as the address the
 `DockerRuntime` connected to (unless the stem's env sets it), so the CLI
 and the API client always talk to the same engine.
+
+## Build
+
+A compose stem has a `build` setting (bool, **default `true`**): every
+`up`, `start` and `restart` runs `compose up -d --no-deps --build
+<service>`, so a service with `build:` in the compose file runs the code
+that is checked out, not whatever image was built last week. A service
+without `build:` is unaffected (`--build` is a no-op for an `image:`
+service). The build output is streamed line by line to `docker.build
+{stem, line}` events, exactly like a docker `build:` stem's (`stems
+events`, the TUI).
+
+```yaml
+stems:
+  api:
+    type: compose
+    file: compose.yml
+    service: api
+    build: false        # never rebuild on start (the image is somebody else's job)
+```
+
+`stems up|start|restart --build` and `--no-build` override the setting
+for one run (`UpParams.build`, `StartParams.build`, `RestartParams.build`:
+`true`/`false`/absent). On `restart`, `--build` also runs the stems'
+`build` scripts, as before. Docker `build:` stems always build; the flags
+do not apply to them. The wrong form of `build` (an object on a compose
+stem, a bool on a docker stem) is `SCHEMA_INVALID` at `stems.<n>.build`.
+
+## Stale images
+
+With `build: false` (or `--no-build`) the image can be **stale**: built
+before the service's build inputs last changed. The build inputs are the
+service's `build.context` walked with the same `.dockerignore` rules the
+docker runtime uses for its tarball (`stems_runtime::docker::context`,
+`.git` skipped), plus the Dockerfile and the compose file itself; the
+newest modification time wins (`stems_runtime::stale`). An mtime in the
+future counts as now; a context of more than 50 000 entries gives no
+verdict (never a false warning). The comparison is against the image's
+`Created` (`docker image inspect`), both in UTC: stale means strictly
+older.
+
+stems reports a stale image in three places and never loops on it:
+
+- **`stems up`/`start`/`restart` without a rebuild**: the stem still
+  starts, with `IMAGE_STALE` in the result's `warnings`
+  (`data.warnings[].details {stem, image, image_created, newest_input,
+  newest_input_path}`; the human output prints `  warning <stem>:
+  <message>`; the exit code is unchanged) and an `image.stale` event with
+  the same data.
+- **A crash of a running stem started with `build == false`**: when the
+  image is stale, the restart policy would run the same image again, so
+  the crash is not retried. The stem fails with `IMAGE_STALE` (hint:
+  `stems restart <stem> --build`, or set `build: true`) and
+  `stem.gave_up {reason: "image_stale", exit_code, signal, image, ...}` is
+  emitted, so the desktop notification ([notifications.md](notifications.md))
+  fires and `status` shows `failed` with the error. A fresh image, a
+  missing one, or a check that fails for any reason (Docker slow, compose
+  config unreadable) leaves the policy restart alone (`Unknown` never
+  blocks a restart). With `build: true` nothing changes: the restart
+  rebuilds, and a rebuild that fails is a non-retried start failure.
+- **`stems doctor`**: `image.<stem>` for each enabled compose stem whose
+  service has `build:` (and each docker `build:` stem, for the image of
+  the current daemon run), see [doctor.md](doctor.md).
+
+Known blind spot: the check is mtime-based (what `git checkout` changes).
+A `git stash`/revert that leaves every file older than the image is not
+detected; content is not hashed.
 
 ## Project naming
 
@@ -179,8 +247,19 @@ stems, see `docs/docker.md`):
   file's `${REDIS_PORT:-16379}`.
 - Errors: `COMPOSE_FAILED` (`details.tail`, `command`, `exit`),
   `COMPOSE_PROJECT_IN_USE` (`details.project`), `DOCKER_UNAVAILABLE` for
-  a missing/v1 compose or an unreachable engine; every one carries
-  `details.stem`.
+  a missing/v1 compose or an unreachable engine, `IMAGE_STALE` (a
+  warning on start, the crash guard's failure; `details.image`,
+  `image_created`, `newest_input`, `newest_input_path`); every one
+  carries `details.stem`.
+- `build` (35): `compose_spec` copies the stem's `build:`; `start_spec`
+  applies the operation's `--build`/`--no-build` (`Core.build_override`,
+  set while the ops lock is held) and attaches the progress sink
+  (`docker.build` events). `containers::start` remembers the effective
+  flag per stem and, for `false`, runs `stale::warn_before_start`
+  (`Core.warnings` → `UpResult.warnings`, event `image.stale`).
+  `restart::on_exit` asks `stale::crash_guard` before scheduling a
+  policy restart; a stale image fails the stem with `IMAGE_STALE` and
+  `stem.gave_up {reason: "image_stale"}`.
 - `down` (and daemon shutdown, `reset`) runs `rm -f -s -v <service>` for the
   stem's handle; a compose stem left stopped by `stems stop` is removed by
   `down` through `ComposeRuntime::remove_service(spec)`. `restart` is

@@ -1,0 +1,10 @@
+# compose.yml — the `api` service is built from examples/repos/shop-api
+# (the context resolves under the harness's copied root, like the
+# docker-build fixture's `build.context`). API_PORT is the stem's host port.
+services:
+  api:
+    build: { context: ../../../../examples/repos/shop-api }
+    ports:
+      - "${API_PORT:-18535}:8080"
+    environment:
+      SHOP_CHAOS: "1"

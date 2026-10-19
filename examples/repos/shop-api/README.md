@@ -50,7 +50,7 @@ GET or POST. Each one returns `{"ok": true, "effect": ...}`.
 
 | Endpoint | Effect |
 |---|---|
-| `/__chaos/crash?code=3` | Sends the response, then exits with the code at once (`os._exit`) |
+| `/__chaos/crash?code=3&msg=why` | Logs `chaos crash requested code=3 msg=why` on stdout **and stderr** (`msg` optional), sends the response, then exits with the code at once (`os._exit`) |
 | `/__chaos/unhealthy?for=5s` | `/healthz` returns 503 for that long. Accepts `500ms`, `5s`, `2m` or plain seconds |
 | `/__chaos/hang-on-stop` | SIGTERM is ignored from now on (it logs `WARN ignoring SIGTERM`). Only SIGKILL stops the process |
 | `/__chaos/fork?n=3` | Spawns n child processes that sleep forever, **in the same process group**. `effect.pids` lists them |

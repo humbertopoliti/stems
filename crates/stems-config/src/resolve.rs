@@ -327,7 +327,7 @@ fn type_specific_fields(rs: &RawStem) -> Vec<(&'static str, bool, &'static [Stem
         ("stdin", rs.stdin.is_some(), &[Process]),
         ("image", rs.image.is_some(), &[Docker]),
         ("pull", rs.pull.is_some(), &[Docker]),
-        ("build", rs.build.is_some(), &[Docker]),
+        ("build", rs.build.is_some(), &[Docker, Compose]),
         ("volumes", rs.volumes.is_some(), &[Docker]),
         ("entrypoint", rs.entrypoint.is_some(), &[Docker]),
         ("network", rs.network.is_some(), &[Docker]),
@@ -530,7 +530,7 @@ fn resolve_stem(
         StemType::Docker => StemRuntime::Docker(Box::new(DockerSpec {
             image: rs.image.clone(),
             pull: rs.pull.unwrap_or_default(),
-            build: rs.build.as_ref().map(|b| {
+            build: docker_build(rs, p, ctx).map(|b| {
                 let context = b
                     .context
                     .as_deref()
@@ -564,6 +564,7 @@ fn resolve_stem(
                 .clone()
                 .unwrap_or_else(|| format!("stems-{}", ctx.ws_name)),
             adopt: rs.adopt.unwrap_or(d::COMPOSE_ADOPT),
+            build: compose_build(rs, p, ctx),
         }),
         StemType::External => StemRuntime::External,
     };
@@ -597,6 +598,41 @@ fn resolve_stem(
         variant: None,
         variants: Vec::new(),
     })
+}
+
+/// The docker form of `stems.<n>.build`; a bool on a docker stem is
+/// `SCHEMA_INVALID` (and ignored).
+fn docker_build<'a>(
+    rs: &'a RawStem,
+    p: &ConfigPath,
+    ctx: &mut Ctx<'_>,
+) -> Option<&'a RawDockerBuild> {
+    match rs.build.as_ref()? {
+        RawBuild::Docker(b) => Some(b),
+        RawBuild::Flag(_) => {
+            ctx.schema(
+                p.key("build"),
+                "`build` on a docker stem is an object (`build: { context: ., dockerfile: Dockerfile }`); the bool form (`build: true|false`) is for compose stems",
+            );
+            None
+        }
+    }
+}
+
+/// The compose form of `stems.<n>.build` (default `COMPOSE_BUILD`); an
+/// object on a compose stem is `SCHEMA_INVALID` (the default applies).
+fn compose_build(rs: &RawStem, p: &ConfigPath, ctx: &mut Ctx<'_>) -> bool {
+    match rs.build.as_ref() {
+        None => d::COMPOSE_BUILD,
+        Some(RawBuild::Flag(b)) => *b,
+        Some(RawBuild::Docker(_)) => {
+            ctx.schema(
+                p.key("build"),
+                "`build` on a compose stem is a bool (`build: true|false`, whether `up` runs `compose up --build`); the object form (`context`, `dockerfile`) is for docker stems and the service's `build:` lives in the compose file",
+            );
+            d::COMPOSE_BUILD
+        }
+    }
 }
 
 /// Outputs (FR-ST-6): names must be identifiers (they become env var

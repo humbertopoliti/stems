@@ -16,6 +16,7 @@ use stems_runtime::docker::{
     CredentialSource, DockerConfigFile, find_helper, helper_dirs, registry_host,
 };
 use stems_runtime::os;
+use stems_runtime::stale::{self, Verdict};
 use stems_runtime::{ComposeOptions, ComposeRuntime, Orphan, OrphanScope};
 
 use super::{
@@ -62,6 +63,23 @@ pub(super) fn registry(cx: &DoctorCtx) -> Vec<Box<dyn Check>> {
                 name,
                 port,
             }));
+        }
+    }
+    for stem in ws.stems() {
+        let image = match &stem.runtime {
+            StemRuntime::Compose(c) => Some(ImageCheck::Compose {
+                stem: stem.name.clone(),
+                build: c.build,
+            }),
+            StemRuntime::Docker(d) => d.build.as_ref().map(|b| ImageCheck::Docker {
+                stem: stem.name.clone(),
+                context: b.context.clone(),
+                dockerfile: b.dockerfile.clone(),
+            }),
+            _ => None,
+        };
+        if let Some(check) = image {
+            v.push(Box::new(check));
         }
     }
     for stem in ws.stems() {
@@ -319,6 +337,185 @@ impl Check for ComposeCheck {
                 CheckResult::from_error("compose.version", CheckStatus::Fail, &runtime_error(e))
             }
         }]
+    }
+}
+
+// ---------------------------------------------------------------------------
+// stale images (35)
+// ---------------------------------------------------------------------------
+
+/// `image.<stem>`: is the stem's built image older than its build inputs?
+/// Compose: the service's `build:` from `compose config` (a service without
+/// one is skipped: an `image:` service is somebody else's build). Docker
+/// `build:` stems: the image of the current daemon run
+/// (`stems/<ws>/<stem>:<run_id>`). Needs Docker reachable.
+enum ImageCheck {
+    Compose {
+        stem: String,
+        build: bool,
+    },
+    Docker {
+        stem: String,
+        context: PathBuf,
+        dockerfile: PathBuf,
+    },
+}
+
+impl ImageCheck {
+    fn stem(&self) -> &str {
+        match self {
+            Self::Compose { stem, .. } | Self::Docker { stem, .. } => stem,
+        }
+    }
+}
+
+/// The result of `image.<stem>` for `verdict`. `rebuilds`: the stem
+/// rebuilds on every start anyway (compose `build: true`, every docker
+/// `build:` stem), which the stale hint says.
+pub fn image_result(stem: &str, image: &str, verdict: &Verdict, rebuilds: bool) -> CheckResult {
+    use crate::supervisor::stale::{fmt_time, stale_details, stale_hint};
+    let id = format!("image.{stem}");
+    match verdict {
+        Verdict::Fresh {
+            image_created,
+            newest,
+        } => CheckResult::ok(
+            &id,
+            format!(
+                "{image} built {}, inputs unchanged since",
+                fmt_time(*image_created)
+            ),
+        )
+        .details(json!({
+            "image": image,
+            "image_created": chrono::DateTime::<chrono::Utc>::from(*image_created).to_rfc3339(),
+            "newest_input": newest.map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339()),
+        })),
+        Verdict::Stale {
+            image_created,
+            newest,
+            path,
+        } => {
+            let hint = if rebuilds {
+                format!("the next `stems up`/`restart {stem}` rebuilds it (build: true)")
+            } else {
+                stale_hint(stem)
+            };
+            CheckResult::warn(
+                &id,
+                format!(
+                    "{image} is older than the checkout: {} modified {}, image built {}",
+                    path.display(),
+                    fmt_time(*newest),
+                    fmt_time(*image_created)
+                ),
+            )
+            .hint(hint)
+            .code(ErrorCode::ImageStale)
+            .details(stale_details(stem, image, verdict))
+        }
+        Verdict::NoImage => CheckResult::ok(
+            &id,
+            format!("{image} is not built yet (the first `up` builds it)"),
+        )
+        .details(json!({ "image": image })),
+        Verdict::Unknown { reason } => {
+            CheckResult::ok(&id, format!("{image}: cannot compare ({reason})"))
+                .details(json!({ "image": image, "reason": reason }))
+        }
+    }
+}
+
+#[async_trait]
+impl Check for ImageCheck {
+    fn id(&self) -> String {
+        format!("image.{}", self.stem())
+    }
+    async fn run(&self, cx: Arc<DoctorCtx>) -> Vec<CheckResult> {
+        let Some(ws) = cx.workspace() else {
+            return Vec::new();
+        };
+        // An unreachable Docker is `docker.reachable`'s failure.
+        let Ok(docker) = cx.docker().await else {
+            return Vec::new();
+        };
+        let (image, context, dockerfile, extras, rebuilds) = match self {
+            Self::Compose { stem, build } => {
+                let Some(s) = ws.stem(stem) else {
+                    return Vec::new();
+                };
+                let env = crate::supervisor::containers::config_env(s);
+                let Ok(spec) = crate::supervisor::containers::compose_spec(ws, s, "doctor", &env)
+                else {
+                    return Vec::new();
+                };
+                let opts = ComposeOptions::new(ws.name.clone(), cx.input.paths.dir.join("compose"));
+                let rt = ComposeRuntime::new(docker.clone(), opts);
+                let cfg = match rt.service_config(&spec).await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        return vec![CheckResult::from_error(
+                            self.id(),
+                            CheckStatus::Warn,
+                            &runtime_error(e),
+                        )];
+                    }
+                };
+                let Some(b) = cfg.build else {
+                    // An `image:` service: nothing of ours to compare.
+                    return Vec::new();
+                };
+                let extras = vec![b.dockerfile.clone(), spec.file.clone()];
+                (cfg.image, b.context, b.dockerfile, extras, *build)
+            }
+            Self::Docker {
+                stem,
+                context,
+                dockerfile,
+            } => {
+                let run_id = cx.state.as_ref().map(|s| s.run_id.clone());
+                let image = format!(
+                    "stems/{}/{}:{}",
+                    ws.name.to_lowercase(),
+                    stem.to_lowercase(),
+                    run_id.as_deref().unwrap_or("none")
+                );
+                if run_id.is_none() {
+                    return vec![image_result(stem, &image, &Verdict::NoImage, true)];
+                }
+                (
+                    image,
+                    context.clone(),
+                    dockerfile.clone(),
+                    vec![dockerfile.clone()],
+                    true,
+                )
+            }
+        };
+        let created = match docker.image_facts(&image).await {
+            Ok(f) => f.and_then(|f| f.created),
+            Err(e) => {
+                return vec![CheckResult::from_error(
+                    self.id(),
+                    CheckStatus::Warn,
+                    &runtime_error(e),
+                )];
+            }
+        };
+        let verdict = blocking(move || {
+            stale::check(
+                created,
+                &context,
+                &dockerfile,
+                &extras,
+                std::time::SystemTime::now(),
+            )
+        })
+        .await
+        .unwrap_or(Verdict::Unknown {
+            reason: "the scan was cancelled".into(),
+        });
+        vec![image_result(self.stem(), &image, &verdict, rebuilds)]
     }
 }
 

@@ -211,6 +211,9 @@ error_codes! {
     /// Compose project name taken by a foreign project.
     ComposeProjectInUse = "COMPOSE_PROJECT_IN_USE", RUNTIME,
         "a compose project with this name is already running outside stems (set `adopt: true`)";
+    /// A built image is older than its build inputs.
+    ImageStale = "IMAGE_STALE", RUNTIME,
+        "a compose or docker stem's image was built before its build inputs last changed (set `build: true` or rebuild)";
     /// `git` binary missing.
     GitNotInstalled = "GIT_NOT_INSTALLED", RUNTIME,
         "a git codebase needs `git`, which is not on PATH";

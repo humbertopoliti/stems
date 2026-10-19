@@ -150,7 +150,7 @@ the connection stays usable. For a stream:
 | `reset` | `ResetParams {stems?}` | `ResetResult {ok, stopped, reset: [{stem, script, exit, duration_ms}], cleared, failed}` — stops the stems, runs `reset`, clears their stamps |
 | `stamps` | `StampsParams {stem?, clear?}` | `StampsResult {stamps: [{stem, script, hash, computed_at, inputs}], cleared}` |
 | `run_script` | `RunScriptParams {stem? (null: workspace script), name, args? ([argv] \| {name: value}), wait? (true), start_deps?, ready_timeout_ms? (30000)}` | `RunScriptResult {run_id, stem, script, ok, exit, signal, duration_ms, timed_out, attempts, argv, tail, queued, error?}`; with `wait: false` at once `RunScriptAccepted {run_id, stem, script}` (follow the `script.*` events with that `data.run_id`). A failed script is a successful call with `ok: false` and `error` (`SCRIPT_FAILED`); bad args: `SCRIPT_ARGS_INVALID` (`details {arg, reason, stem, script}`); unhealthy `requires`: `SCRIPT_REQUIRES_UNMET` (`details {requires, unmet: [{stem, state}], start_error}`); stem still starting past the bound: `START_TIMEOUT` ([scripts.md](scripts.md#custom-scripts-and-stems-run)) |
-| `script_catalog` | `ScriptCatalogParams {stem?}` | `ScriptCatalogResult {scripts: [{stem, name, description, args: [{name, type, default, required, description, values}], requires, kind: lifecycle\|custom, timeout, retries, concurrent, mcp_tool, input_schema}]}` — what the TUI (30) and MCP (31) consume |
+| `script_catalog` | `ScriptCatalogParams {stem?}` | `ScriptCatalogResult {scripts: [{stem, name, description, args: [{name, type, default, required, description, values}], requires, kind: lifecycle\|custom, timeout, retries, concurrent, mcp_tool, input_schema}], lifecycle_hooks: [names]}` — what the TUI (30) and MCP (31) consume |
 | `stem_config` | `{stem}` | the stem's resolved config (`stems_config::Stem` JSON: `type`, `env`, `ports`, `scripts`, `health`, ...; `UNKNOWN_STEM` otherwise) — the TUI detail view (27) |
 | `overlays` | `OverlaysParams {stem?}` | `OverlaysResult {overlays: [{stem, dest, status: present\|modified\|missing, keep, sha256, run_id}]}` ([overlays.md](overlays.md)) |
 | `repos_sync` | `ReposSyncParams {stems?, force_fetch? (true), recurse_submodules?}` | `ReposSyncResult {ok, repos: [{stem, path, action, ref, sha, message, error?}]}` — clone / fetch / check out git codebases ([repos.md](repos.md)) |
@@ -226,8 +226,12 @@ keep, backup}`), `overlay.removed`, `overlay.kept`,
 [overlays.md](overlays.md)), `repo.cloned`, `repo.fetched`,
 `repo.checked_out`, `repo.skipped_dirty`, `repo.failed` (see
 [repos.md](repos.md#logs-and-events)), `docker.pull` (`data: {stem, image,
-layer, status}`, one per layer status change) and `docker.build` (`data:
-{stem, line}`) (see [docker.md](docker.md)).
+layer, status}`, one per layer status change), `docker.build` (`data:
+{stem, line}`; a docker `build:` stem's build, or a compose stem's `up
+--build`; see [docker.md](docker.md)) and `image.stale` (`data: {stem,
+image, image_created, newest_input, newest_input_path}`: a compose stem
+started without a rebuild runs an image older than its build inputs; see
+[compose.md](compose.md#stale-images)).
 
 Config reload payloads (deliverable 33, [config.md](config.md#reload-on-change-fr-wd-3)):
 `config.changed` `data: {plan, sources, auto_apply}` (reason `config

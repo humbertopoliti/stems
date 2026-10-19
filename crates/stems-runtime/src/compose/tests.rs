@@ -36,7 +36,91 @@ fn show(args: Vec<OsString>) -> String {
 
 #[test]
 fn golden_up() {
-    insta::assert_snapshot!("cmd_up", show(ComposeCommand::up(&target())));
+    insta::assert_snapshot!("cmd_up", show(ComposeCommand::up(&target(), false)));
+}
+
+#[test]
+fn golden_up_build() {
+    insta::assert_snapshot!("cmd_up_build", show(ComposeCommand::up(&target(), true)));
+}
+
+#[test]
+fn golden_config_json() {
+    insta::assert_snapshot!(
+        "cmd_config_json",
+        show(ComposeCommand::config_json(&target()))
+    );
+}
+
+#[test]
+fn spec_builds_by_default() {
+    assert!(redis().build);
+    let v = serde_json::to_value(redis()).unwrap();
+    assert_eq!(v["build"], json!(true));
+    assert!(v.get("progress").is_none(), "the sink is not serialised");
+    let back: ComposeSpec = serde_json::from_value(json!({
+        "workspace": "w", "stem": "s", "run_id": "r", "file": "/f.yml",
+        "service": "s", "project_name": "p", "stop_grace": {"secs": 1, "nanos": 0}
+    }))
+    .unwrap();
+    assert!(back.build, "absent in JSON means the default");
+}
+
+// --- config --format json ------------------------------------------------------
+
+/// Captured from compose v5.5.1 (`docker compose config --format json`).
+const CONFIG_JSON: &str = r#"{
+  "name": "stems-cc",
+  "services": {
+    "api": {
+      "build": {"context": "/work/ctx", "dockerfile": "Dockerfile"},
+      "command": null,
+      "ports": [{"mode": "ingress", "target": 8080, "published": "18535", "protocol": "tcp"}]
+    },
+    "named": {
+      "build": {"context": "/work/ctx", "dockerfile": "other.Dockerfile"},
+      "image": "myimg:1"
+    },
+    "plain": {"image": "redis:7"},
+    "bare": {"build": {"context": "ctx2"}}
+  }
+}"#;
+
+#[test]
+fn service_config_parses_image_and_build() {
+    let file = Path::new("/work/compose.yml");
+    let unnamed = service_config(CONFIG_JSON, "stems-cc", "api", file).unwrap();
+    assert_eq!(
+        unnamed,
+        ServiceConfig {
+            image: "stems-cc-api".into(),
+            build: Some(ServiceBuild {
+                context: "/work/ctx".into(),
+                dockerfile: "/work/ctx/Dockerfile".into(),
+            }),
+        }
+    );
+    let named = service_config(CONFIG_JSON, "stems-cc", "named", file).unwrap();
+    assert_eq!(named.image, "myimg:1");
+    assert_eq!(
+        named.build.unwrap().dockerfile,
+        PathBuf::from("/work/ctx/other.Dockerfile")
+    );
+    let plain = service_config(CONFIG_JSON, "stems-cc", "plain", file).unwrap();
+    assert_eq!(plain.image, "redis:7");
+    assert_eq!(plain.build, None);
+    // A relative context (older compose) resolves against the file.
+    let bare = service_config(CONFIG_JSON, "stems-cc", "bare", file).unwrap();
+    assert_eq!(bare.build.unwrap().context, PathBuf::from("/work/ctx2"));
+    // Unknown service / garbage: COMPOSE_FAILED-shaped.
+    assert!(matches!(
+        service_config(CONFIG_JSON, "stems-cc", "nope", file),
+        Err(RuntimeError::ComposeFailed { tail, .. }) if tail[0].contains("`nope`")
+    ));
+    assert!(matches!(
+        service_config("not json", "p", "api", file),
+        Err(RuntimeError::ComposeFailed { .. })
+    ));
 }
 
 #[test]
@@ -90,7 +174,7 @@ fn paths_with_spaces_are_quoted() {
     let mut s = redis();
     s.file = "/work/my shop/compose/redis.yml".into();
     let t = ComposeTarget::for_spec(&s, &env_dir());
-    assert!(show(ComposeCommand::up(&t)).contains("-f '/work/my shop/compose/redis.yml'"));
+    assert!(show(ComposeCommand::up(&t, true)).contains("-f '/work/my shop/compose/redis.yml'"));
 }
 
 #[test]

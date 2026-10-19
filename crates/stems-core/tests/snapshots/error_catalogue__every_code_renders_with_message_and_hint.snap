@@ -204,6 +204,10 @@ COMPOSE_FAILED: `docker compose -p hello-shop up -d redis` exited with status 1
 COMPOSE_PROJECT_IN_USE: compose project `hello-shop` is already running outside stems
   hint: stop it (`docker compose -p hello-shop down`) or set `adopt: true` on the stem to take it over
 
+# exit 1 — a compose or docker stem's image was built before its build inputs last changed (set `build: true` or rebuild)
+IMAGE_STALE: `api`'s image stems-hello-shop-api was built before its build inputs last changed (app.py modified 2026-10-19 10:02:11 UTC, image built 2026-10-19 09:40:00 UTC)
+  hint: `stems restart api --build`, or set `build: true` on `stems.api` so every start rebuilds it
+
 # exit 1 — a git codebase needs `git`, which is not on PATH
 GIT_NOT_INSTALLED: `shop-api` has a git codebase but `git` is not on PATH
   hint: install git (`xcode-select --install` or `brew install git`)

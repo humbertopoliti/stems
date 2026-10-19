@@ -14,7 +14,7 @@
 pub mod command;
 pub mod parse;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -23,9 +23,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use semver::Version;
 use serde::{Deserialize, Serialize};
+use tokio::io::AsyncReadExt as _;
 
-use crate::docker::{DockerRuntime, classify_stop};
-use crate::output::OutputStream;
+use crate::docker::{DockerRuntime, ImageProgress, ProgressSink, classify_stop};
+use crate::output::{LineSplitter, OutputStream};
 use crate::runtime::{
     AdoptRecord, ExitStatus, Handle, HandleId, Orphan, OrphanScope, Runtime, RuntimeError,
     RuntimeFacts, StartSpec, StopOutcome,
@@ -37,9 +38,9 @@ pub use command::{
 };
 pub use parse::{
     COMPOSE_TAIL_LINES, ComposeAdoptRejection, LABEL_COMPOSE_CONFIG_FILES, LABEL_COMPOSE_PROJECT,
-    LABEL_COMPOSE_SERVICE, ProjectDecision, PsEntry, default_project_name, failure_error,
-    output_tail, parse_ps_json, parse_version, pick_container, project_decision, require_v2,
-    select_compose_orphans, verify_compose_adoption,
+    LABEL_COMPOSE_SERVICE, ProjectDecision, PsEntry, ServiceBuild, ServiceConfig,
+    default_project_name, failure_error, output_tail, parse_ps_json, parse_version, pick_container,
+    project_decision, require_v2, select_compose_orphans, service_config, verify_compose_adoption,
 };
 
 /// Bound on quick invocations (`version`, `ps`, `rm`).
@@ -69,6 +70,18 @@ pub struct ComposeSpec {
     /// Co-manage a project that already runs outside stems.
     #[serde(default)]
     pub adopt: bool,
+    /// `up --build`: rebuild the service's image on every start (default
+    /// true; deliverable 35). A service without `build:` is unaffected.
+    #[serde(default = "default_build")]
+    pub build: bool,
+    /// Where the output lines of `up --build` go (`docker.build` events).
+    /// Ignored by equality and serde.
+    #[serde(skip)]
+    pub progress: ProgressSink,
+}
+
+fn default_build() -> bool {
+    true
 }
 
 impl ComposeSpec {
@@ -91,6 +104,8 @@ impl ComposeSpec {
             env: BTreeMap::new(),
             stop_grace: Duration::from_secs(10),
             adopt: false,
+            build: true,
+            progress: ProgressSink::default(),
         }
     }
 }
@@ -127,6 +142,23 @@ struct Invocation {
 /// Output of a successful invocation.
 struct Ran {
     stdout: String,
+}
+
+/// The last [`COMPOSE_TAIL_LINES`] lines of a streamed output.
+#[derive(Default)]
+struct Tail(VecDeque<String>);
+
+impl Tail {
+    fn push(&mut self, line: String) {
+        if self.0.len() == COMPOSE_TAIL_LINES {
+            self.0.pop_front();
+        }
+        self.0.push_back(line);
+    }
+
+    fn join(&self) -> String {
+        self.0.iter().map(|l| format!("{l}\n")).collect()
+    }
 }
 
 /// Runs [`ComposeSpec`]s. Cheap to share behind an `Arc`.
@@ -290,6 +322,111 @@ impl ComposeRuntime {
         Err(failure_error(shown, out.status.code(), &stdout, &stderr))
     }
 
+    /// Like [`Self::run`], but stdout and stderr are read line by line as
+    /// they come and each line goes to `on_line` (the build output of `up
+    /// --build`, deliverable 35); only the last [`COMPOSE_TAIL_LINES`] of
+    /// each are kept for a failure.
+    async fn run_streamed(
+        &self,
+        inv: &Invocation,
+        args: Vec<OsString>,
+        timeout: Option<Duration>,
+        on_line: &(dyn Fn(String) + Sync),
+    ) -> Result<Ran, RuntimeError> {
+        let shown = display_command(&self.opts.binary, &args);
+        tracing::debug!(command = %shown, "docker compose (streamed)");
+        if !inv.cwd.exists() {
+            std::fs::create_dir_all(&inv.cwd)?;
+        }
+        let mut cmd = tokio::process::Command::new(&self.opts.binary);
+        cmd.args(&args)
+            .envs(&inv.env)
+            .current_dir(&inv.cwd)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(RuntimeError::ComposeUnavailable {
+                    hint: format!(
+                        "`{}` not found on PATH; {}",
+                        self.opts.binary.to_string_lossy(),
+                        parse::COMPOSE_MISSING_HINT
+                    ),
+                });
+            }
+            Err(source) => {
+                return Err(RuntimeError::SpawnFailed {
+                    command: shown,
+                    source,
+                });
+            }
+        };
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let pump = |reader: Option<tokio::process::ChildStdout>,
+                    err: Option<tokio::process::ChildStderr>| async move {
+            let mut tail = Tail::default();
+            let mut splitter = LineSplitter::new();
+            let mut buf = vec![0u8; 8192];
+            // One of the two is `Some`; a boxed reader keeps one loop.
+            let mut reader: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>> =
+                match (reader, err) {
+                    (Some(r), _) => Box::pin(r),
+                    (None, Some(e)) => Box::pin(e),
+                    (None, None) => return tail,
+                };
+            loop {
+                match reader.read(&mut buf).await {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        for line in splitter.push(&buf[..n]) {
+                            on_line(line.clone());
+                            tail.push(line);
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                }
+            }
+            if let Some(last) = splitter.finish() {
+                on_line(last.clone());
+                tail.push(last);
+            }
+            tail
+        };
+        let outputs = async { tokio::join!(pump(stdout, None), pump(None, stderr)) };
+        let wait = async {
+            let (out, err) = outputs.await;
+            let status = child.wait().await;
+            (out, err, status)
+        };
+        let (out, err, status) = match timeout {
+            Some(t) => match tokio::time::timeout(t, wait).await {
+                Ok(r) => r,
+                Err(_) => {
+                    return Err(RuntimeError::ComposeFailed {
+                        command: shown,
+                        exit: None,
+                        tail: vec![format!("timed out after {}s", t.as_secs())],
+                    });
+                }
+            },
+            None => wait.await,
+        };
+        let status = status.map_err(|source| RuntimeError::SpawnFailed {
+            command: shown.clone(),
+            source,
+        })?;
+        let stdout = out.join();
+        if status.success() {
+            return Ok(Ran { stdout });
+        }
+        Err(failure_error(shown, status.code(), &stdout, &err.join()))
+    }
+
     /// `docker compose version`, checked once per runtime (successes are
     /// cached; failures are retried on the next start).
     pub async fn ensure_version(&self) -> Result<Version, RuntimeError> {
@@ -362,8 +499,20 @@ impl ComposeRuntime {
 
         // A second of slack so lines logged in the same second as `up` are kept.
         let since = now_secs().saturating_sub(1);
-        self.run(&inv, ComposeCommand::up(&inv.target), None)
-            .await?;
+        let up = ComposeCommand::up(&inv.target, spec.build);
+        if spec.build {
+            // The build output is visible as `docker.build` events.
+            let (progress, stem) = (spec.progress.clone(), spec.stem.clone());
+            let on_line = move |line: String| {
+                progress.send(ImageProgress::Build {
+                    stem: stem.clone(),
+                    line,
+                });
+            };
+            self.run_streamed(&inv, up, None, &on_line).await?;
+        } else {
+            self.run(&inv, up, None).await?;
+        }
         command::write_private(
             &marker,
             &format!(
@@ -390,6 +539,25 @@ impl ComposeRuntime {
         let handle = self.docker.attach_since(&entry.id, since).await?;
         self.targets().insert(handle.id(), inv);
         Ok(handle)
+    }
+
+    /// `docker compose config --format json` for `spec`'s service: its
+    /// image name and build inputs ([`ServiceConfig`], deliverable 35).
+    /// The stem env is exported for interpolation; the env file is passed
+    /// only when it exists (the first start has not written it yet).
+    pub async fn service_config(&self, spec: &ComposeSpec) -> Result<ServiceConfig, RuntimeError> {
+        let mut inv = self.spec_invocation(spec);
+        if inv.target.env_file.as_ref().is_some_and(|f| !f.exists()) {
+            inv.target.env_file = None;
+        }
+        let ran = self
+            .run(
+                &inv,
+                ComposeCommand::config_json(&inv.target),
+                Some(QUICK_TIMEOUT),
+            )
+            .await?;
+        service_config(&ran.stdout, &spec.project_name, &spec.service, &spec.file)
     }
 
     fn invocation_of(&self, h: &Handle) -> Option<Invocation> {
