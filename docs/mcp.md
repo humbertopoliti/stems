@@ -67,7 +67,7 @@ where a stem failed) are also `isError: true`, with the full result as text.
 
 | Tool | Arguments | Daemon | What it does |
 |---|---|---|---|
-| `list_stems` | – | optional | stems from the config (type, description, enabled, dependencies, ports, custom scripts) plus live state |
+| `list_stems` | – | optional | stems from the config (type, description, enabled, dependencies, ports, custom scripts) plus live state, and `lifecycle_hooks` (the fixed lifecycle script names in lifecycle order; [scripts.md](scripts.md#the-lifecycle-order)) |
 | `get_status` | `stems?` | yes | the `status` RPC (never the env) |
 | `get_graph` | `focus?`, `profile?` | optional | graph JSON `{nodes, edges, live}` with live glyphs when the daemon runs |
 | `start` | `stems`, `no_deps?`, `timeout_ms?` | yes | start and wait until ready |
@@ -75,7 +75,7 @@ where a stem failed) are also `isError: true`, with the full result as text.
 | `restart` | `stems`, `no_deps?`, `build?`, `timeout_ms?`, `cascade?` | yes | restart keeping ports; `cascade` also restarts the running hard dependants ([restart.md](restart.md#cascading-restarts-fr-lc-9)) |
 | `up` | `stems?`, `profile?`, `fresh?`, `confirm?`, `timeout_ms?` | yes | bring up; progress notifications; **`fresh` is destructive** |
 | `down` | `stems?`, `all?`, `volumes?`, `confirm?` | yes | stop; progress notifications; **`all` / `volumes` are destructive** |
-| `run_script` | `stem?`, `name`, `args` (object), `start_deps?` | yes | run a script and wait; progress notifications |
+| `run_script` | `stem?`, `name`, `args` (object), `start_deps?` | yes | run a script and wait; progress notifications. The description names the lifecycle hooks (which stems runs itself) so an agent can tell them from custom scripts |
 | `get_logs` | `stems?`, `since?`, `level?`, `grep?`, `tail?`, `cursor?`, `limit?` | yes | paginated log records (below) |
 | `get_metrics` | `stems?`, `history?` (`5m`) | yes | CPU/RSS/process samples and totals |
 | `get_events` | `since_seq?`, `kinds?`, `actor?`, `limit?` | yes | the event log, filterable by kind and actor |

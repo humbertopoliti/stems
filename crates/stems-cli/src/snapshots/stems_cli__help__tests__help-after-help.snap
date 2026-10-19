@@ -1,0 +1,8 @@
+---
+source: crates/stems-cli/src/help.rs
+assertion_line: 64
+expression: after_help()
+---
+Lifecycle hooks (fixed `scripts:` names stems runs itself): setup, pre_start, start, health, post_start, seed, pre_stop, stop, post_stop, build, reset; workspace: bootstrap, teardown.
+Any other script name is a custom script (`stems run`). `stems scripts --lifecycle`
+lists every hook with when it runs and who defines it.

@@ -67,8 +67,18 @@ stems down --all → … → workspace teardown → the daemon exits
 
 `restart --build` runs `build` between the stop and the start; `stems build`
 runs it without restarting. `stems reset` stops the stems, runs `reset` and
-clears their stamps. The `health` script type is deliverable 21 (the field
-already parses).
+clears their stamps. `health` is reserved for the `health: {type: command}`
+probe (its output is logged under that name; [health.md](health.md)).
+
+**`stems scripts --lifecycle` prints this** as a table — every hook in this
+order, `stem` or `workspace`, when it runs and which stems (or the
+workspace) define it, set or not — and `--json` gives `data: {lifecycle:
+[{name, scope, when, defined_by}]}`. The same names are under `stems
+--help`, in the long help of `stems run`/`scripts`/`build`/`reset`, in
+`stems scripts --json` (`data.lifecycle_hooks`) and in the MCP `list_stems`
+result (`lifecycle_hooks`), all generated from one table
+(`stems_config::lifecycle::HOOKS`), so they cannot drift. Every other name
+under `scripts:` is a custom script.
 
 ## Environment (FR-SC-3)
 
@@ -273,9 +283,11 @@ and `stems logs <stem> --script <name> -f`.
 
 `stems scripts [stem] [--json]` lists every runnable script — workspace
 scripts first, then each enabled stem's, sorted by name — as a table
-(`STEM SCRIPT KIND DESCRIPTION ARGS`) or as `data: {scripts: [{stem, name,
-description, args, requires, kind: lifecycle|custom, timeout, retries,
-concurrent, mcp_tool, input_schema}]}`. It reads the config locally and
+(`STEM SCRIPT KIND DESCRIPTION ARGS`, with a `lifecycle hooks: …` footer)
+or as `data: {scripts: [{stem, name, description, args, requires, kind:
+lifecycle|custom, timeout, retries, concurrent, mcp_tool, input_schema}],
+lifecycle_hooks: [names]}`. `stems scripts --lifecycle` lists the hooks
+themselves ([above](#the-lifecycle-order)). It reads the config locally and
 needs no daemon. `mcp_tool` (`shop_api__create_test_user`,
 `workspace__nuke_databases`) and `input_schema` (a JSON Schema of `args`)
 are what the MCP server publishes (FR-AI-2); the dashboard's `:` menu and

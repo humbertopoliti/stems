@@ -1,5 +1,6 @@
 ---
 source: crates/stems-cli/tests/help.rs
+assertion_line: 10
 expression: help
 ---
 Local environment management toolkit for multi-process systems.
@@ -91,3 +92,8 @@ Global options:
 
   -V, --version
           Print version information (`--json` adds commit and build date)
+
+Lifecycle hooks (fixed `scripts:` names stems runs itself): setup, pre_start, start, health,
+post_start, seed, pre_stop, stop, post_stop, build, reset; workspace: bootstrap, teardown.
+Any other script name is a custom script (`stems run`). `stems scripts --lifecycle`
+lists every hook with when it runs and who defines it.

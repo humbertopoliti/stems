@@ -170,7 +170,12 @@ fn header(name: &str, from: Option<&str>) -> String {
          #\n\
          # stems.yaml — the {name} integration repo (scaffolded by {origin}).\n\
          # Check it with `stems validate`; per-machine overrides go in\n\
-         # stems.local.yaml (gitignored).\n"
+         # stems.local.yaml (gitignored).\n\
+         #\n\
+         # Lifecycle hooks (`scripts:` names stems runs itself; see\n\
+         # `stems scripts --lifecycle`): {hooks}.\n\
+         # Any other script name is a custom script (`stems run`).\n",
+        hooks = stems_config::lifecycle::summary()
     );
     if from.is_some() {
         h.push_str(

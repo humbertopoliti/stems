@@ -7,6 +7,7 @@ pub mod cli;
 pub mod client;
 pub mod commands;
 pub mod docs;
+pub mod help;
 pub mod output;
 pub mod paths;
 

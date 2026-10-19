@@ -30,6 +30,7 @@ pub mod run;
 pub mod schedule;
 pub mod stale;
 pub mod state;
+pub mod tail;
 pub mod waiter;
 pub mod watch;
 
@@ -159,6 +160,25 @@ pub trait OutputSink: Send + Sync {
     /// A writer for one script run's output (deliverable 16: records tagged
     /// `stream: script, tag: <script>`); `None` drops it.
     fn script_writer(&self, _stem: &str, _script: &str) -> Option<crate::logs::ScriptWriter> {
+        None
+    }
+    /// The last `max` lines `stem`'s unit wrote at or after `since`, oldest
+    /// first, from one stream: stderr when it had any such lines, else
+    /// stdout (36: the tail an exit-caused failure carries). Script output
+    /// is not included. Default: none.
+    fn recent_output(
+        &self,
+        _stem: &str,
+        _since: chrono::DateTime<chrono::Utc>,
+        _max: usize,
+    ) -> Vec<stems_core::logs::LogRecord> {
+        Vec::new()
+    }
+    /// A receiver that turns `true` once the stream attached at `stem`'s
+    /// last start has been read to its end and every line is stored (36:
+    /// so a tail read right after the exit is complete); `None` when no
+    /// stream is attached (nothing to wait for).
+    fn output_drained(&self, _stem: &str) -> Option<tokio::sync::watch::Receiver<bool>> {
         None
     }
 }

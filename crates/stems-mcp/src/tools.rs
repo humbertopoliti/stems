@@ -254,7 +254,7 @@ pub struct CoreTool {
 pub const CORE_TOOLS: &[CoreTool] = &[
     CoreTool {
         name: "list_stems",
-        description: "List the workspace's stems (services): type, description, enabled, dependencies, ports, custom scripts, and the live state when the daemon runs. Works without a daemon.",
+        description: "List the workspace's stems (services): type, description, enabled, dependencies, ports, custom scripts, and the live state when the daemon runs; lifecycle_hooks names the fixed lifecycle script names (setup, pre_start, start, health, post_start, seed, pre_stop, stop, post_stop, build, reset; workspace bootstrap, teardown) in lifecycle order. Works without a daemon.",
         kind: Kind::Read,
         schema: input_schema::<ListStemsArgs>,
     },
@@ -302,7 +302,7 @@ pub const CORE_TOOLS: &[CoreTool] = &[
     },
     CoreTool {
         name: "run_script",
-        description: "Run a stem or workspace script with arguments by name and wait for it: {ok, exit, duration_ms, tail (last output lines), error}. Custom scripts are also published as <stem>__<script> tools.",
+        description: "Run a stem or workspace script with arguments by name and wait for it: {ok, exit, duration_ms, tail (last output lines), error}. Custom scripts are also published as <stem>__<script> tools; the lifecycle hooks (setup, pre_start, start, health, post_start, seed, pre_stop, stop, post_stop, build, reset; workspace bootstrap, teardown) are run by stems itself and listed by list_stems.lifecycle_hooks.",
         kind: Kind::Write,
         schema: input_schema::<RunScriptArgs>,
     },
@@ -481,6 +481,7 @@ pub async fn list_stems(b: &Backend, actor: &str) -> Result<Value, Error> {
         "root": ws.root,
         "daemon_running": live.is_some(),
         "stems": stems,
+        "lifecycle_hooks": stems_core::scriptargs::lifecycle_hook_names(),
     }))
 }
 
@@ -880,4 +881,21 @@ pub fn result_failed(v: &Value) -> bool {
 /// Every core tool name mapped to its kind (for tests and docs).
 pub fn kinds() -> BTreeMap<&'static str, Kind> {
     CORE_TOOLS.iter().map(|t| (t.name, t.kind)).collect()
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+
+    /// The tool descriptions name every lifecycle hook (36): they are static
+    /// text, so this test keeps them in step with `stems_config::HOOKS`.
+    #[test]
+    fn descriptions_name_every_lifecycle_hook() {
+        for name in ["list_stems", "run_script"] {
+            let t = CORE_TOOLS.iter().find(|t| t.name == name).unwrap();
+            for h in stems_config::HOOKS {
+                assert!(t.description.contains(h.name), "{name}: {} missing", h.name);
+            }
+        }
+    }
 }

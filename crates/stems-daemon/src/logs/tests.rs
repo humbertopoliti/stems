@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use stems_config::ByteSize;
@@ -258,4 +259,88 @@ fn log_files_sort_oldest_first() {
             "current.log"
         ]
     );
+}
+
+/// Push one of the stem's own output lines straight into its sink (what
+/// the attach task does for an [`OutputEvent::Line`]).
+async fn own_line(hub: &LogHub, stem: &str, stream: Stream, text: &str, ts: DateTime<Utc>) {
+    hub.sink(stem)
+        .tx
+        .send(Msg::Line {
+            stream,
+            tag: None,
+            text: text.into(),
+            ts,
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn recent_output_prefers_stderr_filters_since_and_keeps_the_newest() {
+    let d = tempfile::tempdir().unwrap();
+    let hub = hub(d.path());
+    let t0 = Utc::now();
+    let at = |ms: i64| t0 + chrono::Duration::milliseconds(ms);
+    // An earlier attempt (before `since`), then the attempt that died.
+    own_line(&hub, "api", Stream::Err, "old attempt", at(-100)).await;
+    own_line(&hub, "api", Stream::Out, "starting", at(10)).await;
+    own_line(&hub, "api", Stream::Err, "e1", at(20)).await;
+    own_line(&hub, "api", Stream::Err, "e2", at(30)).await;
+    own_line(&hub, "api", Stream::Err, "e3", at(40)).await;
+    // Script output is never part of the tail.
+    hub.script_writer("api", "seed").line("seed says hi").await;
+    wait_for(&hub, "api", 6).await;
+
+    let texts = |v: Vec<LogRecord>| v.into_iter().map(|r| r.text).collect::<Vec<_>>();
+    // Newest `max` of stderr, oldest first; `since` excludes the old attempt.
+    assert_eq!(texts(hub.recent_output("api", t0, 2)), ["e2", "e3"]);
+    assert_eq!(texts(hub.recent_output("api", t0, 10)), ["e1", "e2", "e3"]);
+    assert_eq!(
+        texts(hub.recent_output("api", at(-200), 10)),
+        ["old attempt", "e1", "e2", "e3"]
+    );
+    // Nothing since: empty (not stdout, not the old stderr).
+    assert!(hub.recent_output("api", at(100), 10).is_empty());
+    // Stdout only when stderr had nothing in the window.
+    own_line(&hub, "quiet", Stream::Out, "only-stdout", at(10)).await;
+    wait_for(&hub, "quiet", 1).await;
+    assert_eq!(texts(hub.recent_output("quiet", t0, 10)), ["only-stdout"]);
+    // Unknown stem: empty, no sink created.
+    assert!(hub.recent_output("nope", t0, 10).is_empty());
+    assert!(hub.existing_sink("nope").is_none());
+}
+
+#[tokio::test]
+async fn output_drained_turns_true_once_the_attached_stream_ended() {
+    use stems_runtime::{ProcessSpec, Runtime, StartSpec};
+    let d = tempfile::tempdir().unwrap();
+    let hub = hub(d.path());
+    // Nothing attached: nothing to wait for.
+    assert!(hub.output_drained("api").is_none());
+    let rt = stems_runtime::ProcessRuntime::new();
+    let spec = StartSpec::Process(ProcessSpec {
+        command: "sh".into(),
+        args: vec!["-c".into(), "echo out; echo boom >&2; exit 3".into()],
+        shell: false,
+        cwd: d.path().to_path_buf(),
+        env: BTreeMap::new(),
+        clear_env: false,
+    });
+    let h = rt.start(&spec).await.unwrap();
+    hub.attach("api", rt.output_stream(&h));
+    let mut rx = hub.output_drained("api").expect("a stream is attached");
+    rt.wait(&h).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), rx.wait_for(|d| *d))
+        .await
+        .expect("drained within 5s")
+        .unwrap();
+    // Once drained, the ring holds every line: the tail is complete.
+    let tail = hub.recent_output("api", DateTime::<Utc>::MIN_UTC, 10);
+    assert_eq!(tail.len(), 1);
+    assert_eq!(
+        (tail[0].stream, tail[0].text.as_str()),
+        (Stream::Err, "boom")
+    );
+    rt.release(&h);
 }

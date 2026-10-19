@@ -1,0 +1,25 @@
+# start-failed-tail — fixture for lifecycle/start-failed-tail.feature
+# (deliverable 36, FR-LC-6). Two process stems whose start command exits
+# 3 before the tcp probe can pass: `boom` writes to stdout and stderr,
+# `quiet` only to stdout. `up` fails both with START_FAILED and the error
+# details carry the last output lines (`stderr_tail`, `stdout_tail`).
+schema_version: 1
+name: start-failed-tail
+
+stems:
+  boom:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    ports: [{ name: http, port: 18591 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 2, start_timeout: 5s }
+    restart: { policy: never }
+    stop_grace: 1s
+    scripts: { start: 'echo starting; echo boom >&2; exit 3' }
+  quiet:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    ports: [{ name: http, port: 18592 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 2, start_timeout: 5s }
+    restart: { policy: never }
+    stop_grace: 1s
+    scripts: { start: 'echo only-stdout; exit 3' }

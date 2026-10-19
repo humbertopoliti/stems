@@ -790,3 +790,36 @@ pub fn entries(store: &stems_core::stamps::StampStore, stem: Option<&str>) -> Ve
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every script name the start/stop sequence runs is a documented hook
+    /// (`stems_config::lifecycle::HOOKS`), and every stem hook the table
+    /// lists is a lifecycle script name (36).
+    #[test]
+    fn sequence_scripts_are_documented_hooks() {
+        for name in SEQUENCE_SCRIPTS {
+            assert!(
+                stems_config::lifecycle::hook_named(name).is_some(),
+                "{name} is not in stems_config::lifecycle::HOOKS"
+            );
+            assert!(stems_config::is_lifecycle_script(name), "{name}");
+        }
+        for h in stems_config::HOOKS {
+            match h.scope {
+                stems_config::HookScope::Stem => {
+                    assert!(stems_config::is_lifecycle_script(h.name), "{}", h.name);
+                }
+                stems_config::HookScope::Workspace => {
+                    assert!(
+                        stems_config::WORKSPACE_LIFECYCLE_SCRIPTS.contains(&h.name),
+                        "{}",
+                        h.name
+                    );
+                }
+            }
+        }
+    }
+}

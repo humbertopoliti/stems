@@ -2,8 +2,9 @@
 Feature: a stem that keeps crashing is given up on
   Beyond `restart.max` restarts within `restart.window` the next crash is
   not restarted: the stem is `failed` with `MAX_RESTARTS` (details:
-  attempts, max, window_ms, exit_code) and the daemon emits
-  `stem.gave_up`. Nothing of the stem is left running.
+  attempts, max, window_ms, exit_code, and the last stderr lines of the
+  attempt that died as `stderr_tail`) and the daemon emits `stem.gave_up`
+  with the same data. Nothing of the stem is left running.
 
   Scenario: max 2, the third crash gives up
     Given the fixture workspace "restart"
@@ -23,11 +24,13 @@ Feature: a stem that keeps crashing is given up on
     When I run "stems status api --json"
     And I save the JSON at "$.data.stems[0].pid" as "pid3"
     And the chaos endpoint "crash?code=3" is called on "api"
-    Then within 10s the events stream contains {"kind": "stem.gave_up", "stem": "api", "data": {"attempts": 2, "max": 2, "window_ms": 600000, "exit_code": 3}}
+    Then within 10s the events stream contains {"kind": "stem.gave_up", "stem": "api", "data": {"attempts": 2, "max": 2, "window_ms": 600000, "exit_code": 3, "stderr_tail": ["chaos crash requested code=3"]}}
     And within 5s the stem "api" is "failed"
     When I run "stems status api --json"
     Then the JSON at "$.data.stems[0].error.code" equals "MAX_RESTARTS"
     And the JSON at "$.data.stems[0].error.details.attempts" equals 2
+    And the JSON at "$.data.stems[0].error.details.stderr_tail[-1]" equals "chaos crash requested code=3"
+    And the JSON at "$.data.stems[0].error.details.output_truncated" equals false
     And the JSON at "$.data.stems[0].glyph" equals "failed"
     And the JSON at "$.data.stems[0].pid" equals null
     And the JSON at "$.data.stems[0].restarts" equals 2

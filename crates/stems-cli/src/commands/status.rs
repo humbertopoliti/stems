@@ -9,7 +9,10 @@
 //! substitution).
 //!
 //! Human: the table `STEM TYPE STATUS REASON PID PORTS UPTIME RESTARTS`
-//! ([`table`]) and a summary line. `STATUS` is the glyph
+//! ([`table`]) and a summary line; then, for each failed stem whose error
+//! carries the last output lines of the attempt that died (36:
+//! `details.stderr_tail` / `stdout_tail`), an `error <stem>: <message>`
+//! block with those lines as `stderr | …`. `STATUS` is the glyph
 //! ([`stems_core::Glyph::cell`]) and the state. Glyphs fall back to ASCII
 //! (`OK FAIL WARN - ? ..`) with `--no-color`/`STEMS_NO_COLOR`,
 //! `STEMS_ASCII=1`, or a non-UTF-8 locale; colour only on a terminal. Long
@@ -313,6 +316,25 @@ pub fn table(st: &StatusResult, style: &Style) -> String {
     out.push('\n');
     out.push_str(&summary_line(&st.summary, style.width));
     out.push('\n');
+    out.push_str(&tails(st));
+    out
+}
+
+/// The `error <stem>: <message>` blocks with the output tail of each failed
+/// stem whose error has one (36).
+fn tails(st: &StatusResult) -> String {
+    let mut out = String::new();
+    for s in &st.stems {
+        let Some(e) = &s.error else { continue };
+        let lines = stems_daemon::supervisor::tail::human_lines(&e.details, &s.name, usize::MAX);
+        if lines.is_empty() {
+            continue;
+        }
+        out.push_str(&format!("\nerror {}: {}\n", s.name, e.message));
+        for l in lines {
+            out.push_str(&format!("  {l}\n"));
+        }
+    }
     out
 }
 
@@ -456,6 +478,45 @@ mod tests {
         };
         assert!(table(&st, &ascii).contains("..."));
         assert!(table(&st, &ascii).contains("FAIL failed"));
+    }
+
+    #[test]
+    fn failed_stem_with_an_output_tail_golden() {
+        let mut st = one("api", "`api` exited with code 3 before it became ready");
+        st.stems[0].error = Some(
+            Error::new(
+                stems_core::ErrorCode::StartFailed,
+                "`api` exited with code 3 before it became ready",
+            )
+            .with_details(json!({
+                "stem": "api",
+                "exit_code": 3,
+                "stderr_tail": ["Traceback (most recent call last):", "ValueError: boom"],
+                "output_truncated": true
+            })),
+        );
+        let mut quiet = st.stems[0].clone();
+        quiet.name = "quiet".into();
+        quiet.error = Some(
+            Error::new(
+                stems_core::ErrorCode::StartFailed,
+                "`quiet` exited with code 3",
+            )
+            .with_details(json!({ "stderr_tail": [], "stdout_tail": ["only-stdout"] })),
+        );
+        let mut silent = st.stems[0].clone();
+        silent.name = "silent".into();
+        silent.error = Some(
+            Error::new(
+                stems_core::ErrorCode::StartFailed,
+                "`silent` exited with code 3",
+            )
+            .with_details(json!({ "stderr_tail": [], "output_truncated": false })),
+        );
+        st.stems.push(quiet);
+        st.stems.push(silent);
+        st.summary = StatusSummary::of(&st.stems);
+        insta::assert_snapshot!("status-table-tail", table(&st, &Style::default()));
     }
 
     #[test]

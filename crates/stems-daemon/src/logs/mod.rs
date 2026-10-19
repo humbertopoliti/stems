@@ -39,7 +39,7 @@ use stems_core::logs::{
 };
 use stems_core::{Error, ErrorCode};
 use stems_runtime::{OutputEvent, OutputStream, OutputStreamKind};
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 use crate::events::EventBus;
 use crate::supervisor::OutputSink;
@@ -267,6 +267,9 @@ pub struct LogHub {
     sinks: Mutex<HashMap<String, Arc<LogSink>>>,
     live: broadcast::Sender<LiveRecord>,
     adopted_noted: Mutex<HashSet<String>>,
+    /// Per stem: `true` once the stream attached at its last start was
+    /// read to its end and flushed into the ring (36).
+    drained: Mutex<HashMap<String, watch::Sender<bool>>>,
 }
 
 impl std::fmt::Debug for LogHub {
@@ -290,6 +293,34 @@ impl LogHub {
             sinks: Mutex::new(HashMap::new()),
             live,
             adopted_noted: Mutex::new(HashSet::new()),
+            drained: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// The last `max` records of `stem`'s own output (not scripts) with `ts
+    /// >= since`, oldest first, from the ring: stderr when it has any such
+    /// records, else stdout. See [`OutputSink::recent_output`].
+    pub fn recent_output(&self, stem: &str, since: DateTime<Utc>, max: usize) -> Vec<LogRecord> {
+        let Some(sink) = self.existing_sink(stem) else {
+            return Vec::new();
+        };
+        let ring = sink.ring();
+        let pick = |stream: Stream| {
+            let mut v: Vec<LogRecord> = ring
+                .iter()
+                .rev()
+                .filter(|r| r.stream == stream && r.tag.is_none() && r.ts >= since)
+                .take(max)
+                .cloned()
+                .collect();
+            v.reverse();
+            v
+        };
+        let err = pick(Stream::Err);
+        if err.is_empty() {
+            pick(Stream::Out)
+        } else {
+            err
         }
     }
 
@@ -503,13 +534,43 @@ impl OutputSink for LogHub {
         Some(LogHub::script_writer(self, stem, script))
     }
 
+    fn recent_output(&self, stem: &str, since: DateTime<Utc>, max: usize) -> Vec<LogRecord> {
+        LogHub::recent_output(self, stem, since, max)
+    }
+
+    fn output_drained(&self, stem: &str) -> Option<watch::Receiver<bool>> {
+        lock(&self.drained).get(stem).map(watch::Sender::subscribe)
+    }
+
     fn attach(&self, stem: &str, stream: Option<OutputStream>) {
         // Adopted units have no stream (their pipes died with the old daemon).
-        let Some(mut stream) = stream else { return };
+        let Some(mut stream) = stream else {
+            lock(&self.drained).remove(stem);
+            return;
+        };
         lock(&self.adopted_noted).remove(stem);
         let tx = self.sink(stem).tx.clone();
+        let (drained, _) = watch::channel(false);
+        lock(&self.drained).insert(stem.to_string(), drained.clone());
         let stem = stem.to_string();
         tokio::spawn(async move {
+            // Dropped on every exit from the task: the stream ended (or the
+            // sink is gone), so once the sink has flushed what was queued
+            // the ring holds every line of this attempt.
+            struct Done(watch::Sender<bool>, mpsc::Sender<Msg>);
+            impl Drop for Done {
+                fn drop(&mut self) {
+                    let (tx, done) = (self.1.clone(), self.0.clone());
+                    tokio::spawn(async move {
+                        let (ack, rx) = oneshot::channel();
+                        if tx.send(Msg::Flush(ack)).await.is_ok() {
+                            let _ = rx.await;
+                        }
+                        done.send_replace(true);
+                    });
+                }
+            }
+            let _done = Done(drained, tx.clone());
             while let Some(ev) = stream.recv_event().await {
                 let msg = match ev {
                     OutputEvent::Line(l) => Msg::Line {

@@ -2,7 +2,7 @@
   "tools": [
     {
       "name": "list_stems",
-      "description": "List the workspace's stems (services): type, description, enabled, dependencies, ports, custom scripts, and the live state when the daemon runs. Works without a daemon.",
+      "description": "List the workspace's stems (services): type, description, enabled, dependencies, ports, custom scripts, and the live state when the daemon runs; lifecycle_hooks names the fixed lifecycle script names (setup, pre_start, start, health, post_start, seed, pre_stop, stop, post_stop, build, reset; workspace bootstrap, teardown) in lifecycle order. Works without a daemon.",
       "inputSchema": {
         "type": "object",
         "properties": {}
@@ -285,7 +285,7 @@
     },
     {
       "name": "run_script",
-      "description": "Run a stem or workspace script with arguments by name and wait for it: {ok, exit, duration_ms, tail (last output lines), error}. Custom scripts are also published as <stem>__<script> tools.",
+      "description": "Run a stem or workspace script with arguments by name and wait for it: {ok, exit, duration_ms, tail (last output lines), error}. Custom scripts are also published as <stem>__<script> tools; the lifecycle hooks (setup, pre_start, start, health, post_start, seed, pre_stop, stop, post_stop, build, reset; workspace bootstrap, teardown) are run by stems itself and listed by list_stems.lifecycle_hooks.",
       "inputSchema": {
         "required": [
           "name"

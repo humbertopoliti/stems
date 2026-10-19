@@ -1,0 +1,19 @@
+---
+source: crates/stems-cli/src/commands/run.rs
+assertion_line: 391
+expression: "lifecycle_table(&stems_core::scriptargs::lifecycle_hooks(&hello_shop().workspace))"
+---
+HOOK        SCOPE      DEFINED BY                       WHEN
+bootstrap   workspace  workspace                        once per `up`, before any stem starts
+setup       stem       shop-api                         before the first start, again when its stamp (inputs, stamp_env) changes
+pre_start   stem       -                                before every start of the process, policy restarts included
+start       stem       shop-api, shop-worker, shop-web  the process itself (instead of `command`); `starting` until the health check passes
+health      stem       -                                reserved for the `health: {type: command}` probe's output; never a custom script
+post_start  stem       -                                after every start, once the stem is healthy
+seed        stem       postgres, shop-api               after post_start, once; again when its stamp changes (state `seeding`)
+pre_stop    stem       -                                before every stop, before the process is signalled
+stop        stem       -                                how to stop the process (instead of SIGTERM), bounded by `stop_grace`
+post_stop   stem       -                                after every stop, once the process is gone
+build       stem       -                                on `stems build` and `restart --build` (between stop and start); never automatic
+reset       stem       postgres                         on `stems reset` and `up --fresh`, after the stop; its stamps are cleared
+teardown    workspace  workspace                        on `down --all`, after every stem stopped, before the daemon exits

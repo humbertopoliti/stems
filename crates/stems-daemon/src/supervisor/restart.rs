@@ -38,7 +38,6 @@ use tokio_util::sync::CancellationToken;
 
 use super::Core;
 use super::actor::{Cmd, StemCell};
-use super::waiter::exited_error;
 use crate::events::EventDraft;
 
 /// Per-stem restart bookkeeping, kept in the actor's `StemInfo`.
@@ -313,10 +312,10 @@ pub(crate) async fn on_exit(
             schedule(core, cell, delay, attempt, true, Cause::Exit(status), actor);
         }
         Some(RestartDecision::GiveUp) => give_up(core, cell, &Cause::Exit(status)),
-        None => cell.fail(core, exited_error(&cell.name, status), actor),
+        None => cell.fail(core, exited_error(core, cell, status), actor),
         // A respawn that dies before it is ready and is not restarted.
         Some(RestartDecision::Stop | RestartDecision::Fail) if state == StemState::Starting => {
-            cell.fail(core, exited_error(&cell.name, status), actor);
+            cell.fail(core, exited_error(core, cell, status), actor);
         }
         Some(RestartDecision::Stop) => {
             cell.transition(core, StemState::Stopped, how(status), actor, data);
@@ -383,7 +382,14 @@ fn schedule(
     });
 }
 
-/// `failed` with `MAX_RESTARTS`, event `stem.gave_up`.
+/// `START_FAILED` for a process that exited before it was ready, with the
+/// last lines it wrote (36, [`super::tail`]).
+fn exited_error(core: &Core, cell: &StemCell, status: ExitStatus) -> Error {
+    super::tail::with_tail(core, cell, super::waiter::exited_error(&cell.name, status))
+}
+
+/// `failed` with `MAX_RESTARTS`, event `stem.gave_up`. Both carry the last
+/// lines of the attempt that died (36, [`super::tail`]).
 fn give_up(core: &Core, cell: &StemCell, cause: &Cause) {
     let actor = stems_api::DAEMON_ACTOR;
     let (attempts, max, window) = {
@@ -402,6 +408,7 @@ fn give_up(core: &Core, cell: &StemCell, cause: &Cause) {
     details["attempts"] = json!(attempts);
     details["max"] = json!(max);
     details["window_ms"] = json!(window_ms);
+    super::tail::merge(&mut details, super::tail::details(core, cell));
     let e = Error::new(
         ErrorCode::MaxRestarts,
         format!(

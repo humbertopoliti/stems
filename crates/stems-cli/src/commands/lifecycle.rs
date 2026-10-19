@@ -46,6 +46,8 @@ use crate::output::{CommandOutput, Mode};
 const LONG: Duration = Duration::from_secs(3600);
 /// Extra time on top of the teardown deadline for the reply and daemon exit.
 const TEARDOWN_SLACK: Duration = Duration::from_secs(5);
+/// Most output lines `up` prints under a failed stem (36).
+const UP_TAIL_LINES: usize = 3;
 
 fn parse_timeout(raw: Option<&str>) -> Result<Option<Duration>, Error> {
     raw.map(|s| {
@@ -175,6 +177,12 @@ fn up_human(r: &UpResult) -> String {
     );
     for f in &r.failed {
         s.push_str(&format!("  failed  {}: {}\n", f.stem, f.error.message));
+        // The last lines the process wrote (36), at most UP_TAIL_LINES.
+        for l in
+            stems_daemon::supervisor::tail::human_lines(&f.error.details, &f.stem, UP_TAIL_LINES)
+        {
+            s.push_str(&format!("          {l}\n"));
+        }
     }
     for n in &r.skipped {
         s.push_str(&format!("  skipped {n}\n"));
@@ -1238,6 +1246,30 @@ mod tests {
             serde_json::to_value(&r).unwrap()["warnings"][0]["code"],
             "IMAGE_STALE"
         );
+    }
+
+    #[test]
+    fn up_human_with_output_tail_golden() {
+        let r = UpResult {
+            ok: false,
+            requested: vec!["api".into(), "web".into()],
+            ready: vec!["web".into()],
+            failed: vec![StemFailure {
+                stem: "api".into(),
+                error: Error::new(
+                    ErrorCode::StartFailed,
+                    "`api` exited with code 3 before it became ready",
+                )
+                .with_details(json!({
+                    "stem": "api",
+                    "exit_code": 3,
+                    "stderr_tail": ["a", "b", "c", "d", "e"],
+                    "output_truncated": false
+                })),
+            }],
+            ..UpResult::default()
+        };
+        insta::assert_snapshot!("up-human-tail", up_human(&r));
     }
 
     #[test]
