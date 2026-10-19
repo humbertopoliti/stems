@@ -226,8 +226,12 @@ keep, backup}`), `overlay.removed`, `overlay.kept`,
 [overlays.md](overlays.md)), `repo.cloned`, `repo.fetched`,
 `repo.checked_out`, `repo.skipped_dirty`, `repo.failed` (see
 [repos.md](repos.md#logs-and-events)), `docker.pull` (`data: {stem, image,
-layer, status}`, one per layer status change) and `docker.build` (`data:
-{stem, line}`) (see [docker.md](docker.md)).
+layer, status}`, one per layer status change), `docker.build` (`data:
+{stem, line}`; a docker `build:` stem's build, or a compose stem's `up
+--build`; see [docker.md](docker.md)) and `image.stale` (`data: {stem,
+image, image_created, newest_input, newest_input_path}`: a compose stem
+started without a rebuild runs an image older than its build inputs; see
+[compose.md](compose.md#stale-images)).
 
 Config reload payloads (deliverable 33, [config.md](config.md#reload-on-change-fr-wd-3)):
 `config.changed` `data: {plan, sources, auto_apply}` (reason `config

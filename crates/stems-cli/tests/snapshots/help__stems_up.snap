@@ -41,6 +41,13 @@ Options:
       --no-watch
           Do not start watchdogs
 
+      --build
+          Rebuild compose services' images (`compose up --build`; the config's `build:`, default
+          true, decides otherwise)
+
+      --no-build
+          Do not rebuild compose services' images for this run
+
       --sync
           Fetch git codebases before starting
 

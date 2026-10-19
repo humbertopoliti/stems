@@ -90,6 +90,13 @@
             ],
             "default": null,
             "minimum": 0
+          },
+          "build": {
+            "description": "Compose stems: rebuild for this run (`--build` / `--no-build`); `None` = each stem's `build:` (35).",
+            "type": [
+              "boolean",
+              "null"
+            ]
           }
         },
         "type": "object"
@@ -159,9 +166,11 @@
             "default": false
           },
           "build": {
-            "description": "Stop, run each stem's `build` script, then start (deliverable 16).",
-            "type": "boolean",
-            "default": false
+            "description": "`Some(true)` (`--build`): stop, run each stem's `build` script (deliverable 16) and rebuild compose services' images, then start. `Some(false)` (`--no-build`): no build script and no image rebuild for this run. `None`: no build script; compose stems follow their `build:` setting (35).",
+            "type": [
+              "boolean",
+              "null"
+            ]
           },
           "timeout_ms": {
             "description": "Overall deadline in milliseconds.",

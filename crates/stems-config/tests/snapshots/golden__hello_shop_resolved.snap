@@ -194,6 +194,7 @@ workspace:
       service: redis
       project_name: hello-shop
       adopt: false
+      build: true
       description: Redis 7, used as shop-worker's queue and shop-api's cache
       codebase: null
       enabled: true

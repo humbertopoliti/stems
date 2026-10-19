@@ -10,6 +10,7 @@
 //! * [`ComposeRuntime`] — one service of a compose file per stem, through
 //!   `docker compose` (see `docs/compose.md`).
 //! * [`os`] — per-OS process facts (start time, process tree, listeners).
+//! * [`stale`] — is a built image older than its build inputs? (35)
 
 pub mod compose;
 pub mod docker;
@@ -18,6 +19,7 @@ pub mod os;
 pub mod output;
 mod process;
 mod runtime;
+pub mod stale;
 
 pub use compose::{ComposeOptions, ComposeRuntime, ComposeSpec};
 pub use docker::{ContainerSpec, DockerOptions, DockerRuntime};

@@ -359,6 +359,13 @@ Options:
       --no-watch
           Do not start watchdogs
 
+      --build
+          Rebuild compose services' images (`compose up --build`; the config's `build:`, default
+          true, decides otherwise)
+
+      --no-build
+          Do not rebuild compose services' images for this run
+
       --sync
           Fetch git codebases before starting
 
@@ -480,6 +487,13 @@ Options:
       --no-deps
           Do not start unstarted dependencies
 
+      --build
+          Rebuild compose services' images (`compose up --build`; the config's `build:`, default
+          true, decides otherwise)
+
+      --no-build
+          Do not rebuild compose services' images for this run
+
       --timeout <DURATION>
           Deadline (e.g. 60s)
 
@@ -581,7 +595,12 @@ Options:
           Do not start unstarted dependencies
 
       --build
-          Re-run the `build` script first
+          Re-run the `build` script first, and rebuild compose services' images (`compose up
+          --build`)
+
+      --no-build
+          Do not rebuild compose services' images for this run (the config's `build:`, default true,
+          decides otherwise)
 
       --timeout <DURATION>
           Deadline (e.g. 60s)

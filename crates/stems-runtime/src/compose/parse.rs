@@ -3,6 +3,7 @@
 //! of failed invocations to errors.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use bollard::models::ContainerInspectResponse;
 use semver::Version;
@@ -93,6 +94,94 @@ pub fn parse_ps_json(s: &str) -> Vec<PsEntry> {
         .filter_map(|l| serde_json::from_str::<RawPs>(l).ok())
         .map(PsEntry::from)
         .collect()
+}
+
+/// What `config --format json` says about one service: its image name and,
+/// when the file has `build:`, the build inputs (deliverable 35).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServiceConfig {
+    /// `image:` of the service, else the name compose gives a built image:
+    /// `<project>-<service>`.
+    pub image: String,
+    /// `build:` of the service (absolute paths), if any.
+    pub build: Option<ServiceBuild>,
+}
+
+/// A service's `build:` as compose resolves it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServiceBuild {
+    /// `build.context`, absolute (compose resolves it against the file).
+    pub context: PathBuf,
+    /// `build.dockerfile`, absolute (compose gives it relative to the
+    /// context; default `Dockerfile`).
+    pub dockerfile: PathBuf,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct RawConfig {
+    services: HashMap<String, RawService>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct RawService {
+    image: Option<String>,
+    build: Option<RawBuild>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct RawBuild {
+    context: Option<String>,
+    dockerfile: Option<String>,
+}
+
+/// Parse `docker compose config --format json` for `service`. A missing
+/// service (not in the file, or filtered by profiles) is
+/// [`RuntimeError::ComposeFailed`]-shaped: the file does not define it.
+pub fn service_config(
+    json: &str,
+    project: &str,
+    service: &str,
+    file: &Path,
+) -> Result<ServiceConfig, RuntimeError> {
+    let failed = |tail: String| RuntimeError::ComposeFailed {
+        command: format!(
+            "docker compose -f {} -p {project} config --format json",
+            file.display()
+        ),
+        exit: Some(0),
+        tail: vec![tail],
+    };
+    let cfg: RawConfig = serde_json::from_str(json.trim())
+        .map_err(|e| failed(format!("cannot parse the compose config: {e}")))?;
+    let svc = cfg.services.get(service).ok_or_else(|| {
+        failed(format!(
+            "service `{service}` is not defined in {}",
+            file.display()
+        ))
+    })?;
+    let image = svc
+        .image
+        .clone()
+        .filter(|i| !i.is_empty())
+        .unwrap_or_else(|| format!("{project}-{service}"));
+    let build = svc.build.as_ref().map(|b| {
+        let base = file
+            .parent()
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+        let context = match b.context.as_deref().filter(|c| !c.is_empty()) {
+            Some(c) => base.join(c),
+            None => base,
+        };
+        let dockerfile = context.join(b.dockerfile.as_deref().unwrap_or("Dockerfile"));
+        ServiceBuild {
+            context,
+            dockerfile,
+        }
+    });
+    Ok(ServiceConfig { image, build })
 }
 
 /// Leading `\d+(\.\d+){0,2}` of `s` (after an optional `v`), padded to

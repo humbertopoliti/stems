@@ -315,8 +315,9 @@ pub struct RawStem {
     pub image: Option<String>,
     /// (docker) When to pull `image`: `missing` (default), `always` or `never`.
     pub pull: Option<PullPolicy>,
-    /// (docker) Build instead of pulling.
-    pub build: Option<RawDockerBuild>,
+    /// (docker) Build instead of pulling: `{ context, dockerfile }`.
+    /// (compose) `true` (default) / `false`: run `compose up --build`.
+    pub build: Option<RawBuild>,
     /// (docker) Volume specs, `name:/path` or `./host:/path`.
     pub volumes: Option<Vec<String>>,
     /// (docker) Entrypoint override.
@@ -734,6 +735,21 @@ pub struct RawOverlay {
     pub keep: Option<bool>,
     /// File mode.
     pub mode: Option<FileMode>,
+}
+
+/// `stems.<n>.build`: a bool on a compose stem (rebuild the service's
+/// image on every start), an object on a docker stem (what to build).
+/// Which form a stem type accepts is checked at resolve time
+/// (`SCHEMA_INVALID` at `stems.<n>.build`).
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+#[schemars(rename = "Build")]
+pub enum RawBuild {
+    /// (compose) Rebuild on every start (`true`, the default) or never
+    /// (`false`).
+    Flag(bool),
+    /// (docker) Build settings.
+    Docker(RawDockerBuild),
 }
 
 /// Docker build settings.

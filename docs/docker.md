@@ -174,6 +174,14 @@ always skipped; `.dockerignore` and the Dockerfile are always included. A
 Dockerfile outside the context is added as `.stems.Dockerfile`. Symlinks are
 archived as links.
 
+The walk itself is `context_files(context, dockerfile)`, a lazy iterator
+shared with the stale-image check (`stems_runtime::stale`, deliverable
+35): `stems doctor`'s `image.<stem>` compares the creation time of the
+run's image (`stems/<ws>/<stem>:<run_id>`) with the newest mtime among the
+same inputs ([doctor.md](doctor.md), [compose.md](compose.md#stale-images)).
+Docker `build:` stems always rebuild on start, so for them the check is
+informational.
+
 ## Handles
 
 `Handle::Container { id, container_id, name }`: `pid()`/`pgid()` are `0` and

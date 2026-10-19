@@ -1,6 +1,7 @@
 use std::time::Instant;
 
 use serde_json::json;
+use stems_runtime::stale::Verdict;
 
 use super::*;
 
@@ -399,5 +400,63 @@ fn notifications_check_golden() {
       notifications: desktop notifications need macOS or Linux; set notifications.command to post them another way
 
     3 ok, 3 warn, 0 fail
+    ");
+}
+
+#[test]
+fn image_check_golden() {
+    use std::time::{Duration, SystemTime};
+    let t = |secs: u64| SystemTime::UNIX_EPOCH + Duration::from_secs(secs);
+    let stale = Verdict::Stale {
+        image_created: t(1_760_000_000),
+        newest: t(1_760_003_600),
+        path: "/work/shop-api/app.py".into(),
+    };
+    let checks = vec![
+        checks::image_result(
+            "api",
+            "stems-shop-api",
+            &Verdict::Fresh {
+                image_created: t(1_760_000_000),
+                newest: Some(t(1_759_000_000)),
+            },
+            false,
+        ),
+        checks::image_result("api", "stems-shop-api", &stale, false),
+        checks::image_result("web", "stems/shop/web:01J", &stale, true),
+        checks::image_result("api", "stems-shop-api", &Verdict::NoImage, false),
+        checks::image_result(
+            "api",
+            "stems-shop-api",
+            &Verdict::Unknown {
+                reason: "the build context has more than 50000 entries".into(),
+            },
+            false,
+        ),
+    ];
+    assert_eq!(checks[1].code, Some(ErrorCode::ImageStale));
+    assert_eq!(
+        checks[1].details["newest_input_path"],
+        json!("/work/shop-api/app.py")
+    );
+    assert_eq!(checks[1].details["image"], json!("stems-shop-api"));
+    assert_eq!(
+        checks[0].details["image_created"],
+        json!("2025-10-09T08:53:20+00:00")
+    );
+    let text = DoctorReport::new(checks, false).render_human();
+    insta::assert_snapshot!(text, @r"
+    CHECK      STATUS  MESSAGE
+    image.api  ✓ ok    stems-shop-api built 2025-10-09 08:53:20 UTC, inputs unchanged since
+    image.api  ! warn  stems-shop-api is older than the checkout: /work/shop-api/app.py modified 2025-10-09 09:53:20 UTC, image built 2025-10-09 08:53:20 UTC
+    image.web  ! warn  stems/shop/web:01J is older than the checkout: /work/shop-api/app.py modified 2025-10-09 09:53:20 UTC, image built 2025-10-09 08:53:20 UTC
+    image.api  ✓ ok    stems-shop-api is not built yet (the first `up` builds it)
+    image.api  ✓ ok    stems-shop-api: cannot compare (the build context has more than 50000 entries)
+
+    hints:
+      image.api: `stems restart api --build`, or set `build: true` on `stems.api` so every start rebuilds it
+      image.web: the next `stems up`/`restart web` rebuilds it (build: true)
+
+    3 ok, 2 warn, 0 fail
     ");
 }

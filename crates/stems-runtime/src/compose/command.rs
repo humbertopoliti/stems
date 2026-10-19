@@ -78,10 +78,16 @@ impl ComposeCommand {
         v
     }
 
-    /// `up -d --no-deps <service>`: stems' graph is authoritative, so
-    /// compose `depends_on` is never followed.
-    pub fn up(t: &ComposeTarget) -> Vec<OsString> {
-        Self::with(t, &["up", "-d", "--no-deps"])
+    /// `up -d --no-deps [--build] <service>`: stems' graph is
+    /// authoritative, so compose `depends_on` is never followed; `build`
+    /// rebuilds the service's image first (`ComposeSpec.build`, default
+    /// true; a service without `build:` in the file is unaffected).
+    pub fn up(t: &ComposeTarget, build: bool) -> Vec<OsString> {
+        if build {
+            Self::with(t, &["up", "-d", "--no-deps", "--build"])
+        } else {
+            Self::with(t, &["up", "-d", "--no-deps"])
+        }
     }
 
     /// `stop -t <grace secs, rounded up> <service>`.
@@ -122,6 +128,14 @@ impl ComposeCommand {
     pub fn config(t: &ComposeTarget) -> Vec<OsString> {
         let mut v = Self::base(t);
         v.extend(["config", "--services"].map(OsString::from));
+        v
+    }
+
+    /// `config --format json`: the resolved file (absolute `build.context`,
+    /// interpolated values), parsed by [`super::parse::service_config`].
+    pub fn config_json(t: &ComposeTarget) -> Vec<OsString> {
+        let mut v = Self::base(t);
+        v.extend(["config", "--format", "json"].map(OsString::from));
         v
     }
 }

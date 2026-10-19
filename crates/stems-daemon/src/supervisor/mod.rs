@@ -28,6 +28,7 @@ pub mod reload;
 pub mod restart;
 pub mod run;
 pub mod schedule;
+pub mod stale;
 pub mod state;
 pub mod waiter;
 pub mod watch;
@@ -306,6 +307,12 @@ pub struct Core {
     pub(crate) watch: watch::WatchHub,
     /// Cascading restarts: the running one, the queue gate (FR-LC-9).
     pub(crate) cascade: cascade::CascadeHub,
+    /// `--build` / `--no-build` of the `up`/`start`/`restart` in progress
+    /// (35): overrides compose stems' `build:` while the ops lock is held.
+    pub(crate) build_override: Mutex<Option<bool>>,
+    /// Warnings of the `up`/`start`/`restart` in progress (35): cleared
+    /// when it begins, drained into `UpResult.warnings`.
+    pub(crate) warnings: Mutex<Vec<Error>>,
 }
 
 /// The supervisor. Installed into the daemon by [`Daemon::run`].
@@ -400,6 +407,8 @@ impl Supervisor {
                 metrics: metrics::MetricsStore::default(),
                 watch: watch::WatchHub::default(),
                 cascade: cascade::CascadeHub::default(),
+                build_override: Mutex::new(None),
+                warnings: Mutex::new(Vec::new()),
             }),
             host,
             cells: Mutex::new(IndexMap::new()),
@@ -562,10 +571,12 @@ impl Supervisor {
             .store(p.force_overlays, std::sync::atomic::Ordering::SeqCst);
         // `up --no-watch` switches watchdogs off until the next `up` (24).
         self.core.watch.set_disabled(p.no_watch);
+        self.begin_build(p.build);
         let mut res = self.run_plan(&plan, &ws, &p, actor, "up").await;
         self.core
             .force_overlays
             .store(false, std::sync::atomic::Ordering::SeqCst);
+        res.warnings = self.end_build();
         res.requested = p.stems.clone();
         self.emit(EventDraft::new(EventKind::UP_FINISHED, actor).data(json!({
             "requested": res.requested,
@@ -575,6 +586,32 @@ impl Supervisor {
             "ok": res.ok,
         })));
         Ok(res)
+    }
+
+    /// An `up`/`start`/`restart` begins (the ops lock is held): its
+    /// `--build`/`--no-build` applies to the compose stems it starts, and
+    /// its warnings start empty (35).
+    fn begin_build(&self, build: Option<bool>) {
+        *self
+            .core
+            .build_override
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = build;
+        self.core
+            .warnings
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+    }
+
+    /// ... and ends: the override is lifted, the warnings go to the result.
+    fn end_build(&self) -> Vec<Error> {
+        *self
+            .core
+            .build_override
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+        std::mem::take(&mut *self.core.warnings.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     /// `up --sync` (20): fetch + check out the planned stems' existing git
@@ -672,9 +709,12 @@ impl Supervisor {
         let up = UpParams {
             stems: p.stems.clone(),
             timeout_ms: p.timeout_ms,
+            build: p.build,
             ..UpParams::default()
         };
+        self.begin_build(p.build);
         let mut res = self.run_plan(&plan, &ws, &up, actor, "start").await;
+        res.warnings = self.end_build();
         res.requested = p.stems;
         Ok(res)
     }
@@ -703,7 +743,7 @@ impl Supervisor {
         if let Some(f) = stop.failed.into_iter().next() {
             return Err(f.error);
         }
-        if p.build {
+        if p.build == Some(true) {
             let b = self.build_stems(&ws, &p.stems, actor).await;
             if let Some(f) = b.failed.into_iter().next() {
                 return Err(f.error);
@@ -712,9 +752,12 @@ impl Supervisor {
         let up = UpParams {
             stems: p.stems.clone(),
             timeout_ms: p.timeout_ms,
+            build: p.build,
             ..UpParams::default()
         };
+        self.begin_build(p.build);
         let mut res = self.run_plan(plan, &ws, &up, actor, "restart").await;
+        res.warnings = self.end_build();
         res.requested = p.stems.clone();
         Ok(res)
     }

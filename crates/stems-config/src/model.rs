@@ -730,4 +730,6 @@ pub struct ComposeSpec {
     pub project_name: String,
     /// Adopt a running service.
     pub adopt: bool,
+    /// Rebuild the service's image on every start (`compose up --build`).
+    pub build: bool,
 }

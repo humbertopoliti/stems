@@ -32,6 +32,7 @@ stems.<n>.pull (docker)                       missing
 stems.<n>.service (compose)                   <stem name>
 stems.<n>.project_name (compose)              stems-<workspace name>
 stems.<n>.adopt (compose)                     false
+stems.<n>.build (compose)                     true
 stems.<n>.depends_on[].condition              healthy
 stems.<n>.depends_on[].soft                   false
 stems.<n>.health (absent)                     process: process, docker: docker, compose: docker, external: none

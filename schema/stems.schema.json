@@ -940,10 +940,10 @@
           ]
         },
         "build": {
-          "description": "(docker) Build instead of pulling.",
+          "description": "(docker) Build instead of pulling: `{ context, dockerfile }`.\n(compose) `true` (default) / `false`: run `compose up --build`.",
           "anyOf": [
             {
-              "$ref": "#/$defs/DockerBuild"
+              "$ref": "#/$defs/Build"
             },
             {
               "type": "null"
@@ -1882,6 +1882,19 @@
           "description": "Never pull; the image must already be present locally.",
           "type": "string",
           "const": "never"
+        }
+      ]
+    },
+    "Build": {
+      "description": "`stems.<n>.build`: a bool on a compose stem (rebuild the service's\nimage on every start), an object on a docker stem (what to build).\nWhich form a stem type accepts is checked at resolve time\n(`SCHEMA_INVALID` at `stems.<n>.build`).",
+      "anyOf": [
+        {
+          "description": "(compose) Rebuild on every start (`true`, the default) or never\n(`false`).",
+          "type": "boolean"
+        },
+        {
+          "description": "(docker) Build settings.",
+          "$ref": "#/$defs/DockerBuild"
         }
       ]
     },

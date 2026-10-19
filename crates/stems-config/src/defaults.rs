@@ -45,6 +45,8 @@ pub const PROCESS_STDIN: bool = false;
 pub const DOCKERFILE: &str = "Dockerfile";
 /// `stems.<n>.adopt` (compose).
 pub const COMPOSE_ADOPT: bool = false;
+/// `stems.<n>.build` (compose): `compose up --build` on every start.
+pub const COMPOSE_BUILD: bool = true;
 
 /// Name given to the i-th port when it has none.
 pub fn port_name(i: usize) -> String {
@@ -181,6 +183,7 @@ pub fn defaults_table() -> Vec<(&'static str, String)> {
             "stems-<workspace name>".into(),
         ),
         ("stems.<n>.adopt (compose)", COMPOSE_ADOPT.to_string()),
+        ("stems.<n>.build (compose)", COMPOSE_BUILD.to_string()),
         ("stems.<n>.depends_on[].condition", json(&DEP_CONDITION)),
         ("stems.<n>.depends_on[].soft", DEP_SOFT.to_string()),
         (

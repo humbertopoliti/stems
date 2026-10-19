@@ -13,7 +13,7 @@
 
 mod auth;
 mod cli;
-mod context;
+pub mod context;
 mod spec;
 
 use std::collections::{BTreeSet, HashMap};
@@ -53,7 +53,9 @@ pub use cli::{
     CliSearch, DOCKER_CLI_ENV, WELL_KNOWN_DOCKER_PATHS, docker_cli_path, docker_program,
     ensure_docker_on_path, find_docker_cli, is_executable, path_with_docker_dir,
 };
-pub use context::{DockerIgnore, EXTERNAL_DOCKERFILE, context_tar};
+pub use context::{
+    ContextEntry, ContextFiles, DockerIgnore, EXTERNAL_DOCKERFILE, context_files, context_tar,
+};
 pub use spec::{
     BuildSpec, ContainerSpec, HealthcheckSpec, ImageProgress, LABEL_RUN_ID, LABEL_SPEC_HASH,
     LABEL_STEM, LABEL_WORKSPACE, PortMapping, PortProto, ProgressSink, PullCoalescer, PullPolicy,
@@ -66,6 +68,21 @@ pub const BUILD_TAIL_LINES: usize = 20;
 /// Hint attached to [`RuntimeError::DockerUnavailable`].
 pub const UNAVAILABLE_HINT: &str =
     "start Docker Desktop (or Colima), or point DOCKER_HOST at a running daemon";
+/// What the stale-image check needs of a local image.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageFacts {
+    pub id: Option<String>,
+    /// `Created`, when the image records it.
+    pub created: Option<std::time::SystemTime>,
+}
+
+/// `Created` of an image inspect (RFC 3339). Images without a recorded
+/// time carry `0001-01-01T00:00:00Z`: that is `None`.
+pub fn parse_created(s: &str) -> Option<std::time::SystemTime> {
+    let d = chrono::DateTime::parse_from_rfc3339(s.trim()).ok()?;
+    (d.timestamp() > 0).then(|| std::time::SystemTime::from(d))
+}
+
 /// Networks that exist in every daemon and are never created.
 const BUILTIN_NETWORKS: [&str; 3] = ["bridge", "host", "none"];
 /// How long to wait for a container to die after `kill`.
@@ -753,6 +770,19 @@ impl DockerRuntime {
         self.pull_image(image, progress).await?;
         let after = self.image_id(image).await?;
         Ok(PullOutcome { before, after })
+    }
+
+    /// Id and creation time of the local image `image` (`None` when it is
+    /// not present): the stale-image check (deliverable 35).
+    pub async fn image_facts(&self, image: &str) -> Result<Option<ImageFacts>, RuntimeError> {
+        match self.docker.inspect_image(image).await {
+            Ok(i) => Ok(Some(ImageFacts {
+                id: i.id,
+                created: i.created.as_deref().and_then(parse_created),
+            })),
+            Err(e) if is_not_found(&e) => Ok(None),
+            Err(e) => Err(self.map_err(e)),
+        }
     }
 
     /// The local image id of `image`, if present.

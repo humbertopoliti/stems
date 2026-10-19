@@ -179,6 +179,10 @@ fn up_human(r: &UpResult) -> String {
     for n in &r.skipped {
         s.push_str(&format!("  skipped {n}\n"));
     }
+    for w in &r.warnings {
+        let stem = w.details["stem"].as_str().unwrap_or("?");
+        s.push_str(&format!("  warning {stem}: {}\n", w.message));
+    }
     if let Some(c) = &r.cascade {
         s.push_str(&cascade_human(c));
     }
@@ -479,6 +483,7 @@ async fn up_async(
         force_overlays: args.force_overlays,
         sync: args.sync,
         no_watch: args.no_watch,
+        build: args.build_flag(),
     };
     let rpc_timeout = timeout.map_or(LONG, |d| d + Duration::from_secs(10));
     let call = c.call_with_timeout::<UpResult>(Method::UP, &params, rpc_timeout);
@@ -805,6 +810,7 @@ pub fn start(ctx: &Ctx, args: &StartArgs) -> CommandOutput {
             stems: args.stems.clone(),
             no_deps: args.no_deps,
             timeout_ms: ms(timeout),
+            build: args.build_flag(),
         };
         let bound = timeout.map_or(LONG, |d| d + Duration::from_secs(10));
         let res: UpResult = c.call_with_timeout(Method::START, &params, bound).await?;
@@ -838,7 +844,7 @@ pub fn restart(ctx: &Ctx, args: &RestartArgs) -> CommandOutput {
         let params = RestartParams {
             stems: args.stems.clone(),
             no_deps: args.no_deps,
-            build: args.build,
+            build: args.build_flag(),
             timeout_ms: ms(timeout),
             cascade: args.cascade_flag(),
         };
@@ -1204,6 +1210,34 @@ mod tests {
         let out = up_output(&r);
         assert_eq!(out.exit_code(), 1);
         assert_eq!(out.envelope()["data"]["failed"][0]["stem"], "b");
+    }
+
+    #[test]
+    fn up_human_warning_golden() {
+        let r = UpResult {
+            ok: true,
+            requested: vec!["api".into()],
+            ready: vec!["api".into()],
+            warnings: vec![
+                Error::new(
+                    stems_core::ErrorCode::ImageStale,
+                    "`api`'s image stems-shop-api was built before its build inputs last changed (app.py modified 2026-10-19 10:02:11 UTC, image built 2026-10-19 09:40:00 UTC)",
+                )
+                .with_details(serde_json::json!({ "stem": "api" })),
+            ],
+            ..UpResult::default()
+        };
+        insta::assert_snapshot!(up_human(&r), @r"
+        up: 1 ready, 0 failed, 0 skipped
+          warning api: `api`'s image stems-shop-api was built before its build inputs last changed (app.py modified 2026-10-19 10:02:11 UTC, image built 2026-10-19 09:40:00 UTC)
+        ");
+        // JSON: absent when empty.
+        let plain = serde_json::to_value(UpResult::default()).unwrap();
+        assert!(plain.get("warnings").is_none());
+        assert_eq!(
+            serde_json::to_value(&r).unwrap()["warnings"][0]["code"],
+            "IMAGE_STALE"
+        );
     }
 
     #[test]

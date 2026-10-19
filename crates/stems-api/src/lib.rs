@@ -384,7 +384,12 @@ string_newtype! {
         /// (14; `data: {stem, image, layer, status}`).
         DOCKER_PULL = "docker.pull";
         /// One line of a docker stem's image build output (14; `data: {stem, line}`).
+        /// Also each output line of a compose stem's `up --build` (35).
         DOCKER_BUILD = "docker.build";
+        /// A compose stem started without a rebuild runs an image older than
+        /// its build inputs (35; `data: {stem, image, image_created,
+        /// newest_input, newest_input_path}`).
+        IMAGE_STALE = "image.stale";
     }
 }
 

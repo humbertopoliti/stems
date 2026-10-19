@@ -300,6 +300,16 @@ pub(crate) async fn on_exit(
     let data = json!({ "exit_code": status.code, "signal": status.signal });
     match decision {
         Some(RestartDecision::Restart { delay, attempt }) => {
+            // A compose stem started with `build: false` whose image is
+            // stale would restart the same image: fail it instead (35).
+            if let Some(e) = super::stale::crash_guard(core, cell).await {
+                {
+                    let mut info = cell.info();
+                    info.restarts = info.restarts.saturating_sub(1);
+                }
+                give_up_stale(core, cell, e, status);
+                return;
+            }
             schedule(core, cell, delay, attempt, true, Cause::Exit(status), actor);
         }
         Some(RestartDecision::GiveUp) => give_up(core, cell, &Cause::Exit(status)),
@@ -408,6 +418,25 @@ fn give_up(core: &Core, cell: &StemCell, cause: &Cause) {
             .stem(name)
             .reason(e.message.clone())
             .data(details),
+    );
+    cell.fail(core, e, actor);
+}
+
+/// A crash that is not restarted because the image is stale (35): the
+/// stem fails with `IMAGE_STALE`, announced as `stem.gave_up {reason:
+/// "image_stale"}` so the notification (34) and the usual handling of a
+/// stem given up on apply.
+fn give_up_stale(core: &Core, cell: &StemCell, e: Error, status: ExitStatus) {
+    let actor = stems_api::DAEMON_ACTOR;
+    let mut data = e.details.clone();
+    data["reason"] = json!("image_stale");
+    data["exit_code"] = json!(status.code);
+    data["signal"] = json!(status.signal);
+    core.events.emit(
+        EventDraft::new(EventKind::STEM_GAVE_UP, actor)
+            .stem(&cell.name)
+            .reason(e.message.clone())
+            .data(data),
     );
     cell.fail(core, e, actor);
 }

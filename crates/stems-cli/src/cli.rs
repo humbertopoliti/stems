@@ -516,6 +516,13 @@ pub struct UpArgs {
     /// Do not start watchdogs.
     #[arg(long)]
     pub no_watch: bool,
+    /// Rebuild compose services' images (`compose up --build`; the config's
+    /// `build:`, default true, decides otherwise).
+    #[arg(long, conflicts_with = "no_build")]
+    pub build: bool,
+    /// Do not rebuild compose services' images for this run.
+    #[arg(long)]
+    pub no_build: bool,
     /// Fetch git codebases before starting.
     #[arg(long)]
     pub sync: bool,
@@ -564,6 +571,13 @@ pub struct StartArgs {
     /// Do not start unstarted dependencies.
     #[arg(long)]
     pub no_deps: bool,
+    /// Rebuild compose services' images (`compose up --build`; the config's
+    /// `build:`, default true, decides otherwise).
+    #[arg(long, conflicts_with = "no_build")]
+    pub build: bool,
+    /// Do not rebuild compose services' images for this run.
+    #[arg(long)]
+    pub no_build: bool,
     /// Deadline (e.g. 60s).
     #[arg(long, value_name = "DURATION")]
     pub timeout: Option<String>,
@@ -592,9 +606,14 @@ pub struct RestartArgs {
     /// Do not start unstarted dependencies.
     #[arg(long)]
     pub no_deps: bool,
-    /// Re-run the `build` script first.
-    #[arg(long)]
+    /// Re-run the `build` script first, and rebuild compose services'
+    /// images (`compose up --build`).
+    #[arg(long, conflicts_with = "no_build")]
     pub build: bool,
+    /// Do not rebuild compose services' images for this run (the config's
+    /// `build:`, default true, decides otherwise).
+    #[arg(long)]
+    pub no_build: bool,
     /// Deadline (e.g. 60s).
     #[arg(long, value_name = "DURATION")]
     pub timeout: Option<String>,
@@ -615,6 +634,34 @@ impl RestartArgs {
             (_, true) => Some(false),
             _ => None,
         }
+    }
+
+    /// `--build` / `--no-build` / neither (the config decides).
+    pub fn build_flag(&self) -> Option<bool> {
+        build_flag(self.build, self.no_build)
+    }
+}
+
+impl UpArgs {
+    /// `--build` / `--no-build` / neither (the config decides).
+    pub fn build_flag(&self) -> Option<bool> {
+        build_flag(self.build, self.no_build)
+    }
+}
+
+impl StartArgs {
+    /// `--build` / `--no-build` / neither (the config decides).
+    pub fn build_flag(&self) -> Option<bool> {
+        build_flag(self.build, self.no_build)
+    }
+}
+
+/// `--build` wins, then `--no-build`, else `None` (clap rejects both).
+pub fn build_flag(build: bool, no_build: bool) -> Option<bool> {
+    match (build, no_build) {
+        (true, _) => Some(true),
+        (_, true) => Some(false),
+        _ => None,
     }
 }
 

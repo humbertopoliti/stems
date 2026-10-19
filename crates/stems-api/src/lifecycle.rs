@@ -60,6 +60,12 @@ pub struct UpParams {
     /// off until the next `up` without it.
     #[serde(default)]
     pub no_watch: bool,
+    /// Compose stems: rebuild the service's image (`compose up --build`)
+    /// for this run (`--build` / `--no-build`, deliverable 35). `None`:
+    /// each stem's `build:` (default true). Docker `build:` stems always
+    /// build.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<bool>,
 }
 
 impl Default for UpParams {
@@ -77,6 +83,7 @@ impl Default for UpParams {
             sync: false,
             force_overlays: false,
             no_watch: false,
+            build: None,
         }
     }
 }
@@ -107,6 +114,13 @@ pub struct UpResult {
     /// `restart` with a cascade (FR-LC-9): what happened to the dependants.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cascade: Option<CascadeReport>,
+    /// Stems that started but deserve attention (35): `IMAGE_STALE` for a
+    /// compose stem started without a rebuild whose image is older than
+    /// its build inputs (`details.stem`). Never changes `ok` or the exit
+    /// code.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(with = "Vec<Value>")]
+    pub warnings: Vec<Error>,
 }
 
 /// The outcome of a cascading restart (FR-LC-9, `docs/restart.md`).
@@ -186,6 +200,10 @@ pub struct StartParams {
     /// Overall deadline in milliseconds.
     #[serde(default)]
     pub timeout_ms: Option<u64>,
+    /// Compose stems: rebuild for this run (`--build` / `--no-build`);
+    /// `None` = each stem's `build:` (35).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<bool>,
 }
 
 /// `stop` params.
@@ -209,9 +227,13 @@ pub struct RestartParams {
     /// Do not start unstarted hard dependencies.
     #[serde(default)]
     pub no_deps: bool,
-    /// Stop, run each stem's `build` script, then start (deliverable 16).
-    #[serde(default)]
-    pub build: bool,
+    /// `Some(true)` (`--build`): stop, run each stem's `build` script
+    /// (deliverable 16) and rebuild compose services' images, then start.
+    /// `Some(false)` (`--no-build`): no build script and no image rebuild
+    /// for this run. `None`: no build script; compose stems follow their
+    /// `build:` setting (35).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<bool>,
     /// Overall deadline in milliseconds.
     #[serde(default)]
     pub timeout_ms: Option<u64>,
