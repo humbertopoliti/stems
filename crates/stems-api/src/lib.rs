@@ -322,6 +322,12 @@ string_newtype! {
         DOWN_STARTED = "down.started";
         /// `down` finished.
         DOWN_FINISHED = "down.finished";
+        /// A desktop notification was posted (34; `data: {stems, codes,
+        /// backend, title, body, replaced, folded}`).
+        NOTIFICATION_SENT = "notification.sent";
+        /// A notification was not posted (34; `data: {reason:
+        /// disabled|no_backend|failed, stems, error?}`).
+        NOTIFICATION_SKIPPED = "notification.skipped";
         /// A script was queued.
         SCRIPT_QUEUED = "script.queued";
         /// A script started.

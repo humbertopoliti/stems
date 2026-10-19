@@ -14,6 +14,10 @@ logs.ring                                     10000
 metrics.interval                              2s
 metrics.persist                               false
 config.reload.auto_apply                      false
+notifications.enabled                         true
+notifications.debounce                        2s
+notifications.cooldown                        30s
+notifications.command                         <none: terminal-notifier / osascript / notify-send on PATH>
 repos_dir                                     .stems/repos
 stems.<n>.enabled                             true
 stems.<n>.stop_grace                          10s

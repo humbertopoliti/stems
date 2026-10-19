@@ -400,6 +400,11 @@ pub struct E2eWorld {
     pub vars: BTreeMap<String, String>,
     /// The MCP test client and its `stems mcp` server (31).
     pub mcp: Option<crate::mcp::McpSession>,
+    /// Per-scenario environment for every spawned command, applied after
+    /// the harness defaults and before a step's own env: `Some` sets,
+    /// `None` removes (34: the fake-notifier step lifts
+    /// `STEMS_NOTIFICATIONS=0`).
+    pub env: BTreeMap<String, Option<String>>,
 }
 
 impl cucumber::World for E2eWorld {
@@ -441,6 +446,7 @@ impl E2eWorld {
             background: None,
             vars: BTreeMap::new(),
             mcp: None,
+            env: BTreeMap::new(),
         })
     }
 
@@ -655,6 +661,10 @@ impl E2eWorld {
             }
         }
         cmd.env("STEMS_HOME", &self.home).env("STEMS_NO_COLOR", "1");
+        // Never post a real desktop notification from a test run (34); only
+        // the notify steps (`notifications go to a fake notifier`, `no
+        // notification backend is on PATH`) lift this, through `self.env`.
+        cmd.env("STEMS_NOTIFICATIONS", "0");
         // `Given a fake tool ... on PATH` (19) puts scripts in `<root>/bin`.
         // `docker` must resolve for shell steps (`docker exec ...`) and the
         // daemon even when Docker Desktop's bin dir is not on PATH.
@@ -668,6 +678,12 @@ impl E2eWorld {
             if let Ok(joined) = std::env::join_paths(dirs) {
                 cmd.env("PATH", joined);
             }
+        }
+        for (k, v) in &self.env {
+            match v {
+                Some(v) => cmd.env(k, v),
+                None => cmd.env_remove(k),
+            };
         }
         for (k, v) in env {
             cmd.env(k, v);

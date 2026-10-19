@@ -1,0 +1,22 @@
+# notify-storm — fixture for tests/features/notify/*.feature (deliverable 34).
+#
+# Eight independent process stems with `restart.policy: never`. `s1`..`s8`
+# are alive for three seconds (`up` sees them ready: the default `process`
+# health) and then all exit 1 within the same instant, which is the storm
+# one desktop notification must cover (eight `failed`, code EXITED). `quick`
+# exits 1 at once, before it is ready (`START_FAILED`): for scenarios that
+# want a single failure synchronous with `stems up`.
+schema_version: 1
+name: notify-storm
+
+stems:
+  s1: { type: process, command: "sleep 3; exit 1", restart: { policy: never }, stop_grace: 1s }
+  s2: { type: process, command: "sleep 3; exit 1", restart: { policy: never }, stop_grace: 1s }
+  s3: { type: process, command: "sleep 3; exit 1", restart: { policy: never }, stop_grace: 1s }
+  s4: { type: process, command: "sleep 3; exit 1", restart: { policy: never }, stop_grace: 1s }
+  s5: { type: process, command: "sleep 3; exit 1", restart: { policy: never }, stop_grace: 1s }
+  s6: { type: process, command: "sleep 3; exit 1", restart: { policy: never }, stop_grace: 1s }
+  s7: { type: process, command: "sleep 3; exit 1", restart: { policy: never }, stop_grace: 1s }
+  s8: { type: process, command: "sleep 3; exit 1", restart: { policy: never }, stop_grace: 1s }
+  quick: { type: process, command: "exit 1", restart: { policy: never }, stop_grace: 1s }
+  quick2: { type: process, command: "exit 1", restart: { policy: never }, stop_grace: 1s }

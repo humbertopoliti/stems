@@ -1733,6 +1733,45 @@ step!(given_state_records_overlay(w, m) {
 });
 
 // ----------------------------------------------------------------------------
+// Notifications (34)
+// ----------------------------------------------------------------------------
+
+// `Given notifications go to a fake notifier`: lifts the harness's
+// `STEMS_NOTIFICATIONS=0` for this scenario's commands and points
+// `notifications.command` (local override) at a script under `<root>/bin`
+// that appends its `STEMS_NOTIFY_*` environment to `<root>/notify.log`
+// (one `--` line per call). Nothing reaches the Notification Centre.
+step!(given_fake_notifier(w, m) {
+    let bin = w.root.join("bin");
+    std::fs::create_dir_all(&bin).unwrap_or_else(|e| panic!("creating {}: {e}", bin.display()));
+    let script = bin.join("stems-fake-notifier");
+    let log = w.root.join("notify.log");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\n{{\n  echo \"STEMS_NOTIFY_WORKSPACE=$STEMS_NOTIFY_WORKSPACE\"\n  echo \"STEMS_NOTIFY_STEMS=$STEMS_NOTIFY_STEMS\"\n  echo \"STEMS_NOTIFY_CODES=$STEMS_NOTIFY_CODES\"\n  echo \"STEMS_NOTIFY_TITLE=$STEMS_NOTIFY_TITLE\"\n  echo \"STEMS_NOTIFY_BODY=$STEMS_NOTIFY_BODY\"\n  echo \"STEMS_NOTIFY_FOLDED=$STEMS_NOTIFY_FOLDED\"\n  echo \"STDIN=$(cat)\"\n  echo --\n}} >> {}\n",
+            log.display()
+        ),
+    )
+    .unwrap_or_else(|e| panic!("writing {}: {e}", script.display()));
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+        .unwrap_or_else(|e| panic!("chmod {}: {e}", script.display()));
+    w.env.insert("STEMS_NOTIFICATIONS".into(), None);
+    w.set_override("notifications.command", &script.display().to_string());
+});
+
+// `Given no notification backend is on PATH`: lifts the kill switch and
+// limits this scenario's `PATH` to `<root>/bin` (empty unless a fake tool
+// was added), so neither `osascript` nor `notify-send` is found.
+step!(given_no_notification_backend(w, m) {
+    let bin = w.root.join("bin");
+    std::fs::create_dir_all(&bin).unwrap_or_else(|e| panic!("creating {}: {e}", bin.display()));
+    w.env.insert("STEMS_NOTIFICATIONS".into(), None);
+    w.env.insert("PATH".into(), Some(bin.display().to_string()));
+});
+
+// ----------------------------------------------------------------------------
 // Health (21)
 // ----------------------------------------------------------------------------
 
@@ -2299,6 +2338,15 @@ pub const STEPS: &[(&str, Step<E2eWorld>)] = &[
         r#"^the repo copy is a git repository with "([^"]+)" committed$"#,
         given_repo_copy_git,
     ),
+    // Notifications (34)
+    (
+        r#"^notifications go to a fake notifier$"#,
+        given_fake_notifier,
+    ),
+    (
+        r#"^no notification backend is on PATH$"#,
+        given_no_notification_backend,
+    ),
     // Doctor (19)
     (
         r#"^a fake tool "([\w.-]+)" on PATH that runs "(.*)"$"#,
@@ -2573,6 +2621,8 @@ mod tests {
             r#"the repo copy is a git repository with "shop-api/config/local.ini" committed"#,
             r#"a bare git repository "shop" made from "examples/repos/shop-api""#,
             r#"a fake tool "vite" on PATH that runs "echo fake vite""#,
+            r#"notifications go to a fake notifier"#,
+            r#"no notification backend is on PATH"#,
             r#"the state file records an overlay for stem "shop-api" at "config/local.ini""#,
             r#"there are exactly 2 events matching {"kind": "stem.health"}"#,
             r#"within 3s there are at least 4 events matching {"kind": "stem.health"}"#,

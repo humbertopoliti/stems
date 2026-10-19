@@ -215,7 +215,7 @@ Every command takes `--json`. The full reference is
 | **Supervision** | [Health checks](docs/health.md) · [Restart policies](docs/restart.md) · [Watchdogs](docs/watchdogs.md) |
 | **Workflows** | [Scripts](docs/scripts.md) · [Overlays](docs/overlays.md) · [Repositories](docs/repos.md) |
 | **Containers** | [Docker](docs/docker.md) · [Compose](docs/compose.md) |
-| **Observability** | [Logs](docs/logs.md) · [Metrics](docs/metrics.md) · [The dashboard](docs/tui.md) · [Doctor](docs/doctor.md) |
+| **Observability** | [Logs](docs/logs.md) · [Metrics](docs/metrics.md) · [The dashboard](docs/tui.md) · [Desktop notifications](docs/notifications.md) · [Doctor](docs/doctor.md) |
 | **Agents & integration** | [MCP server](docs/mcp.md) · [Daemon protocol](docs/protocol.md) · [CLI reference](docs/cli.md) |
 
 ## Status

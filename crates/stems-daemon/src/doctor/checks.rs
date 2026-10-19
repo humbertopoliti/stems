@@ -122,6 +122,7 @@ pub(super) fn registry(cx: &DoctorCtx) -> Vec<Box<dyn Check>> {
             }));
         }
     }
+    v.push(Box::new(NotificationsCheck));
     v
 }
 
@@ -1045,5 +1046,60 @@ impl Check for HotReloadCheck {
             _ => CheckResult::ok(&id, "no overlap between the watch and a hot-reloading dev server")
                 .details(json!({ "command": cmd, "server": server })),
         }]
+    }
+}
+
+// ---------------------------------------------------------------------------
+// notifications (34)
+// ---------------------------------------------------------------------------
+
+/// Informational: which desktop notification backend the daemon would use.
+struct NotificationsCheck;
+
+/// The `notifications` result for `settings` with the backends found on
+/// `path` for `os` (pure: golden-tested).
+pub fn notifications_result(
+    settings: &stems_config::NotificationSettings,
+    path: Option<&std::ffi::OsStr>,
+    os: &str,
+) -> CheckResult {
+    use crate::notify::Backend;
+    let id = "notifications";
+    if !settings.enabled {
+        return CheckResult::ok(id, "disabled (notifications.enabled: false)")
+            .details(json!({ "enabled": false, "backend": null }));
+    }
+    if let Some(cmd) = &settings.command {
+        return CheckResult::ok(id, format!("custom command `{cmd}`"))
+            .details(json!({ "enabled": true, "backend": "command", "command": cmd }));
+    }
+    match Backend::detect(path, os) {
+        Some(b) => CheckResult::ok(id, format!("{} ({})", b.name(), b.path().display()))
+            .details(json!({ "enabled": true, "backend": b.name(), "path": b.path() })),
+        None => CheckResult::warn(id, "no notification backend found")
+            .hint(match os {
+                "macos" => "install terminal-notifier (`brew install terminal-notifier`) or make sure /usr/bin is on PATH (osascript); or set notifications.command",
+                "linux" => "install libnotify (notify-send); or set notifications.command",
+                _ => "desktop notifications need macOS or Linux; set notifications.command to post them another way",
+            })
+            .details(json!({ "enabled": true, "backend": null, "os": os })),
+    }
+}
+
+#[async_trait]
+impl Check for NotificationsCheck {
+    fn id(&self) -> String {
+        "notifications".into()
+    }
+    async fn run(&self, cx: Arc<DoctorCtx>) -> Vec<CheckResult> {
+        let Some(ws) = cx.workspace() else {
+            return Vec::new();
+        };
+        let path = cx.input.path.clone();
+        vec![notifications_result(
+            &ws.notifications,
+            path.as_deref().map(std::ffi::OsStr::new),
+            std::env::consts::OS,
+        )]
     }
 }

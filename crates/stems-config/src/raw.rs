@@ -101,6 +101,8 @@ pub struct RawWorkspace {
     pub metrics: Option<RawMetrics>,
     /// How the daemon handles config changes (`config.reload`, 33).
     pub config: Option<RawConfigSettings>,
+    /// Desktop notifications when stems fail for good (34).
+    pub notifications: Option<RawNotifications>,
     /// Where git codebases are cloned (default `.stems/repos`).
     pub repos_dir: Option<String>,
     /// Workspace-level scripts (`bootstrap`, `teardown`, custom).
@@ -210,6 +212,29 @@ pub struct RawReload {
     /// Apply changes on their own: `false` (wait for `stems config apply`),
     /// `true` (what needs no restart) or `all` (everything).
     pub auto_apply: Option<AutoApply>,
+}
+
+/// `notifications:` block (34): one desktop notification when stems end up
+/// `failed` and nothing will retry them.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "Notifications")]
+pub struct RawNotifications {
+    /// Post desktop notifications (default `true`). The environment
+    /// `STEMS_NOTIFICATIONS=0|off|false` on the daemon wins over the file.
+    pub enabled: Option<bool>,
+    /// Quiet time after a failure before the notification is posted, so
+    /// failures that come together are one notification (default `2s`).
+    pub debounce: Option<Dur>,
+    /// After a notification, failures inside this window are held and
+    /// posted together when it ends (default `30s`).
+    pub cooldown: Option<Dur>,
+    /// A command to run instead of the OS notifier (`/bin/sh -c`), with
+    /// `STEMS_NOTIFY_TITLE`, `STEMS_NOTIFY_BODY`, `STEMS_NOTIFY_STEMS`,
+    /// `STEMS_NOTIFY_WORKSPACE` in its environment and the JSON payload on
+    /// stdin. `null` (default): `terminal-notifier` / `osascript` (macOS) or
+    /// `notify-send` (Linux), whichever is on `PATH`.
+    pub command: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

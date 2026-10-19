@@ -117,6 +117,17 @@
         }
       ]
     },
+    "notifications": {
+      "description": "Desktop notifications when stems fail for good (34).",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Notifications"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "repos_dir": {
       "description": "Where git codebases are cloned (default `.stems/repos`).",
       "type": [
@@ -422,6 +433,49 @@
           ]
         }
       ]
+    },
+    "Notifications": {
+      "description": "`notifications:` block (34): one desktop notification when stems end up\n`failed` and nothing will retry them.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Post desktop notifications (default `true`). The environment\n`STEMS_NOTIFICATIONS=0|off|false` on the daemon wins over the file.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "debounce": {
+          "description": "Quiet time after a failure before the notification is posted, so\nfailures that come together are one notification (default `2s`).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cooldown": {
+          "description": "After a notification, failures inside this window are held and\nposted together when it ends (default `30s`).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "command": {
+          "description": "A command to run instead of the OS notifier (`/bin/sh -c`), with\n`STEMS_NOTIFY_TITLE`, `STEMS_NOTIFY_BODY`, `STEMS_NOTIFY_STEMS`,\n`STEMS_NOTIFY_WORKSPACE` in its environment and the JSON payload on\nstdin. `null` (default): `terminal-notifier` / `osascript` (macOS) or\n`notify-send` (Linux), whichever is on `PATH`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
     },
     "Script": {
       "description": "A script: an inline shell string or a full spec.",

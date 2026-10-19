@@ -216,10 +216,29 @@ pub(crate) fn resolve_workspace(
                     .unwrap_or(d::RELOAD_AUTO_APPLY),
             },
         },
+        notifications: resolve_notifications(raw.notifications.as_ref()),
         repos_dir: ctx.repos_dir.clone(),
         scripts,
         stems,
     })
+}
+
+/// `notifications:` (34): defaults for what is absent; an empty `command`
+/// counts as none.
+fn resolve_notifications(raw: Option<&RawNotifications>) -> NotificationSettings {
+    let d = NotificationSettings::default();
+    let Some(n) = raw else { return d };
+    NotificationSettings {
+        enabled: n.enabled.unwrap_or(d.enabled),
+        debounce: n.debounce.unwrap_or(d.debounce),
+        cooldown: n.cooldown.unwrap_or(d.cooldown),
+        command: n
+            .command
+            .as_deref()
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .map(str::to_owned),
+    }
 }
 
 fn resolve_script(s: &RawScript, default_cwd: &Path, p: &ConfigPath, ctx: &mut Ctx<'_>) -> Script {

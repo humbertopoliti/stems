@@ -82,6 +82,9 @@ pub struct Workspace {
     /// Config reload settings (33). Omitted from the JSON while default.
     #[serde(default, skip_serializing_if = "ConfigSettings::is_default")]
     pub config: ConfigSettings,
+    /// Desktop notification settings (34). Omitted from the JSON while default.
+    #[serde(default, skip_serializing_if = "NotificationSettings::is_default")]
+    pub notifications: NotificationSettings,
     /// Managed clone directory for git codebases.
     pub repos_dir: PathBuf,
     /// Workspace-level scripts.
@@ -196,6 +199,41 @@ pub struct ReloadSettings {
     /// What the daemon applies on its own when the config changes.
     #[serde(default)]
     pub auto_apply: AutoApply,
+}
+
+/// `notifications:` settings (34): one desktop notification when stems end
+/// up `failed` for good.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NotificationSettings {
+    /// Post notifications at all (the daemon's `STEMS_NOTIFICATIONS=0`
+    /// environment still wins).
+    pub enabled: bool,
+    /// Quiet time after a failure before the batch is posted.
+    pub debounce: Dur,
+    /// After a notification, failures inside this window are held for the
+    /// next one.
+    pub cooldown: Dur,
+    /// A custom notifier command (`/bin/sh -c`) replacing the OS backend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+}
+
+impl Default for NotificationSettings {
+    fn default() -> Self {
+        Self {
+            enabled: crate::defaults::NOTIFICATIONS_ENABLED,
+            debounce: crate::defaults::NOTIFICATIONS_DEBOUNCE,
+            cooldown: crate::defaults::NOTIFICATIONS_COOLDOWN,
+            command: None,
+        }
+    }
+}
+
+impl NotificationSettings {
+    /// Every value is the default.
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// A resolved stem.

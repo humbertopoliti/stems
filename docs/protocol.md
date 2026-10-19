@@ -219,7 +219,8 @@ consumers must ignore unknown kinds): `daemon.started`, `daemon.stopping`,
 `script.finished`, `watch.triggered`, `watch.action_finished`, `watch.paused`,
 `watch.resumed`, `watch.reconfigured`,
 `config.changed`, `config.invalid`, `config.applied`, `config.pending`,
-`tools.changed`, `overlay.materialised` (`data: {dest,
+`tools.changed`, `notification.sent`, `notification.skipped` (see
+[notifications.md](notifications.md#events)), `overlay.materialised` (`data: {dest,
 keep, backup}`), `overlay.removed`, `overlay.kept`,
 `overlay.modified_left_in_place` (`data: {dest}`; see
 [overlays.md](overlays.md)), `repo.cloned`, `repo.fetched`,

@@ -228,12 +228,16 @@ aborted}`; the human output prints one line per dependant (`restarted b
 | `cascade.finished` | every layer was handled | `id`, `origin`, `restarted` (names), `layers`, `failed`, `skipped`, `ok` |
 | `cascade.aborted` | the origin did not become healthy; dependants untouched | `id`, `origin`, `stem`, `error` |
 | `stem.gave_up` | `max` restarts in the window were used up | `stem`, `attempts`, `max`, `window_ms`, `reason`, `exit_code`/`signal` |
+| `notification.sent` / `notification.skipped` | the stem went `failed` for good (after `stem.gave_up`, a policy-`never` crash, `START_TIMEOUT`, …): one desktop notification per burst of failures ([notifications.md](notifications.md)) | `stems`, `codes`, `backend`, `title`, `body`, `folded` / `reason` |
 | `process.exited` | before either, for an exit | `pid`, `code`, `signal` |
 
 ## Not covered
 
 - A restart that never becomes healthy fails like any start
   (`START_TIMEOUT`); it is not retried by the policy.
+- Policy restarts themselves are silent: the desktop notification
+  ([notifications.md](notifications.md)) is posted only when the stem is
+  given up on (`failed`), never per restart attempt.
 - Pending restarts are not persisted: if the daemon itself dies during a
   backoff, the stem is simply not running afterwards (crash recovery,
   [recovery.md](recovery.md), adopts only live units).
