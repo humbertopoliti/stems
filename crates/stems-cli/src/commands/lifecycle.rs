@@ -175,6 +175,18 @@ fn up_human(r: &UpResult) -> String {
         r.failed.len(),
         r.skipped.len()
     );
+    // Ready, but a `soft_fail` script failed (41).
+    for d in &r.degraded {
+        let how = match d.exit {
+            _ if d.timed_out => "timed out".to_string(),
+            Some(c) => format!("exited {c}"),
+            None => "failed".to_string(),
+        };
+        s.push_str(&format!(
+            "  ! {}: {} {how} (soft_fail, retried on the next start or restart)\n",
+            d.stem, d.script
+        ));
+    }
     for f in &r.failed {
         s.push_str(&format!("  failed  {}: {}\n", f.stem, f.error.message));
         // The last lines the process wrote (36), at most UP_TAIL_LINES.
@@ -185,7 +197,13 @@ fn up_human(r: &UpResult) -> String {
         }
     }
     for n in &r.skipped {
-        s.push_str(&format!("  skipped {n}\n"));
+        match r.skipped_reasons.get(n).map(String::as_str) {
+            Some("seed_degraded") => s.push_str(&format!(
+                "  skipped {n} (seed_degraded: a `condition: seeded` dependency's soft_fail seed failed)\n"
+            )),
+            Some(why) => s.push_str(&format!("  skipped {n} ({why})\n")),
+            None => s.push_str(&format!("  skipped {n}\n")),
+        }
     }
     for w in &r.warnings {
         let stem = w.details["stem"].as_str().unwrap_or("?");
@@ -412,12 +430,7 @@ async fn up_async(
     stdout: &mut dyn Write,
 ) -> Result<CommandOutput, Errors> {
     let timeout = parse_timeout(args.timeout.as_deref())?;
-    let pass_env: BTreeMap<String, String> = args
-        .pass_env
-        .iter()
-        .filter(|k| !k.is_empty())
-        .filter_map(|k| ctx.env.get(k).map(|v| (k.clone(), v.clone())))
-        .collect();
+    let pass_env = pass_env(ctx, &args.pass_env);
     if args.profile.is_some() && !args.stems.is_empty() {
         return Err(Error::usage(
             "`--profile` cannot be combined with stem names",
@@ -492,6 +505,7 @@ async fn up_async(
         sync: args.sync,
         no_watch: args.no_watch,
         build: args.build_flag(),
+        caller_env: Some(super::exec::caller_env(&ctx.env)),
     };
     let rpc_timeout = timeout.map_or(LONG, |d| d + Duration::from_secs(10));
     let call = c.call_with_timeout::<UpResult>(Method::UP, &params, rpc_timeout);
@@ -762,14 +776,18 @@ pub fn down(ctx: &Ctx, args: &DownArgs, mode: Mode) -> CommandOutput {
         // No daemon but the state file lists stems (a crashed daemon): start
         // one, which adopts what is still alive, and tear it all down
         // (deliverable 11, FR-CR-3). `--volumes` without a daemon (the
-        // stems are already down) also needs one, briefly (14).
+        // stems are already down) also needs one, briefly (14), and so do
+        // overlays rendered daemonless (47: the new daemon cleans them).
         let (c, recovered, temporary) = match connect_to(&t, client::options(ctx)).await {
             Ok(c) => (c, false, false),
             Err(e) if e.code == ErrorCode::DaemonNotRunning && has_recorded_stems(&t) => {
                 let (c, _) = connect_or_start(ctx, &t).await?;
                 (c, true, false)
             }
-            Err(e) if e.code == ErrorCode::DaemonNotRunning && args.volumes => {
+            Err(e)
+                if e.code == ErrorCode::DaemonNotRunning
+                    && (args.volumes || has_removable_overlays(&t)) =>
+            {
                 let (c, _) = connect_or_start(ctx, &t).await?;
                 (c, false, true)
             }
@@ -809,6 +827,13 @@ fn has_recorded_stems(t: &Target) -> bool {
     stems_daemon::state::StateFile::peek(&t.paths.state).is_some_and(|f| !f.stems.is_empty())
 }
 
+/// The state file records overlays that `down` removes (not `keep: true`),
+/// e.g. written by a daemonless `stems overlays render` (47).
+fn has_removable_overlays(t: &Target) -> bool {
+    stems_daemon::state::StateFile::peek(&t.paths.state)
+        .is_some_and(|f| f.overlays.values().flatten().any(|r| !r.keep))
+}
+
 /// `stems start`.
 pub fn start(ctx: &Ctx, args: &StartArgs) -> CommandOutput {
     block_on(async {
@@ -819,6 +844,7 @@ pub fn start(ctx: &Ctx, args: &StartArgs) -> CommandOutput {
             no_deps: args.no_deps,
             timeout_ms: ms(timeout),
             build: args.build_flag(),
+            caller_env: Some(super::exec::caller_env(&ctx.env)),
         };
         let bound = timeout.map_or(LONG, |d| d + Duration::from_secs(10));
         let res: UpResult = c.call_with_timeout(Method::START, &params, bound).await?;
@@ -844,6 +870,15 @@ pub fn stop(ctx: &Ctx, args: &StopArgs) -> CommandOutput {
     .unwrap_or_else(CommandOutput::failed)
 }
 
+/// The `--pass-env` variables set in the caller's shell, with their values.
+fn pass_env(ctx: &Ctx, names: &[String]) -> BTreeMap<String, String> {
+    names
+        .iter()
+        .filter(|k| !k.is_empty())
+        .filter_map(|k| ctx.env.get(k).map(|v| (k.clone(), v.clone())))
+        .collect()
+}
+
 /// `stems restart`.
 pub fn restart(ctx: &Ctx, args: &RestartArgs) -> CommandOutput {
     block_on(async {
@@ -855,6 +890,8 @@ pub fn restart(ctx: &Ctx, args: &RestartArgs) -> CommandOutput {
             build: args.build_flag(),
             timeout_ms: ms(timeout),
             cascade: args.cascade_flag(),
+            pass_env: args.pass_env.as_deref().map(|names| pass_env(ctx, names)),
+            caller_env: Some(super::exec::caller_env(&ctx.env)),
         };
         let bound = grace_sum(ctx) + timeout.unwrap_or(LONG);
         let res: UpResult = c.call_with_timeout(Method::RESTART, &params, bound).await?;
@@ -1246,6 +1283,65 @@ mod tests {
             serde_json::to_value(&r).unwrap()["warnings"][0]["code"],
             "IMAGE_STALE"
         );
+    }
+
+    #[test]
+    fn up_human_soft_fail_golden() {
+        let r = UpResult {
+            ok: false,
+            requested: vec![],
+            ready: vec!["api".into(), "db".into()],
+            skipped: vec!["web".into()],
+            skipped_reasons: [("web".to_string(), "seed_degraded".to_string())].into(),
+            degraded: vec![
+                stems_api::DegradedScript {
+                    stem: "api".into(),
+                    script: "setup".into(),
+                    exit: Some(3),
+                    timed_out: false,
+                },
+                stems_api::DegradedScript {
+                    stem: "db".into(),
+                    script: "seed".into(),
+                    exit: None,
+                    timed_out: false,
+                },
+                stems_api::DegradedScript {
+                    stem: "worker".into(),
+                    script: "build".into(),
+                    exit: None,
+                    timed_out: true,
+                },
+            ],
+            ..UpResult::default()
+        };
+        insta::assert_snapshot!(up_human(&r), @r"
+        up: 2 ready, 0 failed, 1 skipped
+          ! api: setup exited 3 (soft_fail, retried on the next start or restart)
+          ! db: seed failed (soft_fail, retried on the next start or restart)
+          ! worker: build timed out (soft_fail, retried on the next start or restart)
+          skipped web (seed_degraded: a `condition: seeded` dependency's soft_fail seed failed)
+        ");
+        assert_eq!(
+            serde_json::to_value(&r).unwrap()["degraded"][2]["timed_out"],
+            true
+        );
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(
+            v["degraded"][0],
+            json!({"stem": "api", "script": "setup", "exit": 3})
+        );
+        assert_eq!(v["skipped_reasons"]["web"], "seed_degraded");
+        // Absent when empty; degraded stems never change the exit code.
+        let plain = serde_json::to_value(UpResult::default()).unwrap();
+        assert!(plain.get("degraded").is_none() && plain.get("skipped_reasons").is_none());
+        let ready = UpResult {
+            ok: true,
+            skipped: vec![],
+            skipped_reasons: Default::default(),
+            ..r
+        };
+        assert_eq!(up_exit(&ready), 0);
     }
 
     #[test]

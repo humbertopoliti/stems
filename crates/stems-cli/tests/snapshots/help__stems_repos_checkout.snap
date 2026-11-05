@@ -1,0 +1,57 @@
+---
+source: crates/stems-cli/tests/help.rs
+expression: help
+---
+Check out any branch, tag or sha of a stem's git codebase.
+
+Fetches, then checks out the ref detached (a branch as `origin/<branch>`). Refuses uncommitted
+changes (`REPO_DIRTY`) unless `--force`, which carries them over like `git checkout`. Nothing is
+recorded: `repos status` shows `drift: true`, `repos sync` leaves the tree alone, `repos sync
+--reset <stem>` goes back to the declared ref.
+
+Usage: stems repos checkout [OPTIONS] <STEM> <REF>
+
+Arguments:
+  <STEM>
+          Stem whose git codebase to move
+
+  <REF>
+          Branch, tag or sha
+
+Options:
+      --force
+          Check out even with uncommitted changes (they are carried over) or with commits on HEAD
+          that no remote branch or tag has (they stay reachable from the reflog only)
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Global options:
+      --workspace <PATH>
+          Workspace directory or stems.yaml path (default: $STEMS_WORKSPACE, else walk up from the
+          current directory)
+
+      --json
+          Emit the JSON envelope (the default when stdout is not a terminal)
+
+      --human
+          Emit human text even when stdout is not a terminal
+
+      --no-color
+          Disable colours in human output
+          
+          [env: STEMS_NO_COLOR]
+
+  -q, --quiet
+          Print only errors in human mode
+
+  -v, --verbose...
+          More detail (repeat for more: -vv)
+
+      --home <PATH>
+          Root for daemon state, sockets, locks and logs (default: ~/Library/Application
+          Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
+          
+          [env: STEMS_HOME]
+
+See also: docs/repos.md; `stems features repos`.

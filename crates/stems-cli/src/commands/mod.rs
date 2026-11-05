@@ -2,11 +2,16 @@
 //! renders it and exits with its code.
 
 pub mod completions;
+pub mod compose;
 pub mod config;
 pub mod configuration;
 pub mod daemon;
+pub mod docs;
 pub mod doctor;
+pub mod env;
 pub mod events;
+pub mod exec;
+pub mod features;
 pub mod graph;
 pub mod health;
 pub mod init;
@@ -18,6 +23,7 @@ pub mod metrics;
 pub mod orphans;
 pub mod outputs;
 pub mod overlays;
+pub mod ports;
 pub mod profiles;
 pub mod pull;
 pub mod repos;
@@ -100,6 +106,7 @@ pub fn dispatch(cmd: Command, ctx: &Ctx, mode: Mode, stdout: &mut dyn Write) -> 
         Command::Stamps(a) => scripts::stamps(ctx, &a),
         Command::Repos(crate::cli::ReposCommand::Sync(a)) => repos::sync(ctx, &a),
         Command::Repos(crate::cli::ReposCommand::Status(a)) => repos::status(ctx, &a),
+        Command::Repos(crate::cli::ReposCommand::Checkout(a)) => repos::checkout(ctx, &a),
         Command::Run(a) => run::run(ctx, &a, mode, stdout),
         Command::Scripts(a) => run::scripts(ctx, &a),
         Command::Overlays(a) => overlays::run(ctx, &a),
@@ -108,11 +115,16 @@ pub fn dispatch(cmd: Command, ctx: &Ctx, mode: Mode, stdout: &mut dyn Write) -> 
         Command::Health(a) => health::run(ctx, &a),
         Command::Metrics(a) => metrics::run(ctx, &a, mode, stdout),
         Command::Outputs(a) => outputs::run(ctx, &a, mode),
+        Command::Exec(a) => exec::exec(ctx, &a),
+        Command::Compose(a) => compose::run(ctx, &a),
+        Command::Shell(a) => exec::shell(ctx, &a),
+        Command::Env(a) => env::run(ctx, &a, mode),
+        Command::Ports(a) => ports::run(ctx, &a, mode),
         Command::Watch(c) => watch::run(ctx, &c),
         Command::Graph(a) => graph::run(ctx, &a, mode, stdout),
         Command::Logs(a) => logs::run(ctx, &a, mode, stdout),
         Command::Validate(a) => validate::run(ctx, &a),
-        Command::Show(a) => show::run(ctx, &a),
+        Command::Show(a) => show::run(ctx, &a, mode),
         Command::Profiles(_) => profiles::run(ctx),
         Command::Config(crate::cli::ConfigCommand::Get(a)) => config::get(ctx, &a),
         Command::Config(crate::cli::ConfigCommand::Set(a)) => config::set(ctx, &a),
@@ -125,10 +137,15 @@ pub fn dispatch(cmd: Command, ctx: &Ctx, mode: Mode, stdout: &mut dyn Write) -> 
         Command::Upgrade(a) => upgrade::run(ctx, &a),
         Command::Man { outdir } => man::run(&ctx.cwd, &outdir),
         Command::Mcp(a) => mcp::run(ctx, &a),
-        Command::Docs => {
-            CommandOutput::data(serde_json::json!({ "markdown": crate::docs::markdown() }))
-                .with_raw(crate::docs::markdown())
+        Command::Reference { page } => {
+            let markdown = match page {
+                crate::cli::ReferencePage::Cli => crate::docs::markdown(),
+                crate::cli::ReferencePage::Features => crate::help::features_markdown(),
+            };
+            CommandOutput::data(serde_json::json!({ "markdown": markdown })).with_raw(markdown)
         }
+        Command::Features(a) => features::run(&a),
+        Command::Docs(a) => docs::run(&a),
         other => stubs::run(&other),
     }
 }

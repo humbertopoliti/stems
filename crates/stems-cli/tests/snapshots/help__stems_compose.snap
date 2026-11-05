@@ -1,0 +1,57 @@
+---
+source: crates/stems-cli/tests/help.rs
+expression: help
+---
+Run `docker compose` in a compose stem's context (file, project, env).
+
+`stems compose <stem> [--service] -- <args…>` runs `docker compose -f <file> -p <project> --env-file
+<stem env> <args…>` here, in your terminal, in the compose file's directory (a one-off migration,
+`run --rm`, `config`, `ps`). `--service` appends the stem's service as the last argument. Works
+without a daemon (writes the env file itself) and never starts one. The exit code is compose's.
+`--json` prints `{stem, argv, exit}` after the command. See docs/compose.md.
+
+Usage: stems compose [OPTIONS] <STEM> -- <ARGS>...
+
+Arguments:
+  <STEM>
+          Compose stem whose file, project and env to use
+
+  <ARGS>...
+          Arguments for `docker compose` (after `--`)
+
+Options:
+      --service
+          Append the stem's compose service as the last argument
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Global options:
+      --workspace <PATH>
+          Workspace directory or stems.yaml path (default: $STEMS_WORKSPACE, else walk up from the
+          current directory)
+
+      --json
+          Emit the JSON envelope (the default when stdout is not a terminal)
+
+      --human
+          Emit human text even when stdout is not a terminal
+
+      --no-color
+          Disable colours in human output
+          
+          [env: STEMS_NO_COLOR]
+
+  -q, --quiet
+          Print only errors in human mode
+
+  -v, --verbose...
+          More detail (repeat for more: -vv)
+
+      --home <PATH>
+          Root for daemon state, sockets, locks and logs (default: ~/Library/Application
+          Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
+          
+          [env: STEMS_HOME]
+
+See also: docs/compose.md; `stems features containers`.

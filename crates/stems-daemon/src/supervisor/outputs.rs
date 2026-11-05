@@ -291,11 +291,15 @@ async fn run_command(
         args: Vec::new(),
         inputs: Vec::new(),
         requires: Vec::new(),
+        requires_stopped: Vec::new(),
         timeout: Some(Dur(COMMAND_TIMEOUT)),
         retries: 0,
+        soft_fail: false,
+        when: stems_config::BuildWhen::OnDemand,
         concurrent: true,
         stamp_env: Vec::new(),
         cwd: stem.default_cwd(&ws.root).to_path_buf(),
+        inherit_env: true,
         cwd_set: false,
     };
     let script = render_script(core, ws, &stem.name, &script);
@@ -500,6 +504,17 @@ pub(crate) fn shown(core: &Core, stem: &str) -> BTreeMap<String, String> {
 /// Redact, in a dependant's displayed env, the `STEMS_<DEP>_OUTPUT_<X>` of
 /// secret outputs and any value containing a secret output's value.
 pub(crate) fn redact_env(core: &Core, stem: &Stem, env: &mut BTreeMap<String, String>) {
+    redact_env_with(core, stem, env, None);
+}
+
+/// [`redact_env`], plus (47) the values of the names `names` calls secret
+/// (`status -v`: built-in patterns, `secrets:`, `redaction:`).
+pub(crate) fn redact_env_with(
+    core: &Core,
+    stem: &Stem,
+    env: &mut BTreeMap<String, String>,
+    names: Option<&stems_core::redact::Redactor>,
+) {
     let mut secrets: Vec<(String, String)> = Vec::new();
     for dep in &stem.depends_on {
         for (name, e) in core.outputs.get(&dep.stem) {
@@ -508,13 +523,14 @@ pub(crate) fn redact_env(core: &Core, stem: &Stem, env: &mut BTreeMap<String, St
             }
         }
     }
-    if secrets.is_empty() {
+    if secrets.is_empty() && names.is_none() {
         return;
     }
     for (k, v) in env.iter_mut() {
-        let hit = secrets
-            .iter()
-            .any(|(var, val)| k == var || (!val.is_empty() && v.contains(val.as_str())));
+        let hit = names.is_some_and(|n| n.is_secret(Some(&stem.name), k))
+            || secrets
+                .iter()
+                .any(|(var, val)| k == var || (!val.is_empty() && v.contains(val.as_str())));
         if hit {
             *v = REDACTED.to_string();
         }

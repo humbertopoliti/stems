@@ -10,6 +10,9 @@
 //! Unknown (external stems: monitored, never started)
 //! ```
 //!
+//! `Disabled` (46) is derived from config for `status` and never a
+//! supervisor state: no transition reaches or leaves it.
+//!
 //! `Stopped → Healthy` is adoption after a daemon restart (deliverable 11).
 //! `Healthy/Unhealthy → Starting` is a restart by policy or watchdog (22):
 //! the stem waits out its backoff in `starting` and is spawned again.
@@ -104,7 +107,8 @@ mod tests {
             }
         }
         assert_eq!(legal, LEGAL.len());
-        assert_eq!(StemState::ALL.len() * StemState::ALL.len(), 81);
+        // `Disabled` (46) is never stored: no transition reaches or leaves it.
+        assert_eq!(StemState::ALL.len() * StemState::ALL.len(), 100);
     }
 
     #[test]

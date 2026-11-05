@@ -11,7 +11,10 @@ use serde_json::json;
 use stems_config::{Codebase, PortRef, Requirement, ScriptSource, Stem, StemRuntime, StemType};
 use stems_core::overlays::{ExistingFile, OverlayStatus, status_of};
 use stems_core::tools::SystemTools;
-use stems_core::{ErrorCode, validate::check_requirement};
+use stems_core::{
+    ErrorCode,
+    validate::{RequireScope, check_requirement},
+};
 use stems_runtime::docker::{
     CredentialSource, DockerConfigFile, find_helper, helper_dirs, registry_host,
 };
@@ -49,8 +52,32 @@ pub(super) fn registry(cx: &DoctorCtx) -> Vec<Box<dyn Check>> {
     }
     for (tool, req) in &ws.requires {
         v.push(Box::new(RequiresCheck {
+            stem: None,
+            dir: ws.root.clone(),
             tool: tool.clone(),
             req: req.clone(),
+            deferred: false,
+        }));
+    }
+    for stem in ws.stems().filter(|s| s.enabled) {
+        let dir = stems_core::validate::requires_dir(stem, &ws.root).to_path_buf();
+        for (tool, req) in &stem.requires {
+            v.push(Box::new(RequiresCheck {
+                stem: Some(stem.name.clone()),
+                dir: dir.clone(),
+                tool: tool.clone(),
+                req: req.clone(),
+                deferred: stems_core::validate::requirement_deferred(stem, req),
+            }));
+        }
+    }
+    for entry in stems_core::checks::entries(ws, stems_config::CheckWhen::Doctor) {
+        v.push(Box::new(CustomCheck {
+            id: entry.id(),
+            name: entry.name.to_string(),
+            spec: entry.spec.clone(),
+            dir: entry.dir.clone(),
+            env: entry.env.clone(),
         }));
     }
     for stem in ws.stems() {
@@ -106,6 +133,13 @@ pub(super) fn registry(cx: &DoctorCtx) -> Vec<Box<dyn Check>> {
             v.push(Box::new(ScriptCheck {
                 id: format!("scripts.workspace.{name}"),
                 file: f.clone(),
+            }));
+        }
+    }
+    for stem in ws.stems() {
+        if !stem.env_files.is_empty() {
+            v.push(Box::new(EnvFilesCheck {
+                stem: stem.name.clone(),
             }));
         }
     }
@@ -302,13 +336,89 @@ impl Check for DockerCheck {
             .details(json!({ "host": docker.host() })),
         ];
         out.push(match docker.server_version().await {
-            Ok(v) => CheckResult::ok("docker.version", format!("Docker Engine {v}"))
-                .details(json!({ "version": v })),
+            Ok(v) => {
+                let buildx = buildx_version().await;
+                let needs = cx
+                    .resolved
+                    .as_ref()
+                    .map(|r| stems_needing_buildx(&r.workspace))
+                    .unwrap_or_default();
+                buildx_note(&v, buildx.as_deref(), &needs)
+            }
             Err(e) => {
                 CheckResult::from_error("docker.version", CheckStatus::Fail, &runtime_error(e))
             }
         });
         out
+    }
+}
+
+/// `docker buildx version` as `buildx v<x.y.z>`, `None` when it fails (44).
+async fn buildx_version() -> Option<String> {
+    let out = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        tokio::process::Command::new(stems_runtime::docker::docker_program())
+            .args(["buildx", "version"])
+            .stdin(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let line = text.lines().next()?.trim();
+    // `github.com/docker/buildx v0.37.1 <commit>` → `buildx v0.37.1`.
+    match line.split_whitespace().nth(1) {
+        Some(v) if v.starts_with('v') => Some(format!("buildx {v}")),
+        _ => Some(line.to_string()).filter(|l| !l.is_empty()),
+    }
+}
+
+/// Enabled stems whose build needs `docker buildx` (44): docker stems with
+/// build secrets or `allow_read`, compose stems with the object form of
+/// `build:`.
+pub fn stems_needing_buildx(ws: &stems_config::Workspace) -> Vec<String> {
+    ws.stems()
+        .filter(|s| s.enabled)
+        .filter(|s| match &s.runtime {
+            StemRuntime::Docker(d) => d
+                .build
+                .as_ref()
+                .is_some_and(|b| !b.secrets.is_empty() || !b.allow_read.is_empty()),
+            StemRuntime::Compose(c) => c.build && !c.build_options.is_plain(),
+            _ => false,
+        })
+        .map(|s| s.name.clone())
+        .collect()
+}
+
+/// `docker.version` with the buildx note (44): ok with the buildx version;
+/// without buildx, ok when no stem needs it, else `fail` with
+/// `DOCKER_UNAVAILABLE` naming the stems.
+pub fn buildx_note(engine: &str, buildx: Option<&str>, needs: &[String]) -> CheckResult {
+    match buildx {
+        Some(b) => CheckResult::ok("docker.version", format!("Docker Engine {engine}; {b}"))
+            .details(json!({ "version": engine, "buildx": b })),
+        None if needs.is_empty() => CheckResult::ok(
+            "docker.version",
+            format!("Docker Engine {engine}; buildx not found (only build secrets and `allow_read` need it)"),
+        )
+        .details(json!({ "version": engine, "buildx": null })),
+        None => CheckResult::fail(
+            "docker.version",
+            format!(
+                "Docker Engine {engine}; buildx not found, which {} need{} to build",
+                needs.join(", "),
+                if needs.len() == 1 { "s" } else { "" }
+            ),
+        )
+        .code(ErrorCode::DockerUnavailable)
+        .hint(stems_runtime::docker::BUILDX_MISSING_HINT)
+        .details(json!({ "version": engine, "buildx": null, "stems": needs })),
     }
 }
 
@@ -444,7 +554,12 @@ impl Check for ImageCheck {
                 let Some(s) = ws.stem(stem) else {
                     return Vec::new();
                 };
-                let env = crate::supervisor::containers::config_env(s);
+                let env = crate::supervisor::containers::config_env(
+                    ws,
+                    s,
+                    "doctor",
+                    &crate::supervisor::ports::PortBook::default(),
+                );
                 let Ok(spec) = crate::supervisor::containers::compose_spec(ws, s, "doctor", &env)
                 else {
                     return Vec::new();
@@ -650,26 +765,150 @@ pub fn credential_results(
 // ---------------------------------------------------------------------------
 
 struct RequiresCheck {
+    stem: Option<String>,
+    dir: PathBuf,
     tool: String,
     req: Requirement,
+    /// `from:` in a git codebase not cloned yet: `warn`, not probed (40).
+    deferred: bool,
 }
 
 #[async_trait]
 impl Check for RequiresCheck {
     fn id(&self) -> String {
-        format!("requires.{}", self.tool)
+        match &self.stem {
+            Some(s) => format!("requires.{s}.{}", self.tool),
+            None => format!("requires.{}", self.tool),
+        }
     }
     async fn run(&self, _cx: Arc<DoctorCtx>) -> Vec<CheckResult> {
-        let (tool, req) = (self.tool.clone(), self.req.clone());
+        let (tool, req, dir, stem) = (
+            self.tool.clone(),
+            self.req.clone(),
+            self.dir.clone(),
+            self.stem.clone(),
+        );
         let id = self.id();
-        let range = req.version().to_string();
-        let r = blocking(move || check_requirement(&tool, &req, &mut SystemTools::new())).await;
+        if self.deferred {
+            return vec![
+                CheckResult::warn(&id, format!("{}: codebase not cloned yet", self.tool))
+                    .code(ErrorCode::RequiresNotChecked)
+                    .hint("`stems up` clones it; run `stems doctor` again afterwards to check the version")
+                    .details(json!({
+                        "tool": self.tool, "stem": self.stem, "from": self.req.from(),
+                        "required": null, "found": null
+                    })),
+            ];
+        }
+        let r = blocking(move || {
+            let scope = RequireScope {
+                dir: &dir,
+                stem: stem.as_deref(),
+            };
+            check_requirement(&tool, &req, &scope, &mut SystemTools::new())
+        })
+        .await;
         vec![match r {
-            Some(Ok(v)) => CheckResult::ok(&id, format!("{} {v} satisfies {range}", self.tool))
-                .details(json!({ "tool": self.tool, "required": range, "found": v.to_string() })),
+            Some(Ok(ok)) => {
+                let source = ok
+                    .from
+                    .as_ref()
+                    .map(|f| format!(" (from {f})"))
+                    .unwrap_or_default();
+                let mut details = json!({
+                    "tool": self.tool, "required": ok.required, "found": ok.version.to_string()
+                });
+                if let Some(o) = details.as_object_mut() {
+                    if let Some(f) = &ok.from {
+                        o.insert("from".into(), json!(f));
+                    }
+                    if let Some(s) = &self.stem {
+                        o.insert("stem".into(), json!(s));
+                    }
+                }
+                CheckResult::ok(
+                    &id,
+                    format!(
+                        "{} {} satisfies {}{source}",
+                        self.tool, ok.version, ok.required
+                    ),
+                )
+                .details(details)
+            }
             Some(Err(e)) => CheckResult::from_error(&id, CheckStatus::Fail, &e),
             None => CheckResult::fail(&id, "the version probe panicked"),
         }]
+    }
+}
+
+// ---------------------------------------------------------------------------
+// custom checks (`checks:`, deliverable 48)
+// ---------------------------------------------------------------------------
+
+/// A user-defined `checks:` entry: a shell command, exit 0 = ok.
+struct CustomCheck {
+    id: String,
+    name: String,
+    spec: stems_config::CustomCheckSpec,
+    dir: PathBuf,
+    env: Vec<(String, String)>,
+}
+
+#[async_trait]
+impl Check for CustomCheck {
+    fn id(&self) -> String {
+        self.id.clone()
+    }
+    fn timeout(&self) -> Option<std::time::Duration> {
+        // The command enforces its own timeout; leave room for the kill.
+        Some(self.spec.timeout.as_duration() + std::time::Duration::from_secs(2))
+    }
+    async fn run(&self, _cx: Arc<DoctorCtx>) -> Vec<CheckResult> {
+        let (command, timeout, dir, env) = (
+            self.spec.command.clone(),
+            self.spec.timeout.as_duration(),
+            self.dir.clone(),
+            self.env.clone(),
+        );
+        let r =
+            blocking(move || stems_core::tools::run_check_command(&command, timeout, &dir, &env))
+                .await;
+        let Some(run) = r else {
+            return vec![CheckResult::fail(&self.id, "the check panicked")];
+        };
+        let details = json!({
+            "command": self.spec.command, "exit": run.exit, "tail": run.tail,
+        });
+        if run.passed() {
+            return vec![
+                CheckResult::ok(&self.id, format!("`{}` passed", self.name)).details(details),
+            ];
+        }
+        let entry_msg = {
+            let base = self
+                .spec
+                .message
+                .clone()
+                .unwrap_or_else(|| "check failed".into());
+            if run.timed_out {
+                format!("{base} (timed out after {}s)", timeout.as_secs_f64())
+            } else {
+                base
+            }
+        };
+        let mut res = match self.spec.severity {
+            stems_config::CheckSeverity::Fail => CheckResult::fail(&self.id, entry_msg),
+            stems_config::CheckSeverity::Warn => CheckResult::warn(&self.id, entry_msg),
+        }
+        .details(details)
+        .code(ErrorCode::CheckFailed);
+        if let Some(h) = &self.spec.hint {
+            res = res.hint(h.clone());
+        }
+        if self.spec.fix.is_some() {
+            res = res.fixable();
+        }
+        vec![res]
     }
 }
 
@@ -919,6 +1158,70 @@ impl Check for ScriptCheck {
             }
         };
         vec![r]
+    }
+}
+
+/// `env.<stem>` (38): every `env_files` entry readable (or absent and
+/// `required: false`), and no `ENV_SHADOWED`.
+struct EnvFilesCheck {
+    stem: String,
+}
+
+#[async_trait]
+impl Check for EnvFilesCheck {
+    fn id(&self) -> String {
+        format!("env.{}", self.stem)
+    }
+    async fn run(&self, cx: Arc<DoctorCtx>) -> Vec<CheckResult> {
+        let Some(ws) = cx.workspace() else {
+            return Vec::new();
+        };
+        let Some(stem) = ws.stem(&self.stem) else {
+            return Vec::new();
+        };
+        let id = self.id();
+        let root = &ws.root;
+        let files: Vec<serde_json::Value> = stem
+            .env_files
+            .iter()
+            .map(|f| json!({ "path": f.path, "required": f.required, "exists": f.path.exists() }))
+            .collect();
+        let errors = stems_core::envfiles::errors(root, stem);
+        if let Some(e) = errors.first() {
+            let all: Vec<&str> = errors.iter().map(|e| e.message.as_str()).collect();
+            let mut r = CheckResult::from_error(&id, CheckStatus::Fail, e);
+            r = r.details(json!({ "stem": self.stem, "file": e.details["file"], "files": files, "errors": all }));
+            return vec![r];
+        }
+        let shadows = stems_core::envfiles::shadow_warnings(root, stem);
+        if let Some(w) = shadows.first() {
+            let keys: Vec<&serde_json::Value> = shadows.iter().map(|w| &w.details["key"]).collect();
+            let r = CheckResult::from_error(&id, CheckStatus::Warn, w).details(json!({
+                "stem": self.stem,
+                "key": w.details["key"],
+                "file": w.details["file"],
+                "shadows": w.details["shadows"],
+                "keys": keys,
+                "files": files,
+            }));
+            return vec![r];
+        }
+        let shown: Vec<String> = stem
+            .env_files
+            .iter()
+            .map(|f| {
+                let p = stems_core::envfiles::shown(root, &f.path);
+                match (f.required, f.path.exists()) {
+                    (false, false) => format!("{p} optional, absent"),
+                    (false, true) => format!("{p} optional"),
+                    _ => p,
+                }
+            })
+            .collect();
+        vec![
+            CheckResult::ok(&id, shown.join(", "))
+                .details(json!({ "stem": self.stem, "files": files })),
+        ]
     }
 }
 

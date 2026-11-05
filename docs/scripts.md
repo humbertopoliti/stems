@@ -30,8 +30,12 @@ stems:
 A script is an inline shell `command:` (or a bare string), or a `file:` in
 the **integration repo** (FR-WS-2). Per script: `inputs` (stamp globs,
 relative to the codebase), `stamp_env` (variables hashed into the stamp),
-`timeout` (default none), `retries` (default 0), `cwd`; and for scripts run
-with `stems run`: `description`, `args`, `requires`, `concurrent` (see
+`timeout` (default none), `retries` (default 0), `soft_fail` (default
+false; [Partial installs](#partial-installs-soft_fail)), `when` (`build`
+only, default `on_demand`; [`build` in the start sequence](#build-in-the-start-sequence-when)),
+`cwd`; and for scripts run
+with `stems run`: `description`, `args`, `requires`, `requires_stopped`,
+`concurrent` (see
 [Custom scripts](#custom-scripts-and-stems-run)).
 
 ## The lifecycle order
@@ -44,7 +48,12 @@ stems up
 │
 └─ per stem, in dependency order (layers in parallel):
    │
+   ├─ [build images] (build.before_setup) docker/compose images built
+   │               first; `setup` gets STEMS_IMAGE (compose: STEMS_IMAGES
+   │               too; docs/docker.md, docs/compose.md)
    ├─ setup        state `setup`    only if its stamp is missing or changed
+   ├─ build        only with `when: changed` (stamp missing or changed)
+   │               or `when: always`; setup installs what build needs
    ├─ pre_start
    ├─ start        state `starting` the process (`command` / `scripts.start`)
    ├─ wait         → `healthy`       condition: healthy dependants may start
@@ -80,12 +89,28 @@ result (`lifecycle_hooks`), all generated from one table
 (`stems_config::lifecycle::HOOKS`), so they cannot drift. Every other name
 under `scripts:` is a custom script.
 
+### `build` in the start sequence (`when`)
+
+`build` runs on demand by default (`stems build`, `restart --build`, watch
+`rebuild`). `when:` on a `build` script (and nowhere else) changes that:
+
+| `when` | `build` also runs |
+|---|---|
+| `on_demand` (default) | never in a start |
+| `changed` | in every start, after `setup` and before `pre_start`, when its stamp (text, `inputs`, `stamp_env`; key `build`, listed by `stems stamps`) is missing or changed |
+| `always` | in every start, after `setup` and before `pre_start` |
+
+Never on a policy respawn. A failure is `SCRIPT_FAILED` and the stem does not
+start, unless the script is `soft_fail`. `stems build` and `restart --build`
+run it regardless of `when` (a successful `stems build` of a `changed` script
+records its stamp).
+
 ## Environment (FR-SC-3)
 
 A stem script gets the stem's resolved environment
-([lifecycle.md](lifecycle.md#a-stems-environment-fr-st-4): daemon env minus
-`STEMS_*`, `PORT`, workspace and stem `env`, `env_files`,
-`stems.local.yaml`, `--pass-env`) plus:
+([lifecycle.md](lifecycle.md#a-stems-environment-fr-st-4): the environment
+of the `stems` command that ran it, minus `STEMS_*`, then `PORT`, workspace
+and stem `env`, `env_files`, `stems.local.yaml`, `--pass-env`) plus:
 
 | Variable | Value |
 |---|---|
@@ -96,12 +121,40 @@ A stem script gets the stem's resolved environment
 | `STEMS_STATE_DIR` | `$STEMS_HOME/<ws-hash>/stems/<stem>/`, created before the script runs: the place for venvs, caches, build output — never the codebase |
 | `STEMS_SCRIPT` | the script's name (`setup`, `seed`, …) |
 | `STEMS_<DEP>_PORT` | the primary host port of each dependency (`shop-api` → `STEMS_SHOP_API_PORT`) |
+| `PORT_<NAME>` | each explicitly named port of the stem itself (`{name: metrics, port: 9100}` → `PORT_METRICS`); `PORT` stays the primary |
+| `STEMS_<DEP>_PORT_<NAME>` | each explicitly named port of each dependency (`shop-api`'s `http` → `STEMS_SHOP_API_PORT_HTTP`); see [ports.md](ports.md) |
+| `STEMS_<DEP>_CODEBASE` | the codebase directory (absolute) of each dependency that has one (`shop-api` → `STEMS_SHOP_API_CODEBASE`): no need to read `stems show --json` for a sibling repo's path |
 | `STEMS_<DEP>_OUTPUT_<X>` | each evaluated output `X` of each dependency (`shop-api`'s `TOKEN` → `STEMS_SHOP_API_OUTPUT_TOKEN`; see [config.md](config.md#outputs-fr-st-6)) |
 | `PORT` | the stem's own primary host port (when it declares ports) |
 
-Workspace scripts get the daemon's environment (minus `STEMS_*`), workspace
+Workspace scripts get the caller's environment (minus `STEMS_*`), workspace
 `env`, `--pass-env`, `STEMS_WORKSPACE`, `STEMS_RUN_ID`, `STEMS_SCRIPT` and
 `STEMS_STATE_DIR` = `$STEMS_HOME/<ws-hash>/workspace/`.
+
+**Whose environment.** The base layer is the environment of the `stems`
+command that asked: `FOO=1 stems run api seed` sees `FOO=1` even if the
+daemon was started from another shell. The scripts of a start (`setup`,
+`pre_start`, `post_start`, `seed`, the stop hooks) get the environment of
+the `stems up`/`start`/`restart` that started the stem; a restart stems
+performs on its own keeps that one. `stems run` on a running stem gets your
+environment under what stems set at the stem's start. Without one (TUI,
+MCP) it is the daemon's.
+
+**`inherit_env: false`.** A script with
+
+```yaml
+scripts:
+  setup:
+    command: ./scripts/setup.sh
+    inherit_env: false
+```
+
+gets only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `TERM`,
+`LANG` and `LC_*` of that base layer, then everything stems sets (`PORT`,
+`env`, `env_files`, local env, `--pass-env`, `STEMS_*`): a reproducible
+`setup`/`build` that does not depend on what happens to be exported in your
+shell. `stems scripts --json` shows `inherit_env` per script; `stems exec
+--fresh` is the same for an ad-hoc command.
 
 Arguments given with `stems run` are the positional parameters `$1…`; for
 inline commands `$0` is the script's name. Scripts with an `args` schema
@@ -187,6 +240,9 @@ scripts:                                   # workspace
     file: scripts/nuke.sh
     description: Drop and recreate all local databases
     requires: [postgres]                   # must be healthy first
+  restore-snapshot:
+    file: scripts/restore.sh
+    requires_stopped: [shop-api]           # must not run meanwhile
 stems:
   shop-api:
     scripts:
@@ -205,6 +261,7 @@ stems:
 stems run shop-api create-test-user -- --email a@b.c --role user
 stems run shop-api create-test-user --json -- --email a@b.c
 stems run --ws nuke-databases --start-deps
+stems run --ws restore-snapshot --stop-deps
 stems scripts [stem] [--json]
 ```
 
@@ -249,6 +306,21 @@ script runs. If one is not: `SCRIPT_REQUIRES_UNMET` (exit 1) with `details:
 them first (like `stems start`, dependencies included) and runs the script
 once they are healthy.
 
+### `requires_stopped`
+
+`requires_stopped: [shop-api, worker]` is the opposite: stems that must
+**not** run while the script does (a restore, a schema rewrite, a cleanup of
+files a running stem holds open). `stopped`, `failed` and `disabled` count
+as not running. If one runs: `SCRIPT_REQUIRES_UNMET` (exit 1) with
+`details: {requires_stopped, unmet_stopped: [{stem, state}]}` — or, with
+`--stop-deps`, stems stops them first (like `stems stop`: a stem with
+running dependants is refused with `HAS_DEPENDANTS`, reported in
+`details.stop_error`; stop them too, or `stems stop --cascade`). Both keys
+can be combined; the stops happen first, and `--start-deps` only starts
+`requires` once every `requires_stopped` stem is down. A script checking a
+state itself can use `stems status --expect stopped shop-api` (exit 0 or 1,
+see [lifecycle.md](lifecycle.md#checking-states-in-scripts-status---expect)).
+
 ### When the stem is starting, and concurrency
 
 * A stem script run while its stem is in its start sequence (`setup`,
@@ -284,7 +356,8 @@ and `stems logs <stem> --script <name> -f`.
 `stems scripts [stem] [--json]` lists every runnable script — workspace
 scripts first, then each enabled stem's, sorted by name — as a table
 (`STEM SCRIPT KIND DESCRIPTION ARGS`, with a `lifecycle hooks: …` footer)
-or as `data: {scripts: [{stem, name, description, args, requires, kind:
+or as `data: {scripts: [{stem, name, description, args, requires,
+requires_stopped, kind:
 lifecycle|custom, timeout, retries, concurrent, mcp_tool, input_schema}],
 lifecycle_hooks: [names]}`. `stems scripts --lifecycle` lists the hooks
 themselves ([above](#the-lifecycle-order)). It reads the config locally and
@@ -312,6 +385,7 @@ Default: no timeout. A custom `stop` script is always bounded by the stem's
 | `build` | `SCRIPT_FAILED`; `restart --build` then starts nothing |
 | `reset` | `SCRIPT_FAILED` for that stem; its stamps are kept |
 | `teardown` | reported in `down`'s `failed` as stem `_workspace`; the daemon still stops |
+| any of `setup`, `seed`, `pre_start`, `post_start`, `build`, `bootstrap` with `soft_fail: true` | nothing fails: the sequence goes on, nothing is stamped, the stem is degraded ([below](#partial-installs-soft_fail)) |
 
 Every `SETUP_FAILED` / `SCRIPT_FAILED` has `details: { stem, script, exit,
 signal, duration_ms, timed_out, reason: "exit" | "timeout" | "cancelled",
@@ -320,10 +394,67 @@ tail }`, `tail` being the script's last 20 output lines.
 A stop that arrives while `setup`, `pre_start`, `post_start` or `seed` runs
 kills the script and the stop proceeds at once.
 
+### Partial installs (`soft_fail`)
+
+The contract is **exit 0 = done** (a `setup`/`seed` is then stamped) and
+**non-zero = not done**. A script that decides to skip work it cannot do
+(a missing tool, an optional download) should say so with a non-zero exit,
+never `exit 0` — otherwise the skipped install is stamped as complete and
+not retried until its inputs change. `soft_fail: true` decides what "not
+done" costs:
+
+```sh
+# scripts/api/setup.sh
+if ! command -v poetry >/dev/null; then echo "poetry missing; skipping"; exit 1; fi
+poetry install
+```
+
+```yaml
+stems:
+  api:
+    scripts:
+      setup: { file: scripts/api/setup.sh, soft_fail: true }
+```
+
+A soft failure (non-zero exit or timeout, after `retries`):
+
+* does not stop anything: `setup → pre_start → start…` goes on (a soft
+  `bootstrap` lets `up` go on);
+* records **no stamp**, so the script runs again on the stem's next start
+  or restart (`stems start`/`restart`, or an `up` after it was stopped; an
+  `up` that finds the stem already running leaves it alone);
+* leaves the stem `healthy` but **degraded** (`!`, reason `setup exited 1
+  (soft_fail)`) with `status.warnings: [{script, exit, signal, timed_out,
+  tail (≤ 10 lines), at}]`; `status -v` prints the warning and its tail.
+  The warning lasts for this run of the stem: a stop clears it, a restart
+  re-runs the script and decides again;
+* emits `stem.degraded {script, exit, signal, timed_out}` and
+  `script.finished` with `soft: true`; no desktop notification (degraded is
+  not failed);
+* is listed in `up`/`start`/`restart`'s `data.degraded: [{stem, script,
+  exit, timed_out?}]` (`_workspace` for `bootstrap`); the exit code stays
+  **0** when every stem is ready. Human `up` prints `! api: setup exited 1
+  (soft_fail, retried on the next start or restart)` (`timed out` instead
+  of `exited N` for a timeout).
+
+A soft-failed `seed` leaves `seeded: false`: `condition: seeded` dependants
+(and their own dependants) are not started and appear in `skipped` with
+`skipped_reasons: {<stem>: "seed_degraded"}`; that `up` is partial (exit
+3). A soft `build` lets `restart --build` start the stem anyway (`stems
+build` itself still reports it in `failed`). A `build` warning belongs to
+the `restart --build` that ran it: the next start without a build clears
+it, and so does a later successful `stems build`.
+
+`soft_fail` is accepted on `setup`, `seed`, `pre_start`, `post_start`,
+`build` and the workspace `bootstrap`; anywhere else it is `SCHEMA_INVALID`
+(stop hooks never block a stop anyway). `stems run api setup` of a
+`soft_fail` script that fails still fails (`ok: false`, `soft: true`, exit
+1): the softness is for the lifecycle, not for an explicit run.
+
 ## Events and state
 
 * `script.started {script, actor, args}` and `script.finished {script, exit,
-  signal, duration_ms, timed_out, cancelled, ok}`, with `stem` set for stem
+  signal, duration_ms, timed_out, cancelled, ok, soft?}`, with `stem` set for stem
   scripts; `stems run` adds `run_id` and `attempt` (one pair per attempt).
 * `script.queued {script, run_id, actor, reason}`: a `stems run` waits for
   another script of the same stem.
@@ -344,3 +475,5 @@ kills the script and the stop proceeds at once.
   `backoff:` is not configurable yet.
 * The TUI menu (30) and the MCP tools (31) build on `script_catalog` and
   `run_script`.
+
+See also: [Lifecycle](lifecycle.md) · [Overlays](overlays.md) · [Exec and env](exec.md) · [What stems can do](features.md)

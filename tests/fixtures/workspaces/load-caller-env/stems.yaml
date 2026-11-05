@@ -1,0 +1,16 @@
+# load-caller-env — fixture for run/load-caller-env.feature (FR-ST-4),
+# deliverable 49: `${env.X}` is substituted with the environment of the
+# `stems` command whose request (re)loads the config, not the daemon's.
+schema_version: 1
+name: load-caller-env
+
+stems:
+  api:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    env: { T: "${env.TOKEN}" }
+    ports: [{ name: http, port: 18821 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts:
+      start: exec python3 app.py

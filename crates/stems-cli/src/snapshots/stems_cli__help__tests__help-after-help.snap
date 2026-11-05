@@ -1,8 +1,14 @@
 ---
 source: crates/stems-cli/src/help.rs
-assertion_line: 64
+assertion_line: 405
 expression: after_help()
 ---
+Where to look:
+  stems features [<area>]   everything stems can do, by area, with commands, config keys
+                            and docs (`--json` for agents; docs/features.md)
+  stems docs [<topic>]      list the reference pages, or print one
+  stems <command> --help    the details; ends with related commands and docs
+
 Lifecycle hooks (fixed `scripts:` names stems runs itself): setup, pre_start, start, health, post_start, seed, pre_stop, stop, post_stop, build, reset; workspace: bootstrap, teardown.
 Any other script name is a custom script (`stems run`). `stems scripts --lifecycle`
 lists every hook with when it runs and who defines it.

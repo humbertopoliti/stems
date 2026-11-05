@@ -155,3 +155,5 @@ MCP clients see them like any other event.
   unattended`): a later option; the default would stay "always".
 - Clickable actions (open the logs): needs an app bundle, not `osascript`.
 - Windows: stems is Unix-only.
+
+See also: [Restart policies](restart.md) · [Health](health.md) · [Logs](logs.md) · [What stems can do](features.md)

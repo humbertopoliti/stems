@@ -219,6 +219,7 @@ pub fn render_mermaid(layout: &Layout, opts: &RenderOptions<'_>) -> String {
             Glyph::Stopped => "#9e9e9e",
             Glyph::Unknown => "#8e24aa",
             Glyph::Transitioning => "#00838f",
+            Glyph::Disabled => "#9e9e9e,stroke-dasharray:4 4",
         };
         let _ = writeln!(
             out,

@@ -1,0 +1,17 @@
+---
+source: crates/stems-cli/src/help.rs
+assertion_line: 495
+expression: "features_text(Some(\"repos\"))"
+---
+Code from git (stems features repos)
+  Git codebases — A `codebase:` can be a git URL: stems clones and fetches it; `stems repos
+    status` shows where each one is.
+    commands: stems repos sync, stems repos status
+    config:   repos_dir, stems.*.codebase
+    docs:     docs/repos.md
+  Checking out a ref — `stems repos checkout <stem> <ref>` switches a stem's codebase to a branch,
+    tag or commit.
+    commands: stems repos checkout
+    docs:     docs/repos.md
+
+`stems features <area>` narrows the list, `--json` gives the table, `stems docs <topic>` prints a page.

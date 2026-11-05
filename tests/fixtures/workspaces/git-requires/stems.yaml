@@ -1,0 +1,21 @@
+# git-requires — per-stem `requires: { from: … }` in a git codebase that is
+# not cloned yet (deliverable 40; tests/features/repos/requires-uncloned.feature).
+#
+# `app` is a git codebase; the scenario makes a bare repo from ./repo (which
+# has `.frob-version` 1.2.3) and points `codebase.git` at it through a
+# stems.local.yaml override. Before `up` clones it the `from:` entry cannot be
+# read, so `validate` warns `REQUIRES_NOT_CHECKED` and `doctor` reports `warn`.
+schema_version: 1
+name: git-requires
+
+stems:
+  app:
+    type: process
+    codebase: { git: "file:///nonexistent/repo.git", ref: main }
+    ports: [{ name: http, port: 18645 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts:
+      start: exec python3 -m http.server ${stem.self.port} --bind 127.0.0.1
+    requires:
+      frob: { from: .frob-version }

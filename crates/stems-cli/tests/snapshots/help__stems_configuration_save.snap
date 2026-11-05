@@ -19,7 +19,7 @@ Options:
           Overwrite an existing file or file-form configuration of that name
 
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -48,3 +48,6 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems configuration list`, `stems configuration use`; docs/config.md#configurations;
+`stems features config`.

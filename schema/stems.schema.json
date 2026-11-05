@@ -44,6 +44,14 @@
       },
       "default": {}
     },
+    "checks": {
+      "description": "User-defined checks run by `stems doctor` and before `stems up`\n(workspace root as the working directory).",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/RawCheck"
+      },
+      "default": {}
+    },
     "profiles": {
       "description": "Named subsets of stems.",
       "type": "object",
@@ -122,6 +130,25 @@
       "anyOf": [
         {
           "$ref": "#/$defs/Notifications"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "secrets": {
+      "description": "Env names whose values are secret (47): redacted in `stems show`,\n`stems env`, `status -v`, the MCP server and `logs --export`, and\nscrubbed from log lines. Adds to the built-in name patterns; an entry\nprefixed `!` (`\"!PUBLIC_KEY\"`) is an exception that is never redacted.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "redaction": {
+      "description": "Adjust the built-in secret name patterns (47).",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Redaction"
         },
         {
           "type": "null"
@@ -228,12 +255,26 @@
       ]
     },
     "RequirementSpec": {
-      "description": "Long form of a [`Requirement`].",
+      "description": "Long form of a [`Requirement`]. Exactly one of `version` and `from` is\nset (checked by `validate`).",
       "type": "object",
       "properties": {
         "version": {
           "description": "Version range, e.g. `\">=1.2 <2\"`.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "from": {
+          "description": "Read the range from a file of the codebase (the workspace root for a\nworkspace-level entry): `.nvmrc`, `.tool-versions`,\n`package.json#packageManager`, `go.mod`, `file.toml#a.b`. A list uses\nthe first file that exists.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StringOrList"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "command": {
           "description": "Shell command printing the version; default `<tool> --version`.",
@@ -250,9 +291,129 @@
           ]
         }
       },
+      "additionalProperties": false
+    },
+    "StringOrList": {
+      "description": "A command given either as one shell string or as an argv list.",
+      "anyOf": [
+        {
+          "description": "`\"npm run dev\"`",
+          "type": "string"
+        },
+        {
+          "description": "`[\"npm\", \"run\", \"dev\"]`",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "RawCheck": {
+      "description": "A user-defined check (`checks.<name>`): a shell command, exit 0 = ok.",
+      "type": "object",
+      "properties": {
+        "command": {
+          "description": "Shell command; exit 0 means the check passes.",
+          "type": "string"
+        },
+        "message": {
+          "description": "Shown when the check fails (default: `check failed`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hint": {
+          "description": "What to do about a failure.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "severity": {
+          "description": "`fail` (default) or `warn`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CheckSeverity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "timeout": {
+          "description": "Kill the command after this long (default `2s`, max `30s`).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fix": {
+          "description": "Shell command `stems doctor --fix` runs to repair a failure.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "when": {
+          "description": "Where it runs: any of `doctor`, `up`, `validate` (default\n`[doctor, up]`).",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/CheckWhen"
+          }
+        }
+      },
       "additionalProperties": false,
       "required": [
-        "version"
+        "command"
+      ]
+    },
+    "CheckSeverity": {
+      "description": "How a failing custom check counts (`checks.<name>.severity`).",
+      "oneOf": [
+        {
+          "description": "A failure: `doctor` exits 1 and `stems up` aborts (default).",
+          "type": "string",
+          "const": "fail"
+        },
+        {
+          "description": "A warning: reported, never blocks.",
+          "type": "string",
+          "const": "warn"
+        }
+      ]
+    },
+    "Duration": {
+      "description": "A duration such as `200ms`, `2s`, `1m` or `1m 30s`.",
+      "type": "string",
+      "pattern": "^\\s*([0-9]+\\s*[a-zA-Z]+\\s*)+$|^0$"
+    },
+    "CheckWhen": {
+      "description": "Where a custom check runs (`checks.<name>.when`).",
+      "oneOf": [
+        {
+          "description": "`stems doctor`.",
+          "type": "string",
+          "const": "doctor"
+        },
+        {
+          "description": "Before `stems up` starts anything.",
+          "type": "string",
+          "const": "up"
+        },
+        {
+          "description": "`stems validate` (opt-in).",
+          "type": "string",
+          "const": "validate"
+        }
       ]
     },
     "Profile": {
@@ -379,11 +540,6 @@
       },
       "additionalProperties": false
     },
-    "Duration": {
-      "description": "A duration such as `200ms`, `2s`, `1m` or `1m 30s`.",
-      "type": "string",
-      "pattern": "^\\s*([0-9]+\\s*[a-zA-Z]+\\s*)+$|^0$"
-    },
     "ConfigSettings": {
       "description": "`config:` block (33).",
       "type": "object",
@@ -477,6 +633,30 @@
       },
       "additionalProperties": false
     },
+    "Redaction": {
+      "description": "`redaction:` block (47): which env names count as secret.",
+      "type": "object",
+      "properties": {
+        "patterns": {
+          "description": "Extra name globs (case-insensitive, `*` and `?`), e.g. `\"*_DSN\"`.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "builtin": {
+          "description": "Keep the built-in patterns (`*TOKEN*`, `*SECRET*`, `*PASSWORD*`,\n`*PASSWD*`, `*CREDENTIAL*`, `*_KEY`, `*_KEY_*`, `*APIKEY*`);\ndefault `true`.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "Script": {
       "description": "A script: an inline shell string or a full spec.",
       "anyOf": [
@@ -545,6 +725,16 @@
             "type": "string"
           }
         },
+        "requires_stopped": {
+          "description": "Stems that must be stopped (or failed) before this script runs\n(`stems run --stop-deps` stops them first).",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
         "timeout": {
           "description": "Kill the script after this long.",
           "anyOf": [
@@ -564,6 +754,24 @@
           ],
           "format": "uint32",
           "minimum": 0
+        },
+        "soft_fail": {
+          "description": "A failure (after retries) does not fail the stem or `up`: the stem\nis degraded, nothing is stamped, the script runs again next time.\nOnly for `setup`, `seed`, `pre_start`, `post_start`, `build` and\nworkspace `bootstrap`.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "when": {
+          "description": "`build` only: `on_demand` (default: `stems build`, `restart --build`,\nwatch `rebuild`), `changed` (also in the start sequence after\n`setup`, when its stamp is missing or changed) or `always` (on every\nstart).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BuildWhen"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "concurrent": {
           "description": "May run concurrently with other scripts of the same stem.",
@@ -586,6 +794,13 @@
           "description": "Working directory (relative to the codebase).",
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "inherit_env": {
+          "description": "Inherit the environment of the `stems` command (default true).\n`false`: only `PATH HOME USER LOGNAME SHELL TMPDIR TERM LANG LC_*`\nof it, plus everything stems sets (`PORT`, `env`, `env_files`,\n`STEMS_*`): a reproducible `setup`/`build`.",
+          "type": [
+            "boolean",
             "null"
           ]
         }
@@ -687,6 +902,26 @@
         }
       ]
     },
+    "BuildWhen": {
+      "description": "When a stem's `build` script runs (45).",
+      "oneOf": [
+        {
+          "description": "Only on `stems build`, `restart --build` and watch `rebuild` (default).",
+          "type": "string",
+          "const": "on_demand"
+        },
+        {
+          "description": "In the start sequence (after `setup`, before `pre_start`) when its\nstamp is missing or changed.",
+          "type": "string",
+          "const": "changed"
+        },
+        {
+          "description": "In the start sequence on every start (never on a policy respawn).",
+          "type": "string",
+          "const": "always"
+        }
+      ]
+    },
     "Configuration": {
       "description": "One entry of `configurations:`: an inline overlay (the shape of\n`stems.local.yaml`) or the path of a YAML file holding one.",
       "anyOf": [
@@ -741,10 +976,14 @@
           ]
         },
         "enabled": {
-          "description": "`false` keeps the stem listed but excludes it from runs.",
-          "type": [
-            "boolean",
-            "null"
+          "description": "`false` keeps the stem listed but excludes it from runs. A bool, or a\nstring rendered by substitution (46): `true|1|yes|on` /\n`false|0|no|off|\"\"` (case-insensitive), e.g. `\"${env.WITH_SEARCH}\"`\n(an unset variable counts as false here).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Enabled"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "env": {
@@ -756,13 +995,13 @@
           "default": {}
         },
         "env_files": {
-          "description": "Env files (relative to the workspace root), applied after `env`.",
+          "description": "Env files (relative to the workspace root), applied after `env`\n(their values win): a path, or `{path, required: false}` for a file\nthat may be absent.",
           "type": [
             "array",
             "null"
           ],
           "items": {
-            "type": "string"
+            "$ref": "#/$defs/EnvFile"
           }
         },
         "ports": {
@@ -864,6 +1103,16 @@
             "type": "string"
           }
         },
+        "secrets": {
+          "description": "Env names of this stem whose values are secret (47), on top of the\nworkspace's `secrets` and the built-in patterns; `!NAME` is an\nexception (never redacted). See the workspace `secrets`.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
         "stop_grace": {
           "description": "Time between SIGTERM and SIGKILL.",
           "anyOf": [
@@ -874,6 +1123,22 @@
               "type": "null"
             }
           ]
+        },
+        "requires": {
+          "description": "Tool version requirements checked for this stem (when enabled), with\nits codebase as the directory for `from:` lookups.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Requirement"
+          },
+          "default": {}
+        },
+        "checks": {
+          "description": "User-defined checks of this stem (while enabled), run in its codebase.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/RawCheck"
+          },
+          "default": {}
         },
         "variant": {
           "description": "Active variant (FR-ST-8): the name of one of `variants`, or `local`\n(the base definition, same as leaving it unset). Usually set in\n`stems.local.yaml`, e.g. by `stems switch <stem> <variant>`.",
@@ -888,6 +1153,13 @@
           "additionalProperties": {
             "$ref": "#/$defs/Stem"
           }
+        },
+        "inherit": {
+          "description": "(variants only) `false`: the variant does not inherit the base\ndefinition; it is merged over an empty stem (only `enabled` and the\nselection are kept), so it must be complete, `type` included.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "cwd": {
           "description": "(process) Working directory, relative to the codebase.",
@@ -940,7 +1212,7 @@
           ]
         },
         "build": {
-          "description": "(docker) Build instead of pulling: `{ context, dockerfile }`.\n(compose) `true` (default) / `false`: run `compose up --build`.",
+          "description": "(docker) Build instead of pulling: `{ context, dockerfile, secrets,\nallow_read }`. (compose) `true` (default) / `false`: run `compose up\n--build`; or `{ services, before_setup, secrets, allow_read }` (44).",
           "anyOf": [
             {
               "$ref": "#/$defs/Build"
@@ -1024,6 +1296,13 @@
             "boolean",
             "null"
           ]
+        },
+        "inject_env": {
+          "description": "(compose) Also put the stem's env into the service's container\n(an `env_file:` override file), not only use it for interpolation.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "additionalProperties": false
@@ -1092,6 +1371,53 @@
       "additionalProperties": false,
       "required": [
         "git"
+      ]
+    },
+    "Enabled": {
+      "description": "`stems.<n>.enabled` (46): a bool, or a string (usually a `${…}`\ntemplate) read as `true|1|yes|on` / `false|0|no|off|\"\"` once\nsubstituted. Anything else is `SCHEMA_INVALID` at resolve time.",
+      "anyOf": [
+        {
+          "description": "`true` / `false`.",
+          "type": "boolean"
+        },
+        {
+          "description": "A string such as `\"${env.WITH_SEARCH}\"`.",
+          "type": "string"
+        }
+      ]
+    },
+    "EnvFile": {
+      "description": "One `env_files:` entry: a path, or `{path, required}`.",
+      "anyOf": [
+        {
+          "description": "Path relative to the workspace root; the file must exist.",
+          "type": "string"
+        },
+        {
+          "description": "`{path, required: false}`: skipped when absent.",
+          "$ref": "#/$defs/EnvFileSpec"
+        }
+      ]
+    },
+    "EnvFileSpec": {
+      "description": "`{path, required}` form of an `env_files:` entry.",
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "Path relative to the workspace root.",
+          "type": "string"
+        },
+        "required": {
+          "description": "`false`: an absent file is skipped (default `true`: absent is\n`ENV_FILE_NOT_FOUND`).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "path"
       ]
     },
     "Port": {
@@ -1227,6 +1553,17 @@
             "string",
             "null"
           ]
+        },
+        "if_disabled": {
+          "description": "When the target is disabled (hard edges only, 46, 51): `start`\n(default) starts this stem without it; `skip` skips this stem on\n`up`/`start`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/IfDisabled"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false,
@@ -1276,6 +1613,21 @@
           "description": "Raw TCP.",
           "type": "string",
           "const": "tcp"
+        }
+      ]
+    },
+    "IfDisabled": {
+      "description": "What a hard `depends_on` edge does when its target is disabled (46, 51).",
+      "oneOf": [
+        {
+          "description": "The dependant is skipped by `up`/`start` (`dependency_disabled:<dep>`),\nand so are its own hard dependants.",
+          "type": "string",
+          "const": "skip"
+        },
+        {
+          "description": "The dependant starts without it (the default): the edge is dropped.",
+          "type": "string",
+          "const": "start"
         }
       ]
     },
@@ -1849,22 +2201,6 @@
         }
       ]
     },
-    "StringOrList": {
-      "description": "A command given either as one shell string or as an argv list.",
-      "anyOf": [
-        {
-          "description": "`\"npm run dev\"`",
-          "type": "string"
-        },
-        {
-          "description": "`[\"npm\", \"run\", \"dev\"]`",
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        }
-      ]
-    },
     "PullPolicy": {
       "description": "When a docker stem's `image` is pulled.",
       "oneOf": [
@@ -1886,38 +2222,103 @@
       ]
     },
     "Build": {
-      "description": "`stems.<n>.build`: a bool on a compose stem (rebuild the service's\nimage on every start), an object on a docker stem (what to build).\nWhich form a stem type accepts is checked at resolve time\n(`SCHEMA_INVALID` at `stems.<n>.build`).",
+      "description": "`stems.<n>.build`: a bool on a compose stem (rebuild the service's\nimage on every start), an object on a docker stem (what to build) or on\na compose stem (which services, when, with which secrets: 44). Which\nform and which keys a stem type accepts is checked at resolve time\n(`SCHEMA_INVALID` at `stems.<n>.build`).",
       "anyOf": [
         {
           "description": "(compose) Rebuild on every start (`true`, the default) or never\n(`false`).",
           "type": "boolean"
         },
         {
-          "description": "(docker) Build settings.",
-          "$ref": "#/$defs/DockerBuild"
+          "description": "Build settings (docker: `context`, `dockerfile`; compose:\n`services`; both: `before_setup`, `secrets`, `allow_read`).",
+          "$ref": "#/$defs/BuildSpec"
         }
       ]
     },
-    "DockerBuild": {
-      "description": "Docker build settings.",
+    "BuildSpec": {
+      "description": "Build settings of a docker stem (`context`, `dockerfile`) or a compose\nstem (`services`); `before_setup`, `secrets` and `allow_read` apply to\nboth (44, 51).",
       "type": "object",
       "properties": {
         "context": {
-          "description": "Build context (relative to the codebase, else the workspace root).",
+          "description": "(docker) Build context (relative to the codebase, else the workspace\nroot).",
           "type": [
             "string",
             "null"
           ]
         },
         "dockerfile": {
-          "description": "Dockerfile, relative to the context.",
+          "description": "(docker) Dockerfile, relative to the context; may live outside it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "services": {
+          "description": "(compose) Services whose images are built (default: the stem's\n`service`); list extra one-shot services (e.g. `migrate`) here.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "before_setup": {
+          "description": "Build the image(s) before `setup` (default `false`: at start);\n`setup` and `pre_start` then get `STEMS_IMAGE` (compose: also\n`STEMS_IMAGES`). Docker and compose stems only.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "secrets": {
+          "description": "BuildKit secrets (`RUN --mount=type=secret,id=…`): `{id, file}` or\n`{id, env}`. Never a build arg, never in a layer.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/BuildSecret"
+          }
+        },
+        "allow_read": {
+          "description": "Exact absolute paths outside the build context the build may read\n(Bake's `fs.read` entitlement). No globs, no symlinks. The context,\nthe Dockerfile's directory and secret files are granted already.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "BuildSecret": {
+      "description": "One BuildKit secret: `id` plus exactly one of `file` and `env`.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "The id the Dockerfile mounts (`--mount=type=secret,id=<id>`).",
+          "type": "string"
+        },
+        "file": {
+          "description": "A file holding the secret (e.g. a credentials JSON).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "env": {
+          "description": "An environment variable holding the secret.",
           "type": [
             "string",
             "null"
           ]
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "required": [
+        "id"
+      ]
     },
     "DockerHealthcheck": {
       "description": "Docker healthcheck override.",

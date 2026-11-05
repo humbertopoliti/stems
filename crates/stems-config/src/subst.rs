@@ -94,6 +94,12 @@ pub struct Substituter<'a> {
     pub diagnostics: Vec<Diagnostic>,
     /// Deferred references.
     pub deferred: Vec<DeferredRef>,
+    /// String `enabled:` values (46) by stem: as written, with the unset
+    /// `${env.X}` they named.
+    pub enabled: IndexMap<String, crate::model::EnabledTemplate>,
+    /// While expanding an `enabled:` string: unset `${env.X}` read as empty
+    /// and collected here instead of being `UNRESOLVED_VARIABLE`.
+    lenient_env: Option<Vec<String>>,
 }
 
 impl<'a> Substituter<'a> {
@@ -115,7 +121,29 @@ impl<'a> Substituter<'a> {
             failures: 0,
             diagnostics: Vec::new(),
             deferred: Vec::new(),
+            enabled: IndexMap::new(),
+            lenient_env: None,
         }
+    }
+
+    /// Expand a stem's string `enabled:` (46): like [`Self::expand`], but
+    /// an unset `${env.X}` is empty (so false) instead of
+    /// `UNRESOLVED_VARIABLE`. Records the text and the unset variables in
+    /// [`Self::enabled`] under `scope.stem`.
+    pub fn expand_enabled(&mut self, s: &str, scope: &Scope, path: &ConfigPath) -> String {
+        self.lenient_env = Some(Vec::new());
+        let out = self.expand(s, scope, path);
+        let unset = self.lenient_env.take().unwrap_or_default();
+        if let Some(stem) = &scope.stem {
+            self.enabled.insert(
+                stem.clone(),
+                crate::model::EnabledTemplate {
+                    text: s.to_string(),
+                    unset,
+                },
+            );
+        }
+        out
     }
 
     /// Resolve every variable. Failed ones keep their raw text.
@@ -303,6 +331,14 @@ impl<'a> Substituter<'a> {
         if let Some(name) = expr.strip_prefix("env.") {
             return match self.env.get(name) {
                 Some(v) => Piece::Value(v.clone()),
+                None if self.lenient_env.is_some() => {
+                    if let Some(u) = self.lenient_env.as_mut()
+                        && !u.iter().any(|x| x == name)
+                    {
+                        u.push(name.to_string());
+                    }
+                    Piece::Value(String::new())
+                }
                 None => err(
                     format!("environment variable `{name}` is not set"),
                     "export it before running stems, or use a `vars:` entry",

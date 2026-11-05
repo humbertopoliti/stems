@@ -4,6 +4,7 @@
 //! |---|---|
 //! | `daemon` (stale lock / socket) | remove the lock file (only while it is still stale) and a socket nobody listens on |
 //! | `overlays.<stem>` (stale) | under the workspace lock (so no daemon starts meanwhile): delete each unchanged file, leave modified ones in place, forget the records |
+//! | `check.*` (user-defined `checks:` with `fix:`) | run the `fix` command |
 //! | `orphans` | kill processes that look like their stem's start command (`kill_foreign`: every process orphan) and remove stems-labelled containers |
 //!
 //! Everything else (ports held by foreign processes, tool versions, Docker)
@@ -60,7 +61,59 @@ pub async fn apply(
     if ids.iter().any(|i| i == "orphans") {
         fix_orphans(cx, opts, &mut out).await;
     }
+    for id in ids.iter().filter(|i| i.starts_with("check.")) {
+        fix_custom_check(cx, id, &mut out).await;
+    }
     out
+}
+
+/// `check.<name>` / `check.<stem>.<name>`: run the entry's `fix` command.
+async fn fix_custom_check(cx: &DoctorCtx, id: &str, out: &mut Vec<FixOutcome>) {
+    let Some(ws) = cx.workspace() else { return };
+    let Some(entry) = stems_core::checks::entries(ws, stems_config::CheckWhen::Doctor)
+        .into_iter()
+        .find(|e| e.id() == id)
+    else {
+        return;
+    };
+    let (command, timeout, dir, env) = (
+        entry.spec.fix.clone().unwrap_or_default(),
+        entry.spec.timeout.as_duration(),
+        entry.dir.clone(),
+        entry.env.clone(),
+    );
+    if command.is_empty() {
+        return;
+    }
+    let run = tokio::task::spawn_blocking(move || {
+        stems_core::tools::run_check_command(&command, timeout, &dir, &env)
+    })
+    .await;
+    out.push(match run {
+        Ok(r) if r.passed() => outcome(id, "run_fix", true, "ran the fix command"),
+        Ok(r) if r.timed_out => outcome(
+            id,
+            "run_fix",
+            false,
+            format!("the fix command timed out after {}s", timeout.as_secs_f64()),
+        ),
+        Ok(r) => outcome(
+            id,
+            "run_fix",
+            false,
+            format!(
+                "the fix command exited with {}: {}",
+                r.exit.map_or("a signal".into(), |c| c.to_string()),
+                r.tail.lines().last().unwrap_or("")
+            ),
+        ),
+        Err(e) => outcome(
+            id,
+            "run_fix",
+            false,
+            format!("the fix command panicked: {e}"),
+        ),
+    });
 }
 
 fn fix_daemon(cx: &DoctorCtx, out: &mut Vec<FixOutcome>) {

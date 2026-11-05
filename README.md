@@ -122,6 +122,9 @@ The full tool catalogue, schemas and limits: [`docs/mcp.md`](docs/mcp.md).
 - **Automation-friendly:** `--json` on every command, a documented
   [daemon protocol](docs/protocol.md), and the [MCP server](#built-for-ai-agents-stems-mcp).
 
+The full list, with the command and config keys of each, is
+[What stems can do](docs/features.md) (`stems features` in the terminal).
+
 ## Install
 
 macOS (Apple Silicon and Intel), with Homebrew:
@@ -197,23 +200,34 @@ from the smallest to one that uses every feature, are in
 | `stems logs [stem] -f` | Follow logs, merged or per stem |
 | `stems events` | The structured event log |
 | `stems graph` | The dependency graph |
+| `stems ports` | Every stem's host ports and the variables that address them ([ports](docs/ports.md)) |
 | `stems run <stem> <script>` | Run a stem's script (`--ws` for a workspace script) |
 | `stems exec` / `stems shell <stem>` | Run a command or open a shell in a stem's environment |
+| `stems env <stem>` | Print what stems sets for a stem (`dotenv`, `shell` for `eval`, `--json`; secret outputs redacted) ([exec](docs/exec.md)) |
+| `stems compose <stem> [--service] -- <args…>` | Run `docker compose` with a compose stem's file, project and env ([compose](docs/compose.md)) |
 | `stems pull [stems…] [--restart]` | Pull docker stems' images now (any registry, your `docker login` credentials) |
 | `stems doctor` | Diagnose the machine and the workspace |
 | `stems mcp` | Serve the workspace to MCP clients |
+| `stems features [<area>]` | Everything stems can do, by area, with commands, config keys and docs ([features](docs/features.md)) |
+| `stems docs [<topic>]` | List the documentation pages, or print one (embedded in the binary) |
 
-Every command takes `--json`. The full reference is
+Every command takes `--json`, and every `stems <command> --help` ends with a
+"See also" line (related commands and docs). The full reference is
 [`docs/cli.md`](docs/cli.md).
 
 ## Documentation
 
+**[What stems can do](docs/features.md)** is the index of every capability:
+what it does, its commands, its `stems.yaml` keys and its reference page
+(`stems features` prints the same in the terminal). All pages, grouped:
+[`docs/README.md`](docs/README.md).
+
 | Topic | Pages |
 |---|---|
-| **Start here** | [Getting started: onboard your system](docs/getting-started.md) · [Install](docs/install.md) · [Configuration](docs/config.md) |
+| **Start here** | [What stems can do](docs/features.md) · [Getting started: onboard your system](docs/getting-started.md) · [Install](docs/install.md) · [Configuration](docs/config.md) · [Ports](docs/ports.md) |
 | **Running** | [Lifecycle](docs/lifecycle.md) · [Process model](docs/process-model.md) · [Recovery](docs/recovery.md) |
 | **Supervision** | [Health checks](docs/health.md) · [Restart policies](docs/restart.md) · [Watchdogs](docs/watchdogs.md) |
-| **Workflows** | [Scripts](docs/scripts.md) · [Overlays](docs/overlays.md) · [Repositories](docs/repos.md) |
+| **Workflows** | [Scripts](docs/scripts.md) · [Running commands in a stem's context](docs/exec.md) · [Overlays](docs/overlays.md) · [Repositories](docs/repos.md) |
 | **Containers** | [Docker](docs/docker.md) · [Compose](docs/compose.md) |
 | **Observability** | [Logs](docs/logs.md) · [Metrics](docs/metrics.md) · [The dashboard](docs/tui.md) · [Desktop notifications](docs/notifications.md) · [Doctor](docs/doctor.md) |
 | **Agents & integration** | [MCP server](docs/mcp.md) · [Daemon protocol](docs/protocol.md) · [CLI reference](docs/cli.md) |

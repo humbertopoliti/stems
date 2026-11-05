@@ -1,0 +1,43 @@
+# disabled-demo — fixture for tests/features/config/disabled.feature
+# (FR-WS-8, deliverables 46 and 51).
+#
+# `search` is enabled only when WITH_SEARCH is truthy (unset = disabled).
+# `api` depends on it and on `postgres` (plain hard edges, `if_disabled:
+# start` by default): with search disabled, api starts without it. `worker`
+# has an `if_disabled: skip` edge to search: `up` skips it while search is
+# disabled. Each stem is a tiny Python HTTP server.
+schema_version: 1
+name: disabled-demo
+
+stems:
+  postgres:
+    type: process
+    ports: [{ name: http, port: 18471 }]
+    scripts:
+      start: python3 -m http.server ${stem.self.port} --bind 127.0.0.1
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+  search:
+    type: process
+    enabled: "${env.WITH_SEARCH}"
+    ports: [{ name: http, port: 18472 }]
+    scripts:
+      start: python3 -m http.server ${stem.self.port} --bind 127.0.0.1
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+  api:
+    type: process
+    depends_on: [search, postgres]
+    ports: [{ name: http, port: 18473 }]
+    scripts:
+      start: python3 -m http.server ${stem.self.port} --bind 127.0.0.1
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+  worker:
+    type: process
+    depends_on: [{ stem: search, if_disabled: skip }]
+    ports: [{ name: http, port: 18474 }]
+    scripts:
+      start: python3 -m http.server ${stem.self.port} --bind 127.0.0.1
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s

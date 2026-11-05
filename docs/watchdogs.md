@@ -205,3 +205,5 @@ notify-debouncer-full; generic, reused by the config watcher of deliverable
 33), the per-stem watcher task and the actions, plus the `watch_pause`,
 `watch_resume` and `watch_status` RPCs ([protocol.md](protocol.md)).
 Scenarios: `tests/features/watch/`.
+
+See also: [Restart policies](restart.md) · [Scripts](scripts.md) · [Config](config.md) · [What stems can do](features.md)

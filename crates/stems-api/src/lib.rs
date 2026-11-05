@@ -21,6 +21,7 @@ use stems_core::{Error, ErrorCode};
 
 #[cfg(feature = "client")]
 pub mod client;
+pub mod env;
 pub mod health;
 pub mod images;
 pub mod lifecycle;
@@ -32,6 +33,7 @@ pub mod repos;
 pub mod scripts;
 pub mod watch;
 
+pub use env::{StemEnvParams, StemEnvResult};
 pub use health::{HealthParams, HealthResult, HealthStatus, ProbeOutcome, ProbeRecord, StemHealth};
 pub use images::{PullParams, PullResult, PullSkip, PulledImage};
 pub use lifecycle::{CascadeRef, CascadeReport};
@@ -39,6 +41,7 @@ pub use lifecycle::{
     ConfigurationChoice, SwitchConfigurationParams, SwitchConfigurationResult, SwitchVariantParams,
     SwitchVariantResult, VariantChoice,
 };
+pub use lifecycle::{DegradedScript, ScriptWarning};
 pub use lifecycle::{
     DownParams, DownResult, PortStatus, RestartParams, StartParams, StatusParams, StatusResult,
     StatusSummary, StemFailure, StemStatus, StopParams, UpParams, UpResult,
@@ -52,14 +55,17 @@ pub use metrics::{
     DiskDir, DiskUsage, LimitStatus, MetricsParams, MetricsResult, MetricsSort, MetricsSummary,
     MetricsTotals, StemMetrics,
 };
-pub use overlays::{OverlayEntry, OverlayFileStatus, OverlaysParams, OverlaysResult};
+pub use overlays::{
+    OverlayEntry, OverlayFileStatus, OverlaysParams, OverlaysRenderParams, OverlaysRenderResult,
+    OverlaysResult, RenderedOverlay,
+};
 pub use reload::{
     AppliedChange, ConfigApplyParams, ConfigApplyResult, ConfigDiffParams, ConfigDiffResult,
     FailedChange, ReloadAction, ReloadPlan, SkippedChange, StemChange,
 };
 pub use repos::{
-    RepoAction, RepoSource, RepoStatus, RepoSyncResult, ReposStatusParams, ReposStatusResult,
-    ReposSyncParams, ReposSyncResult,
+    RepoAction, RepoSource, RepoStatus, RepoSyncResult, ReposCheckoutParams, ReposStatusParams,
+    ReposStatusResult, ReposSyncParams, ReposSyncResult,
 };
 pub use scripts::{
     BuildParams, BuildResult, CatalogScript, ResetParams, ResetResult, RunScriptAccepted,
@@ -204,6 +210,9 @@ string_newtype! {
         // --- overlays (18) -----------------------------------------------------
         /// Recorded overlays and their status ([`OverlaysParams`] -> [`OverlaysResult`]).
         OVERLAYS = "overlays";
+        /// Render (and unless `dry_run` write and record) a stem's overlays
+        /// now ([`OverlaysRenderParams`] -> [`OverlaysRenderResult`], 47).
+        OVERLAYS_RENDER = "overlays_render";
         // --- custom scripts (17) ------------------------------------------------
         /// Run a stem or workspace script ([`RunScriptParams`] ->
         /// [`RunScriptResult`], or [`RunScriptAccepted`] with `wait: false`).
@@ -219,6 +228,8 @@ string_newtype! {
         REPOS_SYNC = "repos_sync";
         /// Per-stem codebase state ([`ReposStatusParams`] -> [`ReposStatusResult`]).
         REPOS_STATUS = "repos_status";
+        /// Check out any ref of a git codebase ([`ReposCheckoutParams`] -> [`RepoSyncResult`]).
+        REPOS_CHECKOUT = "repos_checkout";
         // --- health (21) -------------------------------------------------------
         /// Last probe results per stem ([`HealthParams`] -> [`HealthResult`]).
         HEALTH = "health";
@@ -228,6 +239,9 @@ string_newtype! {
         // --- outputs (26) --------------------------------------------------------
         /// Evaluated stem outputs, secrets redacted ([`OutputsParams`] -> [`OutputsResult`]).
         OUTPUTS = "outputs";
+        // --- exec / env (37) -----------------------------------------------------
+        /// A stem's context for `exec`/`shell`/`env` ([`StemEnvParams`] -> [`StemEnvResult`]).
+        STEM_ENV = "stem_env";
         // --- watchdogs (24) ------------------------------------------------------
         /// Pause watchdogs, all or some stems' ([`WatchPauseParams`] -> [`WatchPauseResult`]).
         WATCH_PAUSE = "watch_pause";
@@ -287,6 +301,10 @@ string_newtype! {
         STEM_RESTARTING = "stem.restarting";
         /// A stem exhausted its restart budget.
         STEM_GAVE_UP = "stem.gave_up";
+        /// A `soft_fail` script failed (41): the stem goes on, degraded
+        /// (`data: {script, exit, signal, timed_out}`; `stem` is
+        /// `_workspace` for `bootstrap`).
+        STEM_DEGRADED = "stem.degraded";
         /// A cascading restart began (FR-LC-9; `data: {id, origin, origins,
         /// reason, stems}`, `stems` = the dependants' layers).
         CASCADE_STARTED = "cascade.started";

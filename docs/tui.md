@@ -709,3 +709,5 @@ prove it (`tests/features/tui/panic-restore.feature`, run with
   log timestamps), `the last frame contains`, `frame N contains`,
   `stdout contains the OSC 52 sequence for "<text>"` (see
   `tests/stems-e2e/STEPS.md`).
+
+See also: [Logs](logs.md) · [MCP](mcp.md) · [CLI reference](cli.md) · [What stems can do](features.md)

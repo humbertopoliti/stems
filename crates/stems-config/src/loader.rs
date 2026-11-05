@@ -73,6 +73,20 @@ pub(crate) fn yaml_error(
     d
 }
 
+/// The typed check of a file that has `null` mapping values (removal
+/// markers, see [`crate::merge::merge`]), run on the file without them.
+/// `None` if there are none. The text is re-serialised so that errors keep
+/// their config path (located through the file's spans by the caller).
+fn typed_without_nulls(value: &Value) -> Option<Result<RawWorkspace, serde_yaml_ng::Error>> {
+    if !crate::merge::has_nulls(value) {
+        return None;
+    }
+    let mut pruned = value.clone();
+    crate::merge::prune_nulls(&mut pruned);
+    let text = serde_yaml_ng::to_string(&pruned).ok()?;
+    Some(serde_yaml_ng::from_str(&text))
+}
+
 impl Loader {
     /// Load `file` with its `extends` and `include`s expanded. Errors are
     /// collected in `self.errors`; `None` means the file could not be used.
@@ -158,10 +172,19 @@ impl Loader {
         // Typed check of this file alone, for precisely located errors.
         let raw: RawWorkspace = match serde_yaml_ng::from_str(&text) {
             Ok(r) => r,
-            Err(e) => {
-                self.errors.push(yaml_error(&e, Some(&file), &local_spans));
-                return None;
-            }
+            Err(e) => match typed_without_nulls(&value) {
+                // The file only failed on `null`s, which remove keys when
+                // merged (FR-ST-8): fine.
+                Some(Ok(r)) => r,
+                Some(Err(e)) => {
+                    self.errors.push(yaml_error(&e, None, &local_spans));
+                    return None;
+                }
+                None => {
+                    self.errors.push(yaml_error(&e, Some(&file), &local_spans));
+                    return None;
+                }
+            },
         };
 
         let dir = file.parent().map(Path::to_path_buf).unwrap_or_default();

@@ -60,6 +60,14 @@ fn type_of(m: &Mapping) -> Option<&Value> {
 /// - anything else (lists, scalars, null, mapping vs non-mapping): the overlay
 ///   replaces the base; a replaced `stems.<n>.ports` list passes its
 ///   `container_port`s on by port name ([`inherit_container_ports`]).
+///
+/// A `null` overlay value **removes** the key (FR-ST-8): it is kept as a
+/// `null` marker while layers are merged, so that it also wins over the
+/// same key of a layer merged earlier into a later one (a variant defined in
+/// both `stems.yaml` and `stems.local.yaml`, a local file's includes), and
+/// [`prune_nulls`] drops every marker before the typed parse. Removed and
+/// never-set keys are therefore the same to the typed model (the default
+/// applies), and `scripts: { setup: ~ }` drops an inherited script.
 pub fn merge(base: &mut Value, mut overlay: Value, path: &ConfigPath) {
     if is_stem_ports(path) {
         inherit_container_ports(base, &mut overlay);
@@ -84,6 +92,32 @@ pub fn merge(base: &mut Value, mut overlay: Value, path: &ConfigPath) {
             }
         }
         (b, o) => *b = o,
+    }
+}
+
+/// Remove every mapping entry whose value is `null` (the removal markers
+/// [`merge`] leaves), recursively. List items are kept as they are.
+pub fn prune_nulls(v: &mut Value) {
+    match v {
+        Value::Mapping(m) => {
+            m.retain(|_, v| !v.is_null());
+            for (_, child) in m.iter_mut() {
+                prune_nulls(child);
+            }
+        }
+        Value::Sequence(items) => items.iter_mut().for_each(prune_nulls),
+        Value::Tagged(t) => prune_nulls(&mut t.value),
+        _ => {}
+    }
+}
+
+/// True if some mapping entry of `v` (at any depth) is `null`.
+pub fn has_nulls(v: &Value) -> bool {
+    match v {
+        Value::Mapping(m) => m.iter().any(|(_, v)| v.is_null() || has_nulls(v)),
+        Value::Sequence(items) => items.iter().any(has_nulls),
+        Value::Tagged(t) => has_nulls(&t.value),
+        _ => false,
     }
 }
 
@@ -242,6 +276,111 @@ mod tests {
             "stems: { api: { health: ~ } }",
         );
         assert_eq!(m, y("stems: { api: { health: ~ } }"));
+    }
+
+    /// `merged`, then the removal markers dropped (what the typed parse sees).
+    fn pruned(layers: &[&str]) -> Value {
+        let mut b = y(layers[0]);
+        for l in &layers[1..] {
+            merge(&mut b, y(l), &ConfigPath::root());
+        }
+        prune_nulls(&mut b);
+        b
+    }
+
+    #[test]
+    fn null_removes_the_key() {
+        // A map entry, a nested field, a list-valued field, a whole map.
+        assert_eq!(
+            pruned(&[
+                "stems: { api: { env: { A: '1', B: '2' }, health: { type: tcp, port: 1 }, watch: [{ log: x }], tags: [a] } }",
+                "stems: { api: { env: { A: ~ }, health: { port: ~ }, watch: ~ } }",
+            ]),
+            y("stems: { api: { env: { B: '2' }, health: { type: tcp }, tags: [a] } }")
+        );
+        assert_eq!(
+            pruned(&[
+                "stems: { api: { env: { A: '1' }, type: process } }",
+                "stems: { api: { env: ~ } }"
+            ]),
+            y("stems: { api: { type: process } }")
+        );
+        // Removing a key nobody set is a no-op.
+        assert_eq!(
+            pruned(&[
+                "stems: { api: { type: process } }",
+                "stems: { api: { env: { X: ~ } } }"
+            ]),
+            y("stems: { api: { type: process, env: {} } }")
+        );
+        // A later layer can set the key again.
+        assert_eq!(
+            pruned(&[
+                "stems: { api: { env: { A: '1', B: '2' } } }",
+                "stems: { api: { env: ~ } }",
+                "stems: { api: { env: { C: '3' } } }",
+            ]),
+            y("stems: { api: { env: { C: '3' } } }")
+        );
+        // List items are not touched.
+        assert_eq!(pruned(&["x: [1]", "x: [~, 2]"]), y("x: [~, 2]"));
+    }
+
+    #[test]
+    fn null_removes_a_script_per_key() {
+        assert_eq!(
+            pruned(&[
+                "stems: { api: { scripts: { setup: { command: a }, seed: b } } }",
+                "stems: { api: { scripts: { setup: ~ } } }",
+            ]),
+            y("stems: { api: { scripts: { seed: b } } }")
+        );
+        // The marker survives a merge into a layer without the key, so a
+        // pre-merged overlay (a local file with includes, a variant defined
+        // twice) still removes it from the base.
+        let mut overlay = y("stems: { api: { scripts: { seed: c } } }");
+        merge(
+            &mut overlay,
+            y("stems: { api: { scripts: { setup: ~ } } }"),
+            &ConfigPath::root(),
+        );
+        let mut base = y("stems: { api: { scripts: { setup: a, seed: b } } }");
+        merge(&mut base, overlay, &ConfigPath::root());
+        prune_nulls(&mut base);
+        assert_eq!(base, y("stems: { api: { scripts: { seed: c } } }"));
+        let mut s = y("scripts: { nuke: a, keep: b }");
+        merge(&mut s, y("scripts: { nuke: ~ }"), &ConfigPath::root());
+        prune_nulls(&mut s);
+        assert_eq!(s, y("scripts: { keep: b }"));
+    }
+
+    #[test]
+    fn null_ports_and_container_port_inheritance() {
+        // `ports: ~` removes the ports; a later list inherits nothing.
+        assert_eq!(
+            pruned(&[
+                "stems: { api: { ports: [{ name: http, port: 1, container_port: 8080 }] } }",
+                "stems: { api: { ports: ~ } }",
+                "stems: { api: { ports: [{ name: http, port: 2 }] } }",
+            ]),
+            y("stems: { api: { ports: [{ name: http, port: 2 }] } }")
+        );
+        // The container_port rule is untouched by pruning.
+        assert_eq!(
+            pruned(&[
+                "stems: { api: { ports: [{ name: http, port: 1, container_port: 8080 }] } }",
+                "stems: { api: { ports: [{ name: http, port: 2 }] } }",
+            ]),
+            y("stems: { api: { ports: [{ name: http, port: 2, container_port: 8080 }] } }")
+        );
+    }
+
+    #[test]
+    fn has_nulls_finds_markers_at_any_depth() {
+        assert!(has_nulls(&y("a: { b: { c: ~ } }")));
+        assert!(has_nulls(&y("a: [{ b: ~ }]")));
+        assert!(!has_nulls(&y("a: [~, 1]")));
+        assert!(!has_nulls(&y("a: { b: 1 }")));
     }
 
     #[test]

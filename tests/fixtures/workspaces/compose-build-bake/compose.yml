@@ -1,0 +1,12 @@
+# compose.yml — `app` serves /www (index.txt, token) on 8080; `migrate` is a
+# one-shot built from the same Dockerfile. Neither names the secret's
+# source: stems' override declares `secrets.tok` and adds it to each built
+# service's `build.secrets`.
+services:
+  app:
+    build: { context: ./app }
+    ports:
+      - "${APP_PORT:-18842}:8080"
+  migrate:
+    build: { context: ./app }
+    command: ["cat", "/www/token"]

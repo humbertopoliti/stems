@@ -57,9 +57,10 @@ pub use context::{
     ContextEntry, ContextFiles, DockerIgnore, EXTERNAL_DOCKERFILE, context_files, context_tar,
 };
 pub use spec::{
-    BuildSpec, ContainerSpec, HealthcheckSpec, ImageProgress, LABEL_RUN_ID, LABEL_SPEC_HASH,
-    LABEL_STEM, LABEL_WORKSPACE, PortMapping, PortProto, ProgressSink, PullCoalescer, PullPolicy,
-    PullProgress, VolumeMount, container_name, create_body, default_network, grace_secs,
+    BuildSecret, BuildSpec, ContainerSpec, HealthcheckSpec, ImageProgress, LABEL_RUN_ID,
+    LABEL_SPEC_HASH, LABEL_STEM, LABEL_WORKSPACE, PortMapping, PortProto, ProgressSink,
+    PullCoalescer, PullPolicy, PullProgress, SecretEnv, SecretSource, VolumeMount,
+    buildx_build_args, container_name, create_body, default_network, grace_secs, normalize,
     split_image_ref, to_bollard, volume_name,
 };
 
@@ -503,6 +504,101 @@ pub fn select_orphans(summaries: &[ContainerSummary], scope: &OrphanScope) -> Ve
         .collect()
 }
 
+/// Hint when `docker buildx` is missing (44).
+pub const BUILDX_MISSING_HINT: &str = "build secrets and `allow_read` need `docker buildx` (BuildKit), bundled with Docker Desktop; install the buildx plugin (`docker buildx version` must work)";
+
+/// Does a failed `docker buildx …` say the plugin is missing?
+pub fn buildx_missing(tail: &[String]) -> bool {
+    tail.iter().any(|l| {
+        l.contains("'buildx' is not a docker command")
+            || l.contains("unknown command \"buildx\"")
+            || l.contains("unknown command: docker buildx")
+    })
+}
+
+/// Run a `docker buildx …` build (`buildx build`, `buildx bake`): stdout
+/// and stderr are read line by line as they come and each line goes to
+/// `on_line`; the last [`BUILD_TAIL_LINES`] are kept. A non-zero exit is
+/// [`RuntimeError::BuildFailed`] (the tail), a missing CLI or buildx
+/// plugin [`RuntimeError::DockerUnavailable`] with
+/// [`BUILDX_MISSING_HINT`].
+pub async fn run_build_command(
+    program: &std::ffi::OsStr,
+    args: &[std::ffi::OsString],
+    env: &std::collections::BTreeMap<String, String>,
+    cwd: &Path,
+    on_line: &(dyn Fn(String) + Sync),
+) -> Result<(), RuntimeError> {
+    use tokio::io::AsyncReadExt as _;
+    tracing::debug!(
+        command = %crate::compose::display_command(program, args),
+        "docker buildx"
+    );
+    let mut cmd = tokio::process::Command::new(program);
+    cmd.args(args)
+        .envs(env)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    if cwd.is_dir() {
+        cmd.current_dir(cwd);
+    }
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(RuntimeError::DockerUnavailable {
+                hint: format!(
+                    "`{}` not found; {BUILDX_MISSING_HINT}",
+                    program.to_string_lossy()
+                ),
+            });
+        }
+        Err(e) => return Err(RuntimeError::Io(e)),
+    };
+    let tail = Mutex::new(Vec::new());
+    let pump = |mut reader: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>| {
+        let tail = &tail;
+        async move {
+            let mut splitter = LineSplitter::new();
+            let mut buf = vec![0u8; 8192];
+            let mut emit = |line: String| {
+                push_tail(&mut tail.lock().unwrap_or_else(|e| e.into_inner()), &line);
+                on_line(line);
+            };
+            loop {
+                match reader.read(&mut buf).await {
+                    Ok(0) => break,
+                    Ok(n) => splitter.push(&buf[..n]).into_iter().for_each(&mut emit),
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                }
+            }
+            if let Some(last) = splitter.finish() {
+                emit(last);
+            }
+        }
+    };
+    let (out, err) = (child.stdout.take(), child.stderr.take());
+    let empty =
+        || -> std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>> { Box::pin(tokio::io::empty()) };
+    tokio::join!(
+        pump(out.map_or_else(empty, |r| Box::pin(r))),
+        pump(err.map_or_else(empty, |r| Box::pin(r)))
+    );
+    let status = child.wait().await?;
+    if status.success() {
+        return Ok(());
+    }
+    let tail = tail.into_inner().unwrap_or_else(|e| e.into_inner());
+    if buildx_missing(&tail) {
+        return Err(RuntimeError::DockerUnavailable {
+            hint: BUILDX_MISSING_HINT.to_string(),
+        });
+    }
+    Err(RuntimeError::BuildFailed { tail })
+}
+
 fn push_tail(tail: &mut Vec<String>, line: &str) {
     let line = line.trim_end();
     if line.is_empty() {
@@ -850,6 +946,43 @@ impl DockerRuntime {
         Ok(())
     }
 
+    /// Build `spec`'s image with `docker buildx build` (44: BuildKit
+    /// secrets, [`buildx_build_args`]). The stem env (plus the request's
+    /// values of `env` secrets, [`SecretEnv`]) is the process's env on top
+    /// of the daemon's (an `env` secret names one of its variables)
+    /// with `DOCKER_HOST` pointing at this runtime's engine; output lines
+    /// are `docker.build` progress, the last ones kept for `BuildFailed`.
+    pub async fn build_image_cli(
+        &self,
+        spec: &ContainerSpec,
+        build: &BuildSpec,
+    ) -> Result<(), RuntimeError> {
+        let args = buildx_build_args(spec, build);
+        let mut env = spec.env.clone();
+        spec.secret_env.apply_to(&mut env);
+        env.entry("DOCKER_HOST".to_string())
+            .or_insert_with(|| self.host.clone());
+        let (progress, stem) = (spec.progress.clone(), spec.stem.clone());
+        let on_line = move |line: String| {
+            progress.send(ImageProgress::Build {
+                stem: stem.clone(),
+                line,
+            });
+        };
+        run_build_command(&docker_program(), &args, &env, &build.context, &on_line).await
+    }
+
+    /// Build `spec`'s image (tag [`ContainerSpec::build_tag`]) now, without
+    /// starting anything: `build.before_setup` (51). Buildx when the build
+    /// needs it, else the Docker API, as at start.
+    pub async fn build(&self, spec: &ContainerSpec) -> Result<(), RuntimeError> {
+        match &spec.build {
+            Some(b) if b.needs_buildx() => self.build_image_cli(spec, b).await,
+            Some(b) => self.build_image(spec, b).await,
+            None => Ok(()),
+        }
+    }
+
     /// A leftover container with our name: removed if it is ours and not
     /// running; a running one is an error (adopt it or clean orphans).
     async fn clear_name(&self, spec: &ContainerSpec) -> Result<(), RuntimeError> {
@@ -921,6 +1054,9 @@ impl DockerRuntime {
         image_ready: bool,
     ) -> Result<Handle, RuntimeError> {
         match &spec.build {
+            // Built before `setup` in this sequence (51).
+            Some(_) if spec.prebuilt => {}
+            Some(b) if b.needs_buildx() => self.build_image_cli(spec, b).await?,
             Some(b) => self.build_image(spec, b).await?,
             None if image_ready => {}
             None => self.ensure_image(image, spec.pull, &spec.progress).await?,
@@ -1168,6 +1304,14 @@ impl DockerRuntime {
         if let (true, Some(image)) = (image_ready, spec.image.as_deref()) {
             self.ensure_image(image, spec.pull, &spec.progress).await?;
             let local = self.image_id(image).await?;
+            image_changed = inspect
+                .as_ref()
+                .is_some_and(|i| image_differs(i.image.as_deref(), local.as_deref()));
+        }
+        // Rebuilt before `setup` (51): a changed image is recreated, as a
+        // pulled one is (the tag stays the same within a run).
+        if let (true, Some(tag)) = (spec.prebuilt, spec.build_tag()) {
+            let local = self.image_id(&tag).await?;
             image_changed = inspect
                 .as_ref()
                 .is_some_and(|i| image_differs(i.image.as_deref(), local.as_deref()));

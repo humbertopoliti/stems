@@ -393,12 +393,18 @@ pub enum Requirement {
     Custom(RequirementSpec),
 }
 
-/// Long form of a [`Requirement`].
+/// Long form of a [`Requirement`]. Exactly one of `version` and `from` is
+/// set (checked by `validate`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RequirementSpec {
     /// Version range, e.g. `">=1.2 <2"`.
-    pub version: String,
+    pub version: Option<String>,
+    /// Read the range from a file of the codebase (the workspace root for a
+    /// workspace-level entry): `.nvmrc`, `.tool-versions`,
+    /// `package.json#packageManager`, `go.mod`, `file.toml#a.b`. A list uses
+    /// the first file that exists.
+    pub from: Option<StringOrList>,
     /// Shell command printing the version; default `<tool> --version`.
     pub command: Option<String>,
     /// Regex extracting the version from the command output (first capture
@@ -407,11 +413,22 @@ pub struct RequirementSpec {
 }
 
 impl Requirement {
-    /// The version range.
-    pub fn version(&self) -> &str {
+    /// The literal version range, if one is set (`None` for a `from:` entry).
+    pub fn version(&self) -> Option<&str> {
         match self {
-            Self::Version(v) => v,
-            Self::Custom(s) => &s.version,
+            Self::Version(v) => Some(v),
+            Self::Custom(s) => s.version.as_deref(),
+        }
+    }
+    /// The `from:` files, in order (empty when the range is literal).
+    pub fn from(&self) -> Vec<String> {
+        match self {
+            Self::Version(_) => Vec::new(),
+            Self::Custom(s) => s
+                .from
+                .as_ref()
+                .map(StringOrList::to_list)
+                .unwrap_or_default(),
         }
     }
     /// Custom version command, if any.
@@ -527,6 +544,25 @@ pub enum Condition {
     Seeded,
 }
 
+/// What a hard `depends_on` edge does when its target is disabled (46, 51).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum IfDisabled {
+    /// The dependant is skipped by `up`/`start` (`dependency_disabled:<dep>`),
+    /// and so are its own hard dependants.
+    Skip,
+    /// The dependant starts without it (the default): the edge is dropped.
+    #[default]
+    Start,
+}
+
+impl IfDisabled {
+    /// `true` for the default (`start`), which is not serialized.
+    pub fn is_start(&self) -> bool {
+        *self == IfDisabled::Start
+    }
+}
+
 /// Informational protocol carried by a `depends_on` edge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -582,6 +618,28 @@ pub enum PullPolicy {
     Always,
     /// Never pull; the image must already be present locally.
     Never,
+}
+
+/// When a stem's `build` script runs (45).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BuildWhen {
+    /// Only on `stems build`, `restart --build` and watch `rebuild` (default).
+    #[default]
+    OnDemand,
+    /// In the start sequence (after `setup`, before `pre_start`) when its
+    /// stamp is missing or changed.
+    Changed,
+    /// In the start sequence on every start (never on a policy respawn).
+    Always,
+}
+
+impl BuildWhen {
+    /// The default (serde skips it).
+    #[must_use]
+    pub fn is_on_demand(&self) -> bool {
+        *self == Self::OnDemand
+    }
 }
 
 /// Declared type of a script argument.
@@ -831,3 +889,35 @@ mod tests {
         assert!("0999".parse::<FileMode>().is_err());
     }
 }
+
+// ---------------------------------------------------------------------------
+// Custom checks (`checks:`)
+// ---------------------------------------------------------------------------
+
+/// How a failing custom check counts (`checks.<name>.severity`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CheckSeverity {
+    /// A failure: `doctor` exits 1 and `stems up` aborts (default).
+    #[default]
+    Fail,
+    /// A warning: reported, never blocks.
+    Warn,
+}
+
+/// Where a custom check runs (`checks.<name>.when`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CheckWhen {
+    /// `stems doctor`.
+    Doctor,
+    /// Before `stems up` starts anything.
+    Up,
+    /// `stems validate` (opt-in).
+    Validate,
+}
+
+/// Longest `checks.<name>.timeout`.
+pub const CHECK_MAX_TIMEOUT: Duration = Duration::from_secs(30);
+/// Default `checks.<name>.timeout`.
+pub const CHECK_DEFAULT_TIMEOUT: Duration = Duration::from_secs(2);

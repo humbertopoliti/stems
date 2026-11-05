@@ -47,6 +47,8 @@ pub const DOCKERFILE: &str = "Dockerfile";
 pub const COMPOSE_ADOPT: bool = false;
 /// `stems.<n>.build` (compose): `compose up --build` on every start.
 pub const COMPOSE_BUILD: bool = true;
+/// `stems.<n>.inject_env` (compose): the stem env into the container too.
+pub const COMPOSE_INJECT_ENV: bool = false;
 
 /// Name given to the i-th port when it has none.
 pub fn port_name(i: usize) -> String {
@@ -57,6 +59,8 @@ pub fn port_name(i: usize) -> String {
 pub const DEP_CONDITION: Condition = Condition::Healthy;
 /// `depends_on[].soft`.
 pub const DEP_SOFT: bool = false;
+/// `depends_on[].if_disabled` (46; `start` since 51).
+pub const DEP_IF_DISABLED: crate::types::IfDisabled = crate::types::IfDisabled::Start;
 
 /// Health `type` when a stem declares no `health:` at all (`None`: no check).
 pub fn health_type_for(kind: StemType) -> Option<HealthType> {
@@ -123,8 +127,12 @@ pub const OVERLAY_MODE: FileMode = FileMode(0o644);
 
 /// `scripts.<s>.retries`.
 pub const SCRIPT_RETRIES: u32 = 0;
+/// `scripts.<s>.soft_fail`.
+pub const SCRIPT_SOFT_FAIL: bool = false;
 /// `scripts.<s>.concurrent`.
 pub const SCRIPT_CONCURRENT: bool = false;
+/// `scripts.<s>.inherit_env`.
+pub const SCRIPT_INHERIT_ENV: bool = true;
 /// `scripts.<s>.args[].type`.
 pub const ARG_TYPE: ArgType = ArgType::String;
 /// `scripts.<s>.args[].required`.
@@ -184,8 +192,13 @@ pub fn defaults_table() -> Vec<(&'static str, String)> {
         ),
         ("stems.<n>.adopt (compose)", COMPOSE_ADOPT.to_string()),
         ("stems.<n>.build (compose)", COMPOSE_BUILD.to_string()),
+        (
+            "stems.<n>.inject_env (compose)",
+            COMPOSE_INJECT_ENV.to_string(),
+        ),
         ("stems.<n>.depends_on[].condition", json(&DEP_CONDITION)),
         ("stems.<n>.depends_on[].soft", DEP_SOFT.to_string()),
+        ("stems.<n>.depends_on[].if_disabled", json(&DEP_IF_DISABLED)),
         (
             "stems.<n>.health (absent)",
             format!(
@@ -245,7 +258,10 @@ pub fn defaults_table() -> Vec<(&'static str, String)> {
         ),
         ("scripts.<s>.timeout", "none".into()),
         ("scripts.<s>.retries", SCRIPT_RETRIES.to_string()),
+        ("scripts.<s>.soft_fail", SCRIPT_SOFT_FAIL.to_string()),
+        ("scripts.build.when", "on_demand".into()),
         ("scripts.<s>.concurrent", SCRIPT_CONCURRENT.to_string()),
+        ("scripts.<s>.inherit_env", SCRIPT_INHERIT_ENV.to_string()),
         ("scripts.<s>.args[].type", json(&ARG_TYPE)),
         ("scripts.<s>.args[].required", ARG_REQUIRED.to_string()),
     ]

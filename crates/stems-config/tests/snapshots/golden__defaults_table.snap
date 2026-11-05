@@ -33,8 +33,10 @@ stems.<n>.service (compose)                   <stem name>
 stems.<n>.project_name (compose)              stems-<workspace name>
 stems.<n>.adopt (compose)                     false
 stems.<n>.build (compose)                     true
+stems.<n>.inject_env (compose)                false
 stems.<n>.depends_on[].condition              healthy
 stems.<n>.depends_on[].soft                   false
+stems.<n>.depends_on[].if_disabled            start
 stems.<n>.health (absent)                     process: process, docker: docker, compose: docker, external: none
 stems.<n>.health.type                         http if url, command if command, tcp if port, else as for an absent health
 stems.<n>.health.host                         localhost
@@ -65,6 +67,9 @@ stems.<n>.overlays[].mode                     0644
 scripts.<s>.cwd                               <stem codebase, else workspace root>
 scripts.<s>.timeout                           none
 scripts.<s>.retries                           0
+scripts.<s>.soft_fail                         false
+scripts.build.when                            on_demand
 scripts.<s>.concurrent                        false
+scripts.<s>.inherit_env                       true
 scripts.<s>.args[].type                       string
 scripts.<s>.args[].required                   false

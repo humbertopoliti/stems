@@ -34,6 +34,96 @@ fn show(args: Vec<OsString>) -> String {
 
 // --- command goldens ---------------------------------------------------------
 
+fn baked() -> ComposeSpec {
+    let mut s = ComposeSpec::new(
+        "shop",
+        "api",
+        "01J8ZQ7Y6M5X4W3V2T1S0R9Q8P",
+        "/work/shop/compose.yml",
+        "api",
+    );
+    s.bake = BakeOptions {
+        services: vec!["api".into(), "migrate".into()],
+        before_setup: true,
+        secrets: vec![
+            BuildSecret {
+                id: "adc".into(),
+                source: SecretSource::File("/home/me/.config/gcloud/adc.json".into()),
+            },
+            BuildSecret {
+                id: "tok".into(),
+                source: SecretSource::Env("NPM_TOKEN".into()),
+            },
+        ],
+        allow_read: vec!["/work/infra".into()],
+    };
+    s
+}
+
+#[test]
+fn golden_bake() {
+    let spec = baked();
+    let t = ComposeTarget::for_spec(&spec, &env_dir());
+    let images = vec![
+        ("api".to_string(), "stems-shop-api".to_string()),
+        ("migrate".to_string(), "shop/migrate:dev".to_string()),
+    ];
+    let allow = vec![
+        PathBuf::from("/home/me/.config/gcloud/adc.json"),
+        PathBuf::from("/work/infra"),
+        PathBuf::from("/work/shop/api"),
+    ];
+    insta::assert_snapshot!("cmd_bake", show(ComposeCommand::bake(&t, &images, &allow)));
+    insta::assert_snapshot!("cmd_up_no_build", show(ComposeCommand::up_no_build(&t)));
+}
+
+#[test]
+fn bake_only_for_the_object_form_with_build_on() {
+    let mut s = baked();
+    assert!(s.uses_bake() && s.needs_override());
+    assert_eq!(s.build_services(), ["api", "migrate"]);
+    s.build = false;
+    assert!(!s.uses_bake(), "--no-build / build: false never bakes");
+    let plain = redis();
+    assert!(!plain.uses_bake() && !plain.needs_override());
+    assert_eq!(plain.build_services(), ["redis"]);
+    // Serde: the bool form has no `bake` key (spec JSON unchanged).
+    let json = serde_json::to_value(&plain).unwrap();
+    assert!(json.get("bake").is_none() && json.get("prebuilt").is_none());
+}
+
+#[test]
+fn golden_override_with_secrets() {
+    let spec = baked();
+    let services = spec.build_services();
+    let secrets_only = render_override(&OverrideInputs {
+        service: "api",
+        env_file: None,
+        container_port: None,
+        secrets: &spec.bake.secrets,
+        build_services: &services,
+    });
+    insta::assert_snapshot!("override_secrets", secrets_only);
+    let both = render_override(&OverrideInputs {
+        service: "api",
+        env_file: Some(Path::new("/e/api.env")),
+        container_port: Some(8080),
+        secrets: &spec.bake.secrets,
+        build_services: &services,
+    });
+    insta::assert_snapshot!("override_inject_env_and_secrets", both);
+    // The plain inject_env file is unchanged by 44.
+    assert_eq!(
+        render_override_file("redis", Path::new("/e/redis.env"), Some(6379)),
+        render_override(&OverrideInputs {
+            service: "redis",
+            env_file: Some(Path::new("/e/redis.env")),
+            container_port: Some(6379),
+            ..Default::default()
+        })
+    );
+}
+
 #[test]
 fn golden_up() {
     insta::assert_snapshot!("cmd_up", show(ComposeCommand::up(&target(), false)));
@@ -42,6 +132,30 @@ fn golden_up() {
 #[test]
 fn golden_up_build() {
     insta::assert_snapshot!("cmd_up_build", show(ComposeCommand::up(&target(), true)));
+}
+
+#[test]
+fn golden_up_inject_env() {
+    let mut spec = redis();
+    spec.inject_env = true;
+    let t = ComposeTarget::for_spec(&spec, &env_dir());
+    insta::assert_snapshot!("cmd_up_inject_env", show(ComposeCommand::up(&t, true)));
+    // Project-only invocations never get the override.
+    let mut p = ComposeTarget::project("stems-hello-shop");
+    p.override_file = t.override_file.clone();
+    assert!(!show(ComposeCommand::ps(&p)).contains("override"));
+}
+
+#[test]
+fn golden_override_file() {
+    insta::assert_snapshot!(
+        "override_file",
+        render_override_file("redis", &env_file_path(&env_dir(), "redis"), Some(6379))
+    );
+    assert!(
+        !render_override_file("redis", Path::new("/e/redis.env"), None).contains("PORT"),
+        "PORT only with a container port"
+    );
 }
 
 #[test]

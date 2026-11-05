@@ -13,8 +13,8 @@ use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, ValueEnum};
 
 /// Local environment management toolkit for multi-process systems.
 ///
-/// stems reads an integration repo's `stems.yaml`, validates it, and (from
-/// later releases) starts, supervises and tears down every stem it declares.
+/// stems reads an integration repo's `stems.yaml`, validates it, starts,
+/// supervises and tears down every stem it declares.
 ///
 /// Output: human text on a terminal, a JSON envelope
 /// `{ "ok", "data", "errors", "version" }` when stdout is not a terminal or
@@ -25,8 +25,7 @@ use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, ValueEnum};
     name = "stems",
     bin_name = "stems",
     disable_version_flag = true,
-    term_width = 100,
-    after_help = crate::help::after_help()
+    term_width = 100
 )]
 pub struct Cli {
     /// Global flags, accepted before or after the subcommand.
@@ -284,7 +283,6 @@ pub enum Command {
     /// schema get them untouched. Exit 0 when the script succeeded, else 1
     /// (`SCRIPT_FAILED`). Lifecycle hooks (below) can be run by name too.
     /// See docs/scripts.md.
-    #[command(after_long_help = crate::help::hooks_long_help())]
     Run(RunArgs),
     /// List scripts.
     ///
@@ -292,20 +290,40 @@ pub enum Command {
     /// Reads the config locally (no daemon needed). `--json` prints the
     /// catalogue the TUI and MCP server use: `data: {scripts: [{stem, name,
     /// description, args, requires, kind, timeout, retries, concurrent,
-    /// mcp_tool, input_schema}], lifecycle_hooks: [names]}`. `--lifecycle`
-    /// lists every lifecycle hook instead, defined or not, in lifecycle
-    /// order: `data: {lifecycle: [{name, scope, when, defined_by}]}`.
-    #[command(after_long_help = crate::help::hooks_long_help())]
+    /// inherit_env, mcp_tool, input_schema}], lifecycle_hooks: [names]}`.
+    /// `--lifecycle` lists every lifecycle hook instead, defined or not, in
+    /// lifecycle order: `data: {lifecycle: [{name, scope, when, defined_by}]}`.
     Scripts(ScriptsArgs),
     /// Run an ad-hoc command in a stem's context (env, cwd or container).
+    ///
+    /// A process or external stem: the command runs here, in your terminal,
+    /// with your environment plus what stems sets for the stem (`PORT`,
+    /// `env`, `env_files`, `STEMS_*`, dependencies' ports and outputs), in
+    /// its codebase (else its state directory). A running docker/compose
+    /// stem: `docker exec` into its container (`--host` runs on the host
+    /// instead). The exit code is the command's. Works without a daemon
+    /// (from the config; auto ports then stay unresolved) and never starts
+    /// one. `--json` prints `{stem, container, cwd, argv, exit}` after the
+    /// command (its output still streams first). See docs/exec.md.
     Exec(ExecArgs),
+    /// Run `docker compose` in a compose stem's context (file, project, env).
+    ///
+    /// `stems compose <stem> [--service] -- <args…>` runs `docker compose -f
+    /// <file> -p <project> --env-file <stem env> <args…>` here, in your
+    /// terminal, in the compose file's directory (a one-off migration, `run
+    /// --rm`, `config`, `ps`). `--service` appends the stem's service as the
+    /// last argument. Works without a daemon (writes the env file itself) and
+    /// never starts one. The exit code is compose's. `--json` prints `{stem,
+    /// argv, exit}` after the command. See docs/compose.md.
+    Compose(ComposeArgs),
     /// Open an interactive shell in a stem's context.
+    ///
+    /// `stems exec <stem> -- $SHELL -i` (your `SHELL`, else /bin/sh); in a
+    /// running container `bash`, else `sh`. See docs/exec.md.
     Shell(ShellArgs),
     /// Run a stem's `reset` script and clear its stamps.
-    #[command(after_long_help = crate::help::hooks_long_help())]
     Reset(ResetArgs),
     /// Run build scripts (or docker builds).
-    #[command(after_long_help = crate::help::hooks_long_help())]
     Build(BuildArgs),
     /// Pull the images of docker stems now (a moved tag such as `latest`
     /// included).
@@ -318,13 +336,14 @@ pub enum Command {
     Pull(PullArgs),
     /// Show or clear setup/seed stamps.
     Stamps(StampsArgs),
-    /// Show the overlays stems has written into codebases.
+    /// Show the overlays stems has written into codebases, or render a
+    /// stem's overlays now (`stems overlays render <stem>`).
     Overlays(OverlaysArgs),
 
     // --- workspace ---------------------------------------------------------
     /// Diagnose the environment: Docker, tool versions, ports, orphans.
     Doctor(DoctorArgs),
-    /// Clone or update git codebases.
+    /// Clone, update or check out git codebases.
     #[command(subcommand)]
     Repos(ReposCommand),
     /// Pause or resume watchdogs.
@@ -334,6 +353,18 @@ pub enum Command {
     Profiles(ProfilesArgs),
     /// Show values published by stems' `outputs:`.
     Outputs(OutputsArgs),
+    /// Print the environment stems gives a stem.
+    ///
+    /// What stems sets (`PORT`, `env`, `env_files`, local env, `STEMS_*`,
+    /// dependencies' ports and outputs) as dotenv `KEY=value` lines;
+    /// `--format shell` prints `export KEY='value'` (`eval "$(stems env
+    /// api --format shell)"`), `--format json` / `--json` gives `data:
+    /// {stem, env, cwd, container, unresolved}`. `--all` adds your own
+    /// environment underneath. Secret outputs are redacted. Works without
+    /// a daemon (never starts one). See docs/exec.md.
+    Env(EnvArgs),
+    /// List every stem's host ports and the variables that address them.
+    Ports(PortsArgs),
     /// Read or change local config overrides.
     #[command(subcommand)]
     Config(ConfigCommand),
@@ -377,9 +408,31 @@ pub enum Command {
     /// Manage the workspace daemon.
     Daemon(DaemonArgs),
 
-    /// Print docs/cli.md (Markdown reference of every command).
+    // --- discovery (50) ----------------------------------------------------
+    /// List everything stems can do, by area, with commands, config keys and docs.
+    ///
+    /// One entry per capability from the feature index: the same table as
+    /// docs/features.md and the MCP resource `stems://features`. An area
+    /// (`stems features scripts`) limits the list. --json gives the raw
+    /// table: `data: {areas: [{id, title}], features: [{area, name,
+    /// one_liner, commands, config_keys, doc}]}`. Needs no workspace.
+    Features(FeaturesArgs),
+    /// List the documentation pages, or print one.
+    ///
+    /// Without a topic, lists every page of docs/ (topic and title). With
+    /// one (`stems docs exec`), prints that page's Markdown as of this build;
+    /// --json gives `data: {topic, title, path, url, markdown}` (the list:
+    /// `data: {topics: [{topic, title, path, url}]}`). Needs no workspace.
+    Docs(DocsArgs),
+
+    /// Print docs/cli.md (Markdown reference of every command), or
+    /// docs/features.md with `features`.
     #[command(name = "__docs", hide = true)]
-    Docs,
+    Reference {
+        /// `cli` (default) or `features`.
+        #[arg(value_enum, default_value_t = ReferencePage::Cli)]
+        page: ReferencePage,
+    },
 
     /// Write man pages (one per command) into OUTDIR (release packaging).
     #[command(name = "__man", hide = true)]
@@ -387,6 +440,30 @@ pub enum Command {
         /// Directory to write `stems.1`, `stems-up.1`, … into.
         outdir: PathBuf,
     },
+}
+
+/// `stems __docs [cli|features]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ReferencePage {
+    /// docs/cli.md.
+    Cli,
+    /// docs/features.md.
+    Features,
+}
+
+/// `stems features`.
+#[derive(Debug, Args)]
+pub struct FeaturesArgs {
+    /// Only this area.
+    #[arg(value_parser = crate::help::area_parser())]
+    pub area: Option<String>,
+}
+
+/// `stems docs`.
+#[derive(Debug, Args)]
+pub struct DocsArgs {
+    /// The page to print (`stems docs` lists them), e.g. `exec`, `config`.
+    pub topic: Option<String>,
 }
 
 /// `stems init`.
@@ -419,6 +496,15 @@ pub struct ShowArgs {
     /// Also print the table of defaults applied to unset fields.
     #[arg(long)]
     pub effective: bool,
+    /// Resolve the stem with this variant (or `local` for the base) active
+    /// instead of the selected one. Nothing is written: `stems switch`
+    /// changes the selection. Needs a stem.
+    #[arg(long, value_name = "NAME")]
+    pub variant: Option<String>,
+    /// Show secret env values instead of `<redacted>` (human output on a
+    /// terminal only; refused with `--json`).
+    #[arg(long)]
+    pub reveal: bool,
 }
 
 /// `stems switch`.
@@ -632,6 +718,11 @@ pub struct RestartArgs {
     /// Restart only these stems, even if `restart.cascade` is set.
     #[arg(long)]
     pub no_cascade: bool,
+    /// Pass these variables of the current shell to the stems (applied
+    /// last; repeat or comma-separate). Replaces the set they were started
+    /// with; without it they keep that set.
+    #[arg(long, value_name = "VAR", value_delimiter = ',')]
+    pub pass_env: Option<Vec<String>>,
 }
 
 impl RestartArgs {
@@ -700,10 +791,37 @@ pub struct AttachArgs {
 pub struct StatusArgs {
     /// Only these stems.
     pub stems: Vec<String>,
+    /// Hide disabled stems (`enabled: false`; listed last otherwise).
+    #[arg(long)]
+    pub enabled: bool,
     /// Redraw until Ctrl-C, every INTERVAL (seconds or a duration such as
     /// `500ms`; default 1s).
     #[arg(long, value_name = "INTERVAL", num_args = 0..=1, default_missing_value = "1s")]
     pub watch: Option<String>,
+    /// Exit 0 when every named (else every enabled) stem is in STATE, else 1
+    /// (`STATUS_MISMATCH`, `data.mismatch: [{stem, state}]`). `stopped`
+    /// accepts `failed` too; `running` is setup, starting, seeding, healthy
+    /// or unhealthy. Without a daemon every stem is stopped.
+    #[arg(long, value_enum, value_name = "STATE", conflicts_with = "watch")]
+    pub expect: Option<ExpectState>,
+    /// With --expect: keep checking (every 200 ms) until this long has
+    /// passed (e.g. `30s`).
+    #[arg(long, value_name = "DURATION", requires = "expect")]
+    pub timeout: Option<String>,
+}
+
+/// `stems status --expect` (49).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ExpectState {
+    /// Health check passing.
+    Healthy,
+    /// Not running (`stopped`, `failed` or `disabled`).
+    Stopped,
+    /// Exited or could not be started.
+    Failed,
+    /// Up or on its way: `setup`, `starting`, `seeding`, `healthy` or
+    /// `unhealthy`.
+    Running,
 }
 
 /// `stems logs`.
@@ -831,6 +949,9 @@ pub struct RunArgs {
     /// Start the script's `requires:` stems if they are not healthy.
     #[arg(long)]
     pub start_deps: bool,
+    /// Stop the script's `requires_stopped:` stems if they run.
+    #[arg(long)]
+    pub stop_deps: bool,
     /// How long to wait for the stem while it is still starting (default 30s).
     #[arg(long, value_name = "DURATION")]
     pub wait: Option<String>,
@@ -861,9 +982,34 @@ pub struct ScriptsArgs {
 pub struct ExecArgs {
     /// Stem whose context to use.
     pub stem: String,
+    /// Run on the host even for a docker/compose stem.
+    #[arg(long)]
+    pub host: bool,
+    /// Working directory (default: the stem's codebase, else its state
+    /// directory). Host only.
+    #[arg(long, value_name = "DIR")]
+    pub cwd: Option<PathBuf>,
+    /// Keep only PATH, HOME, USER, LOGNAME, SHELL, TMPDIR, TERM, LANG and
+    /// LC_* of your environment (like a script's `inherit_env: false`).
+    /// Host only.
+    #[arg(long)]
+    pub fresh: bool,
     /// Command and arguments (after `--`).
     #[arg(last = true, required = true)]
     pub command: Vec<String>,
+}
+
+/// `stems compose`.
+#[derive(Debug, Args)]
+pub struct ComposeArgs {
+    /// Compose stem whose file, project and env to use.
+    pub stem: String,
+    /// Append the stem's compose service as the last argument.
+    #[arg(long)]
+    pub service: bool,
+    /// Arguments for `docker compose` (after `--`).
+    #[arg(last = true, required = true)]
+    pub args: Vec<String>,
 }
 
 /// `stems shell`.
@@ -871,6 +1017,9 @@ pub struct ExecArgs {
 pub struct ShellArgs {
     /// Stem whose context to use.
     pub stem: String,
+    /// Open the shell on the host even for a docker/compose stem.
+    #[arg(long)]
+    pub host: bool,
 }
 
 /// `stems reset`.
@@ -913,9 +1062,35 @@ pub struct StampsArgs {
 
 /// `stems overlays`.
 #[derive(Debug, Args)]
+#[command(args_conflicts_with_subcommands = true)]
 pub struct OverlaysArgs {
+    #[command(subcommand)]
+    pub command: Option<OverlaysCommand>,
     /// Only this stem.
     pub stem: Option<String>,
+}
+
+/// `stems overlays <command>`.
+#[derive(Debug, Subcommand)]
+pub enum OverlaysCommand {
+    /// Render a stem's overlays now, without starting it, and write and
+    /// record them like a start does (a later `down` removes them).
+    ///
+    /// Uses the daemon when one runs, else renders locally (ports: as
+    /// configured; `port: auto` ports need the daemon). An unresolvable
+    /// reference is UNRESOLVED_VARIABLE (exit 2), listing every one.
+    Render(OverlaysRenderArgs),
+}
+
+/// `stems overlays render`.
+#[derive(Debug, Args)]
+pub struct OverlaysRenderArgs {
+    /// The stem.
+    pub stem: String,
+    /// Print each rendered file instead of writing it (nothing is written
+    /// or recorded).
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 /// `stems doctor`.
@@ -942,9 +1117,26 @@ pub struct DoctorArgs {
 #[derive(Debug, Subcommand)]
 pub enum ReposCommand {
     /// Clone missing git codebases and fetch/check out their refs.
+    ///
+    /// A tree with local work (uncommitted changes, unpushed commits, or
+    /// HEAD moved by you, e.g. with `repos checkout`) is left alone
+    /// (`skipped_dirty`); `--reset` returns a moved tree to the declared
+    /// ref (local work is still never touched).
     Sync(ReposArgs),
     /// Show each git codebase's branch, commit and cleanliness.
+    ///
+    /// `checked_out` is what HEAD is (branch, tag, `origin/<branch>` or
+    /// sha); `drift: true` when it is not the declared `ref`.
     Status(ReposArgs),
+    /// Check out any branch, tag or sha of a stem's git codebase.
+    ///
+    /// Fetches, then checks out the ref detached (a branch as
+    /// `origin/<branch>`). Refuses uncommitted changes (`REPO_DIRTY`)
+    /// unless `--force`, which carries them over like `git checkout`.
+    /// Nothing is recorded: `repos status` shows `drift: true`, `repos
+    /// sync` leaves the tree alone, `repos sync --reset <stem>` goes back
+    /// to the declared ref.
+    Checkout(ReposCheckoutArgs),
 }
 
 /// `stems repos sync|status`.
@@ -955,6 +1147,25 @@ pub struct ReposArgs {
     /// (sync) Pass `--recurse-submodules` to git clone / checkout.
     #[arg(long)]
     pub recurse_submodules: bool,
+    /// (sync) Return trees you moved (another branch, `repos checkout`) to
+    /// the declared ref.
+    #[arg(long)]
+    pub reset: bool,
+}
+
+/// `stems repos checkout`.
+#[derive(Debug, Args)]
+pub struct ReposCheckoutArgs {
+    /// Stem whose git codebase to move.
+    pub stem: String,
+    /// Branch, tag or sha.
+    #[arg(value_name = "REF")]
+    pub git_ref: String,
+    /// Check out even with uncommitted changes (they are carried over) or
+    /// with commits on HEAD that no remote branch or tag has (they stay
+    /// reachable from the reflog only).
+    #[arg(long)]
+    pub force: bool,
 }
 
 /// `stems watch`.
@@ -985,6 +1196,60 @@ pub struct OutputsArgs {
     /// Only this stem.
     pub stem: Option<String>,
     /// Show secret values (human output on a terminal only; JSON never reveals).
+    #[arg(long)]
+    pub reveal: bool,
+}
+
+/// `stems ports --format`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PortsFormat {
+    /// Aligned table.
+    Table,
+    /// JSON (the same as `--json`).
+    Json,
+    /// `NAME=value` lines.
+    Dotenv,
+    /// `export NAME=value` lines.
+    Shell,
+}
+
+/// `stems ports`.
+#[derive(Debug, Args)]
+pub struct PortsArgs {
+    /// Only these stems (default: every enabled stem).
+    pub stems: Vec<String>,
+    /// Output format.
+    #[arg(long, value_enum, default_value = "table")]
+    pub format: PortsFormat,
+    /// Config only: do not ask the daemon for `auto` allocations.
+    #[arg(long)]
+    pub no_status: bool,
+}
+
+/// Output formats of `stems env`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
+pub enum EnvFormat {
+    /// `KEY=value` lines (quoted when needed).
+    #[default]
+    Dotenv,
+    /// `export KEY='value'` lines, for `eval`.
+    Shell,
+    /// The JSON envelope.
+    Json,
+}
+
+/// `stems env`.
+#[derive(Debug, Args)]
+pub struct EnvArgs {
+    /// The stem.
+    pub stem: String,
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = EnvFormat::Dotenv)]
+    pub format: EnvFormat,
+    /// Also print the inherited environment (yours) under the stem's.
+    #[arg(long)]
+    pub all: bool,
+    /// Show secret values (human output on a terminal only).
     #[arg(long)]
     pub reveal: bool,
 }
@@ -1139,9 +1404,15 @@ pub struct DaemonStartArgs {
 
 /// The clap `Command` for the whole tree (built: usage strings are final).
 pub fn command() -> clap::Command {
-    let mut cmd = Cli::command();
+    let mut cmd = command_unbuilt();
     cmd.build();
     cmd
+}
+
+/// The clap tree with the generated help attached (`crate::help::decorate`:
+/// grouped `stems --help`, hook tables, See also lines), not yet built.
+pub fn command_unbuilt() -> clap::Command {
+    crate::help::decorate(Cli::command())
 }
 
 #[cfg(test)]

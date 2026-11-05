@@ -12,11 +12,13 @@ pub mod defaults;
 mod diagnostic;
 mod discover;
 pub mod edit;
+pub mod features;
 pub mod lifecycle;
 mod loader;
 mod merge;
 mod model;
 mod path;
+mod provenance;
 pub mod raw;
 mod resolve;
 mod spans;
@@ -24,7 +26,7 @@ mod subst;
 mod types;
 pub mod variants;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use indexmap::IndexMap;
@@ -98,6 +100,18 @@ pub struct Resolved {
 
 /// Load, merge, default and substitute a workspace.
 pub fn load(opts: LoadOptions) -> Result<Resolved, ConfigErrors> {
+    load_with_variants(opts, &BTreeMap::new())
+}
+
+/// [`load`] with some stems' variant selection replaced (`stems show
+/// <stem> --variant <name>`): `variants` maps a stem to a variant name, or
+/// to `local`/`base` for the base definition. Nothing is written. A name
+/// the stem does not declare is the usual non-fatal `UNKNOWN_VARIANT`
+/// diagnostic (the base is used).
+pub fn load_with_variants(
+    opts: LoadOptions,
+    variants: &BTreeMap<String, String>,
+) -> Result<Resolved, ConfigErrors> {
     let config_file = discover(opts.workspace.as_deref(), &opts.cwd, &opts.env)?;
     let root = config_file
         .parent()
@@ -121,6 +135,8 @@ pub fn load(opts: LoadOptions) -> Result<Resolved, ConfigErrors> {
         return Err(ConfigErrors { errors });
     }
     let mut merged = main.unwrap_or_else(|| Value::Mapping(Mapping::new()));
+    // Provenance (`Stem::inherited_from`): the stems of each layer.
+    let committed_stems = merged.get("stems").cloned();
     // Configurations: base -> selected configuration (-> variants -> local).
     let mut cfg_diags = Vec::new();
     let selected = configurations::apply(&mut merged, local.as_ref(), &mut loader, &mut cfg_diags);
@@ -150,9 +166,11 @@ pub fn load(opts: LoadOptions) -> Result<Resolved, ConfigErrors> {
         );
     }
     let local_keys = local.as_ref().map(LocalEnvKeys::of).unwrap_or_default();
+    let configured_stems = merged.get("stems").cloned();
+    let local_stems = local.as_ref().and_then(|l| l.get("stems")).cloned();
     // Variants (FR-ST-8): base -> active variant -> stems.local.yaml.
     let mut variant_diags = Vec::new();
-    let stem_variants = variants::apply(&mut merged, local.as_ref(), &mut variant_diags);
+    let stem_variants = variants::apply(&mut merged, local.as_ref(), variants, &mut variant_diags);
     for (name, v) in &stem_variants {
         if let Some(active) = &v.active {
             let stem = ConfigPath::root().key("stems").key(name);
@@ -164,6 +182,17 @@ pub fn load(opts: LoadOptions) -> Result<Resolved, ConfigErrors> {
     }
     variants::strip(&mut merged);
     configurations::strip(&mut merged);
+    let inherited_from = inherited_from(
+        &stem_variants,
+        [
+            committed_stems.as_ref(),
+            configured_stems.as_ref(),
+            local_stems.as_ref(),
+            merged.get("stems"),
+        ],
+    );
+    // `null` removes a key (FR-ST-8): drop the markers left by the merges.
+    merge::prune_nulls(&mut merged);
 
     let schema_err = |e: serde_yaml_ng::Error| ConfigErrors::one(yaml_error(&e, None, &spans));
     let prelim: RawWorkspace = serde_yaml_ng::from_value(merged.clone()).map_err(schema_err)?;
@@ -225,6 +254,7 @@ pub fn load(opts: LoadOptions) -> Result<Resolved, ConfigErrors> {
     let Substituter {
         diagnostics: sub_diags,
         deferred: sub_deferred,
+        enabled: enabled_templates,
         ..
     } = sub;
 
@@ -245,6 +275,16 @@ pub fn load(opts: LoadOptions) -> Result<Resolved, ConfigErrors> {
                     .unwrap_or_else(|| variants::BASE_VARIANT.to_string()),
             );
             stem.variants = v.names;
+        }
+    }
+    for (name, t) in enabled_templates {
+        if let Some(stem) = workspace.stems.get_mut(&name) {
+            stem.enabled_template = Some(t);
+        }
+    }
+    for (name, map) in inherited_from {
+        if let Some(stem) = workspace.stems.get_mut(&name) {
+            stem.inherited_from = map;
         }
     }
 
@@ -284,6 +324,40 @@ pub fn committed_tree(opts: &LoadOptions) -> Result<(PathBuf, Value), ConfigErro
         config_file,
         main.unwrap_or_else(|| Value::Mapping(Mapping::new())),
     ))
+}
+
+/// `Stem::inherited_from` of every stem that has variants or a field set by
+/// a configuration or the local file (`provenance.rs`). `trees` are the
+/// `stems` mappings of the committed tree, the tree after the selected
+/// configuration, the local file and the merged tree.
+fn inherited_from(
+    stem_variants: &IndexMap<String, variants::StemVariants>,
+    trees: [Option<&Value>; 4],
+) -> BTreeMap<String, BTreeMap<String, String>> {
+    let [committed, configured, local, merged] = trees;
+    let Some(Value::Mapping(stems)) = merged else {
+        return BTreeMap::new();
+    };
+    fn stem<'v>(t: Option<&'v Value>, k: &Value) -> Option<&'v Value> {
+        t.and_then(|t| t.get(k))
+    }
+    let mut out = BTreeMap::new();
+    for k in stems.keys() {
+        let name = merge::key_string(k);
+        let v = stem_variants.get(&name);
+        let map = provenance::of(&provenance::Layers {
+            base: stem(committed, k),
+            configured: stem(configured, k),
+            variant: v.and_then(|v| v.def.as_ref()),
+            local: stem(local, k),
+            merged: stem(merged, k),
+        });
+        let has_variants = v.is_some_and(|v| !v.names.is_empty());
+        if has_variants || map.values().any(|l| l != provenance::BASE) {
+            out.insert(name, map);
+        }
+    }
+    out
 }
 
 /// Env keys set by `stems.local.yaml`: workspace-level and per stem.
@@ -382,6 +456,14 @@ fn walk(v: &mut Value, path: &ConfigPath, sub: &mut Substituter<'_>, scope: &Sco
             for (k, item) in m.iter_mut() {
                 let key = merge::key_string(k);
                 let child = path.key(&key);
+                // `enabled: "${env.X}"` (46): an unset variable is false.
+                if path.segments().len() == 2
+                    && key == "enabled"
+                    && let Value::String(s) = item
+                {
+                    *s = sub.expand_enabled(s, scope, &child);
+                    continue;
+                }
                 // `${codebase}` is meaningless inside `codebase:` itself.
                 if path.segments().len() == 2 && key == "codebase" {
                     let inner = Scope {

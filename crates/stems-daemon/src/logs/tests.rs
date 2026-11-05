@@ -344,3 +344,47 @@ async fn output_drained_turns_true_once_the_attached_stream_ended() {
     );
     rt.release(&h);
 }
+
+#[tokio::test]
+async fn secret_values_are_scrubbed_before_storage() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(
+        d.path().join("stems.yaml"),
+        r#"
+schema_version: 1
+name: t
+stems:
+  api:
+    type: process
+    secrets: [PLAIN]
+    env: { API_TOKEN: s3cr3tvalue, PLAIN: hunter22, SHORT_TOKEN: abc }
+    scripts: { start: "sleep 1" }
+"#,
+    )
+    .unwrap();
+    let ws = stems_config::load(stems_config::LoadOptions {
+        cwd: d.path().to_path_buf(),
+        ..Default::default()
+    })
+    .unwrap()
+    .workspace;
+    let hub = hub(d.path());
+    hub.set_redaction(&ws);
+    let w = hub.script_writer("api", "start");
+    assert!(w.line("token=s3cr3tvalue plain=hunter22 short=abc").await);
+    let other = hub.script_writer("web", "start");
+    assert!(other.line("web sees s3cr3tvalue").await);
+    let recs = wait_for(&hub, "api", 1).await;
+    assert_eq!(
+        recs[0].text,
+        "token=<redacted:API_TOKEN> plain=<redacted:PLAIN> short=abc"
+    );
+    // Per stem: only the stem's own env values are scrubbed.
+    assert_eq!(
+        wait_for(&hub, "web", 1).await[0].text,
+        "web sees s3cr3tvalue"
+    );
+    hub.flush_all().await;
+    let file = std::fs::read_to_string(hub.stem_dir("api").join("current.log")).unwrap();
+    assert!(!file.contains("s3cr3tvalue") && !file.contains("hunter22"));
+}

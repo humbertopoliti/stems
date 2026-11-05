@@ -120,7 +120,7 @@ pub const HOOKS: &[Hook] = &[
         10,
         "build",
         HookScope::Stem,
-        "on `stems build` and `restart --build` (between stop and start); never automatic",
+        "on `stems build` and `restart --build` (between stop and start); with `when: changed|always` also in every start, after `setup`",
     ),
     hook(
         11,

@@ -1,5 +1,7 @@
 //! `docs/cli.md`: a Markdown reference generated from the clap tree
-//! (`stems __docs`, `make docs`), golden-tested in `tests/docs.rs`.
+//! (`stems __docs`, `make docs`), golden-tested in `tests/docs.rs`; and the
+//! documentation pages embedded in the binary for `stems docs [<topic>]`
+//! (50), with the GitHub heading slugs the feature index links to.
 
 use clap::Command;
 
@@ -54,5 +56,180 @@ fn collect(cmd: &mut Command, path: &str, out: &mut Vec<(String, String)>) {
         if let Some(sub) = cmd.find_subcommand_mut(&n) {
             collect(sub, &format!("{path} {n}"), out);
         }
+    }
+}
+
+macro_rules! pages {
+    ($($name:literal),* $(,)?) => {
+        &[$((
+            $name,
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/", $name, ".md")),
+        )),*]
+    };
+}
+
+/// Every page under `docs/` as `(topic, markdown)`, in the order of the
+/// index (`docs/README.md`, topic `index`). A test keeps it equal to the
+/// directory.
+pub const PAGES: &[(&str, &str)] = pages!(
+    "README",
+    "features",
+    "getting-started",
+    "install",
+    "config",
+    "ports",
+    "lifecycle",
+    "process-model",
+    "recovery",
+    "health",
+    "restart",
+    "watchdogs",
+    "scripts",
+    "exec",
+    "overlays",
+    "repos",
+    "docker",
+    "compose",
+    "doctor",
+    "logs",
+    "metrics",
+    "tui",
+    "notifications",
+    "mcp",
+    "protocol",
+    "cli",
+);
+
+/// The topic name of a page file stem (`README` is `index`).
+pub fn topic_name(file: &str) -> &str {
+    if file == "README" { "index" } else { file }
+}
+
+/// The markdown of a topic (`exec`, `index`; `docs/exec.md` and `exec.md`
+/// work too).
+pub fn page(topic: &str) -> Option<&'static str> {
+    let t = topic.trim_start_matches("docs/").trim_end_matches(".md");
+    PAGES
+        .iter()
+        .find(|(name, _)| *name == t || topic_name(name) == t)
+        .map(|(_, text)| *text)
+}
+
+/// The first `# ` heading of a page.
+pub fn title(markdown: &str) -> &str {
+    markdown
+        .lines()
+        .find_map(|l| l.strip_prefix("# "))
+        .unwrap_or("")
+        .trim()
+}
+
+/// GitHub's anchor for a heading: lowercase, punctuation dropped (letters,
+/// digits, `_` and `-` kept), spaces to `-`.
+pub fn slug(heading: &str) -> String {
+    heading
+        .trim()
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | ' '))
+        .map(|c| if c == ' ' { '-' } else { c })
+        .collect()
+}
+
+/// The anchors of every heading of a page (outside code fences), with
+/// GitHub's `-1`, `-2` suffixes for repeats.
+pub fn heading_slugs(markdown: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut fence = false;
+    for line in markdown.lines() {
+        if line.starts_with("```") {
+            fence = !fence;
+            continue;
+        }
+        if fence {
+            continue;
+        }
+        let hashes = line.chars().take_while(|c| *c == '#').count();
+        if hashes == 0 || hashes > 6 || !line[hashes..].starts_with(' ') {
+            continue;
+        }
+        let base = slug(&line[hashes..]);
+        let n = out
+            .iter()
+            .filter(|s| {
+                **s == base
+                    || s.strip_prefix(&format!("{base}-"))
+                        .is_some_and(|r| r.parse::<u32>().is_ok())
+            })
+            .count();
+        out.push(if n == 0 { base } else { format!("{base}-{n}") });
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slugs_follow_github() {
+        assert_eq!(slug("Profiles (FR-WS-8)"), "profiles-fr-ws-8");
+        assert_eq!(
+            slug("`stems repos sync [stems…] [--reset] [--json]`"),
+            "stems-repos-sync-stems---reset---json"
+        );
+        assert_eq!(
+            slug("include / extends (FR-WS-9)"),
+            "include--extends-fr-ws-9"
+        );
+        assert_eq!(
+            heading_slugs("# A\n## Errors\n```\n# not\n```\n## Errors\n"),
+            ["a", "errors", "errors-1"]
+        );
+    }
+
+    #[test]
+    fn every_docs_page_is_embedded() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs");
+        let mut on_disk: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| {
+                let p = e.ok()?.path();
+                (p.extension()? == "md").then(|| {
+                    p.file_stem()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned()
+                })
+            })
+            .collect();
+        on_disk.sort();
+        let mut embedded: Vec<String> = PAGES.iter().map(|(n, _)| n.to_string()).collect();
+        embedded.sort();
+        assert_eq!(embedded, on_disk, "docs/ and docs::PAGES differ");
+        for (name, text) in PAGES {
+            assert!(!title(text).is_empty(), "{name} has no title");
+        }
+    }
+
+    #[test]
+    fn every_hand_written_page_ends_with_see_also() {
+        for (name, text) in PAGES {
+            if *name == "cli" {
+                continue;
+            }
+            assert!(
+                text.lines().any(|l| l.starts_with("See also: ")),
+                "docs/{name}.md has no `See also:` footer"
+            );
+        }
+    }
+
+    #[test]
+    fn topics_resolve() {
+        assert!(page("exec").is_some());
+        assert!(page("docs/exec.md").is_some());
+        assert!(page("index").is_some());
+        assert!(page("nope").is_none());
     }
 }

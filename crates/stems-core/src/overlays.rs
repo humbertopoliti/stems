@@ -209,42 +209,44 @@ pub fn render_overlay(overlay: &Overlay, ctx: &RenderCtx) -> Result<Vec<u8>, Err
             let text =
                 String::from_utf8(bytes).map_err(|_| source_error(src, "is not valid UTF-8"))?;
             let out = substitute_template(&protect_placeholders(&text), &ctx.template_context());
-            if let Some(d) = out.diagnostics.first() {
-                let all: Vec<&str> = out.diagnostics.iter().map(|d| d.message.as_str()).collect();
-                return Err(Error::new(
-                    ErrorCode::UnresolvedVariable,
-                    format!("overlay template `{}`: {}", src.display(), d.message),
-                )
-                .with_hint(
+            // Every problem is reported (47), the first one's hint is kept.
+            let mut problems: Vec<String> = Vec::new();
+            let mut hint: Option<String> = None;
+            for d in &out.diagnostics {
+                problems.push(d.message.clone());
+                hint.get_or_insert_with(|| {
                     d.hint
                         .clone()
-                        .unwrap_or_else(|| "fix the reference in the template".into()),
-                )
-                .with_details(json!({ "source": src, "problems": all })));
+                        .unwrap_or_else(|| "fix the reference in the template".into())
+                });
             }
-            if let Some(r) = out.deferred.first() {
+            let mut references: Vec<&str> = Vec::new();
+            for r in &out.deferred {
+                references.push(&r.reference);
                 if r.kind == stems_config::DeferredKind::Output {
-                    return Err(Error::new(
-                        ErrorCode::UnresolvedVariable,
-                        format!(
-                            "overlay template `{}`: output `${{{}}}` has no value",
-                            src.display(),
-                            r.reference
-                        ),
-                    )
-                    .with_hint(OUTPUTS_HINT)
-                    .with_details(json!({ "source": src, "reference": r.reference })));
+                    problems.push(format!("output `${{{}}}` has no value", r.reference));
+                    hint.get_or_insert_with(|| OUTPUTS_HINT.into());
+                } else {
+                    problems.push(format!("`${{{}}}` has no value yet", r.reference));
+                    hint.get_or_insert_with(|| "only ports known when the stem starts (fixed or already allocated) can be used in overlays".into());
+                }
+            }
+            if !problems.is_empty() {
+                let mut details = json!({ "source": src, "problems": problems });
+                if let Some(r) = references.first() {
+                    details["reference"] = json!(r);
+                    details["references"] = json!(references);
                 }
                 return Err(Error::new(
                     ErrorCode::UnresolvedVariable,
                     format!(
-                        "overlay template `{}`: `${{{}}}` has no value yet",
+                        "overlay template `{}`: {}",
                         src.display(),
-                        r.reference
+                        problems.join("; ")
                     ),
                 )
-                .with_hint("only ports known when the stem starts (fixed or already allocated) can be used in overlays")
-                .with_details(json!({ "source": src, "reference": r.reference })));
+                .with_hint(hint.unwrap_or_default())
+                .with_details(details));
             }
             Ok(out.text.into_bytes())
         }
@@ -621,6 +623,38 @@ mod tests {
         assert_eq!(e.code, ErrorCode::UnresolvedVariable);
         assert_eq!(e.hint.as_deref(), Some(OUTPUTS_HINT));
         assert_eq!(e.details["reference"], "stem.api.outputs.NOPE");
+    }
+
+    #[test]
+    fn every_unresolved_reference_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        fs::write(
+            repo.join("t.tmpl"),
+            "a=${env.MISSING_A}\nb=${var.nope}\nc=${stem.api.outputs.NOPE}\n",
+        )
+        .unwrap();
+        let ctx = RenderCtx {
+            workspace_root: repo.clone(),
+            integration_repo: repo.clone(),
+            codebase: repo.join("code"),
+            stem_name: "web".into(),
+            ports: [("api".to_string(), Vec::new())].into_iter().collect(),
+            ..Default::default()
+        };
+        let overlay = Overlay {
+            source: OverlaySource::Template(repo.join("t.tmpl")),
+            dest: "x".into(),
+            keep: false,
+            mode: FileMode(0o644),
+        };
+        let e = render_overlay(&overlay, &ctx).unwrap_err();
+        assert_eq!(e.code, ErrorCode::UnresolvedVariable);
+        let problems = e.details["problems"].as_array().unwrap();
+        assert_eq!(problems.len(), 3, "{problems:?}");
+        for r in ["MISSING_A", "nope", "NOPE"] {
+            assert!(e.message.contains(r), "{r} not in {}", e.message);
+        }
     }
 
     #[test]

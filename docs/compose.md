@@ -38,9 +38,10 @@ second before `up`), `wait` and `is_alive` are the docker runtime's.
 
 ## Commands
 
-All invocations are `docker compose --ansi never -f <file> -p <project>
---env-file <env_dir>/<stem>.env ...`, run with captured output in the
-compose file's directory (goldens in
+All invocations are `docker compose --ansi never -f <file> [-f
+<env_dir>/<stem>.override.yaml] -p <project> --env-file <env_dir>/<stem>.env
+...` (the second `-f` only with [`inject_env: true`](#inject_env-the-stems-env-in-the-container)),
+run with captured output in the compose file's directory (goldens in
 `crates/stems-runtime/src/compose/snapshots/`):
 
 | operation | arguments after the prefix | when |
@@ -68,6 +69,33 @@ container if it is still running afterwards (`StopOutcome::Killed`).
 `DockerRuntime` connected to (unless the stem's env sets it), so the CLI
 and the API client always talk to the same engine.
 
+## One-off compose commands
+
+`stems compose <stem> [--service] -- <args…>` runs `docker compose` with the
+stem's context, so a one-off (a migration, `run --rm`, `config`, `ps`) needs
+no hand-built `-f … -p …`:
+
+```sh
+stems compose cache -- config --services
+stems compose cache --service -- ps --format json   # ... ps --format json redis
+stems compose cache -- run --rm migrate
+```
+
+It runs `docker compose --ansi auto -f <file> [-f <override>, with
+`inject_env`] -p <project> --env-file <env_dir>/<stem>.env <args…>` in your
+terminal (stdin, TTY and exit code pass through), in the compose file's
+directory, with your environment plus the stem's env and `DOCKER_HOST` set as
+the runtime does. `--service` appends the stem's `service` as the last
+argument. A stem that is not `type: compose` is a `USAGE` error (exit 2).
+`--json` prints `{stem, argv, exit}` after the command.
+
+Like `stems exec` it never starts a daemon: with a daemon the live env is used;
+without one stems computes it from the config (auto ports and outputs stay
+unresolved) and writes the env file (and override) itself when missing or
+stale. The daemon serialises its own compose calls per project; a long
+`stems compose` while stems restarts the same stem may hit compose's own
+project lock (compose retries).
+
 ## Build
 
 A compose stem has a `build` setting (bool, **default `true`**): every
@@ -92,8 +120,74 @@ stems:
 for one run (`UpParams.build`, `StartParams.build`, `RestartParams.build`:
 `true`/`false`/absent). On `restart`, `--build` also runs the stems'
 `build` scripts, as before. Docker `build:` stems always build; the flags
-do not apply to them. The wrong form of `build` (an object on a compose
-stem, a bool on a docker stem) is `SCHEMA_INVALID` at `stems.<n>.build`.
+do not apply to them. A bool on a docker stem, and `context`/`dockerfile`
+on a compose stem, are `SCHEMA_INVALID` at `stems.<n>.build` (the service's
+`build:` lives in the compose file).
+
+### Build secrets, extra services and `before_setup` (Bake)
+
+`compose up --build` cannot pass BuildKit secrets or build a one-shot
+service that `up` does not start. The object form of `build:` does both:
+
+```yaml
+stems:
+  api:
+    type: compose
+    file: compose.yml
+    service: api
+    build:
+      services: [api, migrate]   # default: [<service>]; one-shot services too
+      before_setup: true         # default false: build at start
+      secrets:
+        - { id: adc, file: "${env.HOME}/.config/gcloud/application_default_credentials.json" }
+      allow_read:                # exact absolute paths; no globs, no symlinks
+        - "${workspace.root}/../infra"
+```
+
+- The images are built with **Bake** from the compose file: `docker buildx
+  bake --load --progress plain -f <file> -f <override> [--allow
+  fs.read=<path>]… [--set <svc>.tags=<image>]… <svc>…`, then `compose up -d
+  --no-deps --no-build <service>`. Each service is tagged with the image
+  compose runs (`image:`, else `<project>-<service>`), so the following `up`
+  and `docker compose run --rm migrate` find it. Every listed service must
+  have `build:` in the compose file (else the build fails saying so); list
+  the stem's own service too when it is built.
+- **Secrets** (`{id, file}` or `{id, env}`, as for
+  [docker stems](docker.md#build-secrets-and-paths-outside-the-context-buildx))
+  are declared in the generated override `<env_dir>/<stem>.override.yaml`
+  (the same file `inject_env` uses): a top-level `secrets: {adc: {file: …}}`
+  and `services.<svc>.build.secrets: [adc]` for each built service, so the
+  compose file needs no stems-specific edits (if it already declares them,
+  compose merges the two). The Dockerfile mounts them with `RUN
+  --mount=type=secret,id=adc`. With secrets, the override is passed as the
+  second `-f` to every compose invocation of the stem.
+- **`allow_read`** becomes `--allow fs.read=<path>` (Bake enforces the
+  `fs.read` entitlement; stems sets `BUILDX_BAKE_ENTITLEMENTS_FS=1` for the
+  Bake process, so an environment that turned the checks off does not
+  leak in). Each service's context, its Dockerfile's directory and the
+  secret files are granted automatically (normalised, plus their
+  symlink-resolved form); `allow_read` is for the rest, with the same
+  validation as docker stems.
+- The stem env is the Bake process's environment (plus
+  `COMPOSE_PROJECT_NAME`), so the files interpolate like `compose up`'s.
+  Build output lines are `docker.build {stem, line}` events; a failure is
+  `SETUP_FAILED` with `details.tail`. A missing secret file / unset `env`
+  secret / missing `allow_read` path fails before Bake runs, naming it
+  (`details.secret`, `details.allow_read`).
+- **`before_setup: true`** moves the build to the front of the start
+  sequence: `[build images] → setup → pre_start → start` (the
+  `docker.build` events come before `stem.state setup`). `setup` (and
+  `pre_start`) get `STEMS_IMAGES=svc=image[,svc=image]` and `STEMS_IMAGE`
+  (the stem's own service's image), so `setup` can `docker compose run
+  --rm migrate`. The start that follows does not build again (the stem is
+  marked as built for that one start). A policy respawn builds again, as
+  `up --build` does. With the build off for the run (`--no-build`), nothing
+  is built but `setup` still gets the image names. A stem without any
+  lifecycle script builds at start.
+- `build: true` (or no `build:`) keeps the plain `compose up --build` path;
+  `build: false` and `--no-build` never run Bake. The stale-image check
+  (below) looks at the stem's own service; secret files and `allow_read`
+  trees are not stale inputs.
 
 ## Stale images
 
@@ -144,7 +238,10 @@ compose stem of a workspace shares that project unless it sets its own
 
 ## Env overrides and precedence
 
-The stem's resolved `env` is
+The stem's resolved environment (the layers of
+[config.md](config.md#environment-fr-st-4): `env`, `env_files`,
+`stems.local.yaml`, `--pass-env`, `PORT` = the primary **host** port,
+`STEMS_*`; not the daemon's own environment) is
 
 1. written to `<env_dir>/<stem>.env` (mode 0600, rewritten on every start;
    `KEY='value'`, or a double-quoted value with `\\ \" \n \r \$` escaped when
@@ -157,9 +254,72 @@ the exported values are authoritative and the env file is what lets a human
 reproduce the invocation by hand. Variables stems does not set still come
 from the daemon's environment before the file's defaults.
 
-Compose only puts a variable into the *container* if the file uses it
-(`environment:`, `command: ${REDIS_ARGS:-}`, ...): stem env is an
-interpolation input, not an implicit `environment:` block.
+**Stem env is an interpolation input, not the container's environment.**
+Compose only puts a variable into the *container* when the compose file
+uses it. With `env: { FOO: bar }` on the stem:
+
+```yaml
+services:
+  api:
+    image: shop-api
+    # no mention of FOO              -> the container has no FOO
+    environment:
+      - FOO                          # -> FOO=bar (taken from compose's environment)
+      - API_FOO=${FOO}               # -> API_FOO=bar (interpolated)
+    command: serve --foo ${FOO:-x}   # -> interpolated into the command
+```
+
+### `inject_env`: the stem's env in the container
+
+To give the container the whole stem environment without listing every
+variable in the compose file, set `inject_env: true` (default `false`):
+
+```yaml
+stems:
+  api:
+    type: compose
+    file: compose.yml
+    service: api
+    env: { FOO: bar }
+    env_files: [env/api.env]
+    inject_env: true
+```
+
+stems then also writes `<env_dir>/<stem>.override.yaml` (mode 0600) and
+passes it as a second `-f` on every invocation that has `-f` (`up`, `stop`,
+`rm`, `ps`, `config`):
+
+```yaml
+services:
+  "api":
+    env_file:
+      - "/…/<env_dir>/api.env"    # the same file as --env-file
+    environment:
+      PORT: "8080"                # only when the primary port has a container_port
+```
+
+- Compose appends `env_file` lists across `-f` files, so the service's own
+  `env_file:` still applies; for a key in both, stems' file (the later one)
+  wins. The service's `environment:` wins over every `env_file`, so the
+  compose file keeps the last word.
+- `PORT` in the env file is the **host** port (what the stem's health check
+  and dependants use). Inside the container the service listens on the
+  container port, so when the stem's first port has a `container_port`
+  the override sets `PORT` to it, as docker stems do.
+- `STEMS_STEM`, `STEMS_WORKSPACE`, `STEMS_RUN_ID`, `STEMS_<DEP>_PORT`, …
+  are injected too (host paths and host ports: they describe the host).
+- `docker compose up` has no `-e`; the override file is how "pass the
+  env with `-e`" is delivered.
+- The stale-image check, `doctor` and adoption after a daemon restart use
+  the same `-f` pair and the same env (built like a real start, minus
+  `--pass-env`).
+- Stems that share a compose project should agree on `inject_env`:
+  starting one recreates the project's services with its own setting, so
+  another may come back without (or with) the injected environment.
+  `stems validate` warns `COMPOSE_INJECT_ENV_MIXED` (a warning, exit 0;
+  `details: {stem, project, without: [stems]}`) once per stem that sets
+  `inject_env: true` in such a project; set the same value on every stem
+  of the project.
 
 ## Ownership marker and `COMPOSE_PROJECT_IN_USE`
 
@@ -239,9 +399,12 @@ stems, see `docs/docker.md`):
   ownership markers agree).
 - `compose_spec(ws, stem, run_id, env)`: the file (absolute, resolved
   against the integration repo), `service`, `project_name`, `adopt`,
-  `stop_grace`, and the env stems resolves for the stem (config env,
-  `env_files`, local overrides, `--pass-env`, `PORT` = the primary host
-  port, `STEMS_*`; not the daemon's own environment). Golden:
+  `stop_grace`, `inject_env` (with the primary port's `container_port`),
+  and the env stems resolves for the stem (config env, `env_files`, local
+  overrides, `--pass-env`, `PORT` = the primary host port, `STEMS_*`; not
+  the daemon's own environment). Off the start path (adoption, `doctor`)
+  `containers::config_env` builds the same env through `build_env`
+  without `--pass-env`. Golden:
   `hello_shop_redis`. hello-shop's `redis` passes
   `REDIS_PORT: "${stem.self.port}"` so a local port override reaches the
   file's `${REDIS_PORT:-16379}`.
@@ -302,5 +465,13 @@ make e2e-docker FEATURE=tests/features/compose    # 5 scenarios, pass
    to a missing file, since an empty `PATH` no longer hides Docker
    Desktop's CLI). ✓
 
+9. `inject_env: true` (38): `docker exec … echo $FOO` prints the stem's
+   `FOO`, `PORT` is the container port; without it the container has no
+   `FOO` (`compose/inject-env.feature`, 2026-11-05). Compose's `env_file`
+   merge across `-f` files was checked with `docker compose config`: the
+   later file wins, `environment:` beats both. ✓
+
 Not verified: compose v2.x before 2.21 (JSON-array `ps` output; unit-tested
 only) and compose on Linux.
+
+See also: [Docker](docker.md) · [Config](config.md) · [Ports](ports.md) · [What stems can do](features.md)

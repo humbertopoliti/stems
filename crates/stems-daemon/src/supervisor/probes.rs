@@ -536,6 +536,7 @@ pub(crate) fn build(
     stem: &Stem,
     target: &WaitTarget,
     own_env: &BTreeMap<String, String>,
+    base_env: Option<&BTreeMap<String, String>>,
 ) -> Result<Option<Arc<dyn Prober>>, Error> {
     let Some(h) = &target.health else {
         return Ok(None);
@@ -561,7 +562,8 @@ pub(crate) fn build(
             let root = &ws.workspace.root;
             let base = stem.default_cwd(root).to_path_buf();
             let cwd = h.cwd.as_ref().map_or(base.clone(), |c| base.join(c));
-            let mut env = core.base_env.clone();
+            // Over the start's caller environment (37), else the daemon's.
+            let mut env = base_env.unwrap_or(&core.base_env).clone();
             env.extend(own_env.iter().map(|(k, v)| (k.clone(), v.clone())));
             let shell = match &stem.runtime {
                 StemRuntime::Process(p) => Some(p.shell.clone()),
@@ -577,11 +579,15 @@ pub(crate) fn build(
                     args: Vec::new(),
                     inputs: Vec::new(),
                     requires: Vec::new(),
+                    requires_stopped: Vec::new(),
                     timeout: Some(h.timeout),
                     retries: 0,
+                    soft_fail: false,
+                    when: stems_config::BuildWhen::OnDemand,
                     concurrent: true,
                     stamp_env: Vec::new(),
                     cwd,
+                    inherit_env: true,
                     cwd_set: true,
                 },
                 env,
@@ -812,12 +818,15 @@ pub(crate) fn start(
     target: &WaitTarget,
     generation: u64,
 ) {
-    let own_env = cell.info().env.clone();
+    let (own_env, base_env) = {
+        let info = cell.info();
+        (info.env.clone(), info.base_env.clone())
+    };
     let kind = target.health.as_ref().map(|h| h.kind);
     cell.info().health.begin(kind);
     let built = match core.waiter.prober(target) {
         Some(p) => Ok(Some(p)),
-        None => build(core, ws, stem, target, &own_env),
+        None => build(core, ws, stem, target, &own_env, base_env.as_deref()),
     };
     let prober = match built {
         Ok(Some(p)) => p,
@@ -880,8 +889,14 @@ pub(crate) fn monitor_adopted(core: &Arc<Core>, cell: &Arc<StemCell>, ws: &Resol
         probe_port,
     };
     cell.info().health.begin(health.as_ref().map(|h| h.kind));
-    let own_env = cell.info().env.clone();
-    if let (Ok(Some(prober)), Some(h)) = (build(core, ws, stem, &target, &own_env), health) {
+    let (own_env, base_env) = {
+        let info = cell.info();
+        (info.env.clone(), info.base_env.clone())
+    };
+    if let (Ok(Some(prober)), Some(h)) = (
+        build(core, ws, stem, &target, &own_env, base_env.as_deref()),
+        health,
+    ) {
         let task = tokio::spawn(monitor(
             cell.clone(),
             generation,
@@ -919,7 +934,7 @@ pub(crate) fn start_external(
     };
     let generation = cell.bump_generation();
     cell.info().health.begin(Some(h.kind));
-    match build(core, ws, stem, &target, &BTreeMap::new()) {
+    match build(core, ws, stem, &target, &BTreeMap::new(), None) {
         Ok(Some(prober)) => {
             let task = tokio::spawn(monitor(
                 cell.clone(),
@@ -1191,6 +1206,8 @@ pub(crate) fn apply_degraded(
                 .then_some(s.restarts_in_window),
             // Crossed `limits:` thresholds (25), e.g. `memory > 100MB`.
             metrics: metrics_of(&s.name),
+            // Failed `soft_fail` scripts of this run (41).
+            soft_failures: s.warnings.iter().map(|w| w.failure()).collect(),
         };
         let reasons = derive_degraded(&inputs);
         if let Some(text) = degraded_text(&reasons) {

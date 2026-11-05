@@ -66,10 +66,10 @@ fn postgres() -> ContainerSpec {
 
 fn built() -> ContainerSpec {
     let mut s = ContainerSpec::new("hello-shop", "shop-api", "01J8ZQ7Y6M5X4W3V2T1S0R9Q8P");
-    s.build = Some(BuildSpec {
-        context: "/repos/shop-api".into(),
-        dockerfile: "/repos/shop-api/Dockerfile".into(),
-    });
+    s.build = Some(BuildSpec::new(
+        "/repos/shop-api",
+        "/repos/shop-api/Dockerfile",
+    ));
     s.ports = vec![
         PortMapping {
             host: 18080,
@@ -820,4 +820,89 @@ fn a_pull_changed_the_image_when_its_id_moved() {
     assert!(o(None, Some("sha256:a")).changed(), "new image");
     assert!(o(Some("sha256:a"), Some("sha256:b")).changed(), "moved tag");
     assert!(!o(Some("sha256:a"), Some("sha256:a")).changed());
+}
+
+// --- 44: build secrets through `docker buildx build` -----------------------
+
+fn with_secrets() -> ContainerSpec {
+    let mut s = built();
+    let b = s.build.as_mut().unwrap();
+    b.dockerfile = "/infra/Dockerfile.api".into();
+    b.secrets = vec![
+        BuildSecret {
+            id: "adc".into(),
+            source: SecretSource::File("/home/me/.config/gcloud/adc.json".into()),
+        },
+        BuildSecret {
+            id: "tok".into(),
+            source: SecretSource::Env("NPM_TOKEN".into()),
+        },
+    ];
+    b.allow_read = vec!["/infra".into()];
+    s
+}
+
+#[test]
+fn golden_buildx_build_args() {
+    let s = with_secrets();
+    let args = buildx_build_args(&s, s.build.as_ref().unwrap());
+    insta::assert_snapshot!(
+        "buildx_build_args",
+        crate::compose::display_command(std::ffi::OsStr::new("docker"), &args)
+    );
+}
+
+#[test]
+fn buildx_only_for_secrets_or_allow_read() {
+    assert!(!built().build.unwrap().needs_buildx());
+    // An out-of-context Dockerfile alone stays on the API path (the tar
+    // carries it).
+    let mut b = built().build.unwrap();
+    b.dockerfile = "/elsewhere/Dockerfile".into();
+    assert!(!b.needs_buildx());
+    assert!(with_secrets().build.unwrap().needs_buildx());
+    let mut b = built().build.unwrap();
+    b.allow_read = vec!["/x".into()];
+    assert!(b.needs_buildx());
+}
+
+#[test]
+fn secret_flags_never_carry_values() {
+    let s = with_secrets();
+    let flags: Vec<String> = s
+        .build
+        .unwrap()
+        .secrets
+        .iter()
+        .map(BuildSecret::flag)
+        .collect();
+    assert_eq!(
+        flags,
+        [
+            "id=adc,src=/home/me/.config/gcloud/adc.json",
+            "id=tok,env=NPM_TOKEN"
+        ]
+    );
+}
+
+#[test]
+fn spec_hash_covers_secrets_and_allow_read() {
+    let plain = built();
+    // No secrets: the hash is what it was before 44 (fields skipped).
+    let json = serde_json::to_value(plain.build.as_ref().unwrap()).unwrap();
+    assert!(json.get("secrets").is_none() && json.get("allow_read").is_none());
+    let mut a = built();
+    a.build.as_mut().unwrap().allow_read = vec!["/infra".into()];
+    assert_ne!(plain.spec_hash(), a.spec_hash());
+    let mut b = a.clone();
+    b.build.as_mut().unwrap().secrets = with_secrets().build.unwrap().secrets;
+    assert_ne!(a.spec_hash(), b.spec_hash());
+}
+
+#[test]
+fn buildx_missing_is_detected() {
+    assert!(buildx_missing(&[
+        "docker: 'buildx' is not a docker command.".to_string()
+    ]));
+    assert!(!buildx_missing(&["ERROR: failed to solve".to_string()]));
 }

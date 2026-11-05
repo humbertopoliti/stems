@@ -112,11 +112,13 @@ trace:
 		echo "trace: REQUIREMENTS.md/plan/ not present, skipping the traceability check"; \
 	fi
 
-# API docs, plus docs/cli.md generated from the clap tree (`stems __docs`);
-# crates/stems-cli/tests/docs.rs fails when docs/cli.md drifts.
+# API docs, plus docs/cli.md generated from the clap tree (`stems __docs`) and
+# docs/features.md from the feature index (`stems __docs features`);
+# crates/stems-cli/tests/docs.rs fails when either drifts.
 docs:
 	$(CARGO) doc --workspace --no-deps
 	$(CARGO) run -q -p stems-cli -- __docs > docs/cli.md
+	$(CARGO) run -q -p stems-cli -- __docs features > docs/features.md
 
 # --- release (deliverable 32; see release/RELEASING.md) ----------------------
 
@@ -132,9 +134,11 @@ smoke:
 	@if [ -z "$(BIN)" ]; then $(CARGO) build --release -p stems-cli; fi
 	release/smoke.sh $(if $(BIN),$(BIN),target/release/stems)
 
-# Binary size budget: the release binary must stay under 25 MB
+# Binary size budget: the release binary must stay under 30 MB
 # (strip, fat LTO and codegen-units = 1 in [profile.release]).
-SIZE_BUDGET_BYTES ?= 26214400
+# History: v0.6 24.4 MB; v0.7 26.3 MB (14 features plus ~0.5 MB of docs
+# embedded for `stems docs`), so the budget moved from 25 to 30 MB.
+SIZE_BUDGET_BYTES ?= 31457280
 size:
 	$(CARGO) build --release -p stems-cli
 	@bytes=$$(wc -c < target/release/stems | tr -d ' '); \

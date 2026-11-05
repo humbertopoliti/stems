@@ -18,3 +18,24 @@ Feature: validate warns when compose stems cannot run
     When I run "stems validate --skip-requires --json" with env PATH=${outside} STEMS_DOCKER_CLI=${outside}/docker
     Then the command succeeds
     And the JSON at "$.data.warnings" equals []
+
+  # Starting one stem of a compose project recreates the project's services
+  # with that stem's `-f` set, so mixed `inject_env` is worth a warning.
+  Scenario: stems of one compose project that disagree on inject_env are a warning
+    Given the fixture workspace "compose-redis"
+    And a local override setting stems.cache.inject_env=true
+    And the local override file is extended with:
+      """
+      stems:
+        queue:
+          type: compose
+          file: compose.yml
+          service: redis
+          ports: [{ name: redis, port: 18535, container_port: 6379 }]
+      """
+    When I run "stems validate --skip-requires --json"
+    Then the command succeeds
+    And the JSON at "$.data.warnings[0].code" equals "COMPOSE_INJECT_ENV_MIXED"
+    And the JSON at "$.data.warnings[0].path" equals "stems.cache.inject_env"
+    And the JSON at "$.data.warnings[0].details.project" equals "stems-compose-redis"
+    And the JSON at "$.data.warnings[0].details.without" equals ["queue"]

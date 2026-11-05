@@ -10,9 +10,9 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::types::{
-    ArgType, AutoApply, ByteSize, Condition, CpuLimit, Dur, FileMode, HealthType, MemoryLimit,
-    Protocol, PullPolicy, Requirement, RestartPolicy, Scalar, StemType, StringOrList, WatchAction,
-    WatchRoot,
+    ArgType, AutoApply, BuildWhen, ByteSize, CheckSeverity, CheckWhen, Condition, CpuLimit, Dur,
+    FileMode, HealthType, MemoryLimit, Protocol, PullPolicy, Requirement, RestartPolicy, Scalar,
+    StemType, StringOrList, WatchAction, WatchRoot,
 };
 
 /// Deserialize "a string, or else a `T`", giving `T`'s own error message
@@ -83,6 +83,10 @@ pub struct RawWorkspace {
     /// `mytool: { version: ">=1.2", command: "mytool -V", regex: "v([0-9.]+)" }`.
     #[serde(default)]
     pub requires: IndexMap<String, Requirement>,
+    /// User-defined checks run by `stems doctor` and before `stems up`
+    /// (workspace root as the working directory).
+    #[serde(default)]
+    pub checks: IndexMap<String, RawCheck>,
     /// Named subsets of stems.
     #[serde(default)]
     pub profiles: IndexMap<String, RawProfile>,
@@ -103,6 +107,14 @@ pub struct RawWorkspace {
     pub config: Option<RawConfigSettings>,
     /// Desktop notifications when stems fail for good (34).
     pub notifications: Option<RawNotifications>,
+    /// Env names whose values are secret (47): redacted in `stems show`,
+    /// `stems env`, `status -v`, the MCP server and `logs --export`, and
+    /// scrubbed from log lines. Adds to the built-in name patterns; an entry
+    /// prefixed `!` (`"!PUBLIC_KEY"`) is an exception that is never redacted.
+    #[serde(default)]
+    pub secrets: Vec<String>,
+    /// Adjust the built-in secret name patterns (47).
+    pub redaction: Option<RawRedaction>,
     /// Where git codebases are cloned (default `.stems/repos`).
     pub repos_dir: Option<String>,
     /// Workspace-level scripts (`bootstrap`, `teardown`, custom).
@@ -183,6 +195,19 @@ pub struct RawLogs {
     pub ring: Option<u32>,
 }
 
+/// `redaction:` block (47): which env names count as secret.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "Redaction")]
+pub struct RawRedaction {
+    /// Extra name globs (case-insensitive, `*` and `?`), e.g. `"*_DSN"`.
+    pub patterns: Option<Vec<String>>,
+    /// Keep the built-in patterns (`*TOKEN*`, `*SECRET*`, `*PASSWORD*`,
+    /// `*PASSWD*`, `*CREDENTIAL*`, `*_KEY`, `*_KEY_*`, `*APIKEY*`);
+    /// default `true`.
+    pub builtin: Option<bool>,
+}
+
 /// `metrics:` block.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -257,13 +282,18 @@ pub struct RawStem {
     pub description: Option<String>,
     /// Local path or git repository with the stem's code.
     pub codebase: Option<RawCodebase>,
-    /// `false` keeps the stem listed but excludes it from runs.
-    pub enabled: Option<bool>,
+    /// `false` keeps the stem listed but excludes it from runs. A bool, or a
+    /// string rendered by substitution (46): `true|1|yes|on` /
+    /// `false|0|no|off|""` (case-insensitive), e.g. `"${env.WITH_SEARCH}"`
+    /// (an unset variable counts as false here).
+    pub enabled: Option<RawEnabled>,
     /// Environment variables.
     #[serde(default)]
     pub env: IndexMap<String, Scalar>,
-    /// Env files (relative to the workspace root), applied after `env`.
-    pub env_files: Option<Vec<String>>,
+    /// Env files (relative to the workspace root), applied after `env`
+    /// (their values win): a path, or `{path, required: false}` for a file
+    /// that may be absent.
+    pub env_files: Option<Vec<RawEnvFile>>,
     /// Ports: `5432`, `"15432:5432"` or `{name, port, container_port}`.
     pub ports: Option<Vec<RawPort>>,
     /// Dependencies: a stem name or `{stem, condition, soft, protocol, via}`.
@@ -288,8 +318,19 @@ pub struct RawStem {
     pub overlays: Option<Vec<RawOverlay>>,
     /// Free-form tags.
     pub tags: Option<Vec<String>>,
+    /// Env names of this stem whose values are secret (47), on top of the
+    /// workspace's `secrets` and the built-in patterns; `!NAME` is an
+    /// exception (never redacted). See the workspace `secrets`.
+    pub secrets: Option<Vec<String>>,
     /// Time between SIGTERM and SIGKILL.
     pub stop_grace: Option<Dur>,
+    /// Tool version requirements checked for this stem (when enabled), with
+    /// its codebase as the directory for `from:` lookups.
+    #[serde(default)]
+    pub requires: IndexMap<String, Requirement>,
+    /// User-defined checks of this stem (while enabled), run in its codebase.
+    #[serde(default)]
+    pub checks: IndexMap<String, RawCheck>,
     /// Active variant (FR-ST-8): the name of one of `variants`, or `local`
     /// (the base definition, same as leaving it unset). Usually set in
     /// `stems.local.yaml`, e.g. by `stems switch <stem> <variant>`.
@@ -299,6 +340,10 @@ pub struct RawStem {
     /// variant that changes `type` drops the base's type-specific fields.
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
     pub variants: IndexMap<String, RawStem>,
+    /// (variants only) `false`: the variant does not inherit the base
+    /// definition; it is merged over an empty stem (only `enabled` and the
+    /// selection are kept), so it must be complete, `type` included.
+    pub inherit: Option<bool>,
 
     // --- process ----------------------------------------------------------
     /// (process) Working directory, relative to the codebase.
@@ -315,8 +360,9 @@ pub struct RawStem {
     pub image: Option<String>,
     /// (docker) When to pull `image`: `missing` (default), `always` or `never`.
     pub pull: Option<PullPolicy>,
-    /// (docker) Build instead of pulling: `{ context, dockerfile }`.
-    /// (compose) `true` (default) / `false`: run `compose up --build`.
+    /// (docker) Build instead of pulling: `{ context, dockerfile, secrets,
+    /// allow_read }`. (compose) `true` (default) / `false`: run `compose up
+    /// --build`; or `{ services, before_setup, secrets, allow_read }` (44).
     pub build: Option<RawBuild>,
     /// (docker) Volume specs, `name:/path` or `./host:/path`.
     pub volumes: Option<Vec<String>>,
@@ -339,6 +385,55 @@ pub struct RawStem {
     pub project_name: Option<String>,
     /// (compose) Adopt an already-running service instead of starting it.
     pub adopt: Option<bool>,
+    /// (compose) Also put the stem's env into the service's container
+    /// (an `env_file:` override file), not only use it for interpolation.
+    pub inject_env: Option<bool>,
+}
+
+/// One `env_files:` entry: a path, or `{path, required}`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(untagged)]
+#[schemars(rename = "EnvFile")]
+pub enum RawEnvFile {
+    /// Path relative to the workspace root; the file must exist.
+    Path(String),
+    /// `{path, required: false}`: skipped when absent.
+    Spec(RawEnvFileSpec),
+}
+
+/// `{path, required}` form of an `env_files:` entry.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "EnvFileSpec")]
+pub struct RawEnvFileSpec {
+    /// Path relative to the workspace root.
+    pub path: String,
+    /// `false`: an absent file is skipped (default `true`: absent is
+    /// `ENV_FILE_NOT_FOUND`).
+    pub required: Option<bool>,
+}
+
+impl RawEnvFile {
+    /// The path as written.
+    pub fn path(&self) -> &str {
+        match self {
+            Self::Path(p) => p,
+            Self::Spec(s) => &s.path,
+        }
+    }
+    /// Whether the file must exist (default `true`).
+    pub fn required(&self) -> bool {
+        match self {
+            Self::Path(_) => true,
+            Self::Spec(s) => s.required.unwrap_or(true),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for RawEnvFile {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        string_or(d, |s| Ok(Self::Path(s)), Self::Spec, |_| None)
+    }
 }
 
 /// `codebase:` — a path string (local path or git URL) or `{git, ref, path}`.
@@ -455,6 +550,56 @@ impl<'de> Deserialize<'de> for RawPort {
     }
 }
 
+/// `stems.<n>.enabled` (46): a bool, or a string (usually a `${…}`
+/// template) read as `true|1|yes|on` / `false|0|no|off|""` once
+/// substituted. Anything else is `SCHEMA_INVALID` at resolve time.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(untagged)]
+#[schemars(rename = "Enabled")]
+pub enum RawEnabled {
+    /// `true` / `false`.
+    Bool(bool),
+    /// A string such as `"${env.WITH_SEARCH}"`.
+    Text(String),
+}
+
+impl RawEnabled {
+    /// The value: a bool, or a recognised string; `None` when the string
+    /// is none of the accepted spellings.
+    pub fn value(&self) -> Option<bool> {
+        match self {
+            RawEnabled::Bool(b) => Some(*b),
+            RawEnabled::Text(s) => parse_enabled(s),
+        }
+    }
+}
+
+/// `true|1|yes|on` → true, `false|0|no|off|""` → false (case-insensitive,
+/// surrounding whitespace ignored), anything else → `None`.
+pub fn parse_enabled(s: &str) -> Option<bool> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Some(true),
+        "false" | "0" | "no" | "off" | "" => Some(false),
+        _ => None,
+    }
+}
+
+impl<'de> Deserialize<'de> for RawEnabled {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        use serde_yaml_ng::Value;
+        match Value::deserialize(d)? {
+            Value::Bool(b) => Ok(Self::Bool(b)),
+            Value::String(s) => Ok(Self::Text(s)),
+            Value::Number(n) => Ok(Self::Text(n.to_string())),
+            other => Err(D::Error::custom(format!(
+                "expected a boolean or a string, found {}",
+                describe(&other)
+            ))),
+        }
+    }
+}
+
 /// A dependency edge.
 #[derive(Clone, Debug, Serialize, JsonSchema)]
 #[serde(untagged)]
@@ -481,6 +626,10 @@ pub struct RawDependencySpec {
     pub protocol: Option<Protocol>,
     /// Address metadata, e.g. `${stem.api.port}`.
     pub via: Option<String>,
+    /// When the target is disabled (hard edges only, 46, 51): `start`
+    /// (default) starts this stem without it; `skip` skips this stem on
+    /// `up`/`start`.
+    pub if_disabled: Option<crate::types::IfDisabled>,
 }
 
 impl<'de> Deserialize<'de> for RawDependency {
@@ -568,16 +717,34 @@ pub struct RawScriptSpec {
     pub inputs: Option<Vec<String>>,
     /// Stems that must be healthy before this script runs.
     pub requires: Option<Vec<String>>,
+    /// Stems that must be stopped (or failed) before this script runs
+    /// (`stems run --stop-deps` stops them first).
+    pub requires_stopped: Option<Vec<String>>,
     /// Kill the script after this long.
     pub timeout: Option<Dur>,
     /// Retries on failure.
     pub retries: Option<u32>,
+    /// A failure (after retries) does not fail the stem or `up`: the stem
+    /// is degraded, nothing is stamped, the script runs again next time.
+    /// Only for `setup`, `seed`, `pre_start`, `post_start`, `build` and
+    /// workspace `bootstrap`.
+    pub soft_fail: Option<bool>,
+    /// `build` only: `on_demand` (default: `stems build`, `restart --build`,
+    /// watch `rebuild`), `changed` (also in the start sequence after
+    /// `setup`, when its stamp is missing or changed) or `always` (on every
+    /// start).
+    pub when: Option<BuildWhen>,
     /// May run concurrently with other scripts of the same stem.
     pub concurrent: Option<bool>,
     /// Env var names whose values are part of the stamp hash.
     pub stamp_env: Option<Vec<String>>,
     /// Working directory (relative to the codebase).
     pub cwd: Option<String>,
+    /// Inherit the environment of the `stems` command (default true).
+    /// `false`: only `PATH HOME USER LOGNAME SHELL TMPDIR TERM LANG LC_*`
+    /// of it, plus everything stems sets (`PORT`, `env`, `env_files`,
+    /// `STEMS_*`): a reproducible `setup`/`build`.
+    pub inherit_env: Option<bool>,
 }
 
 /// A declared script argument.
@@ -738,8 +905,9 @@ pub struct RawOverlay {
 }
 
 /// `stems.<n>.build`: a bool on a compose stem (rebuild the service's
-/// image on every start), an object on a docker stem (what to build).
-/// Which form a stem type accepts is checked at resolve time
+/// image on every start), an object on a docker stem (what to build) or on
+/// a compose stem (which services, when, with which secrets: 44). Which
+/// form and which keys a stem type accepts is checked at resolve time
 /// (`SCHEMA_INVALID` at `stems.<n>.build`).
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
@@ -748,19 +916,50 @@ pub enum RawBuild {
     /// (compose) Rebuild on every start (`true`, the default) or never
     /// (`false`).
     Flag(bool),
-    /// (docker) Build settings.
-    Docker(RawDockerBuild),
+    /// Build settings (docker: `context`, `dockerfile`; compose:
+    /// `services`; both: `before_setup`, `secrets`, `allow_read`).
+    Spec(RawDockerBuild),
 }
 
-/// Docker build settings.
+/// Build settings of a docker stem (`context`, `dockerfile`) or a compose
+/// stem (`services`); `before_setup`, `secrets` and `allow_read` apply to
+/// both (44, 51).
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(rename = "DockerBuild")]
+#[schemars(rename = "BuildSpec")]
 pub struct RawDockerBuild {
-    /// Build context (relative to the codebase, else the workspace root).
+    /// (docker) Build context (relative to the codebase, else the workspace
+    /// root).
     pub context: Option<String>,
-    /// Dockerfile, relative to the context.
+    /// (docker) Dockerfile, relative to the context; may live outside it.
     pub dockerfile: Option<String>,
+    /// (compose) Services whose images are built (default: the stem's
+    /// `service`); list extra one-shot services (e.g. `migrate`) here.
+    pub services: Option<Vec<String>>,
+    /// Build the image(s) before `setup` (default `false`: at start);
+    /// `setup` and `pre_start` then get `STEMS_IMAGE` (compose: also
+    /// `STEMS_IMAGES`). Docker and compose stems only.
+    pub before_setup: Option<bool>,
+    /// BuildKit secrets (`RUN --mount=type=secret,id=…`): `{id, file}` or
+    /// `{id, env}`. Never a build arg, never in a layer.
+    pub secrets: Option<Vec<RawBuildSecret>>,
+    /// Exact absolute paths outside the build context the build may read
+    /// (Bake's `fs.read` entitlement). No globs, no symlinks. The context,
+    /// the Dockerfile's directory and secret files are granted already.
+    pub allow_read: Option<Vec<String>>,
+}
+
+/// One BuildKit secret: `id` plus exactly one of `file` and `env`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "BuildSecret")]
+pub struct RawBuildSecret {
+    /// The id the Dockerfile mounts (`--mount=type=secret,id=<id>`).
+    pub id: String,
+    /// A file holding the secret (e.g. a credentials JSON).
+    pub file: Option<String>,
+    /// An environment variable holding the secret.
+    pub env: Option<String>,
 }
 
 /// Docker healthcheck override.
@@ -780,4 +979,25 @@ pub struct RawDockerHealthcheck {
     pub start_period: Option<Dur>,
     /// Disable the image's healthcheck.
     pub disable: Option<bool>,
+}
+
+/// A user-defined check (`checks.<name>`): a shell command, exit 0 = ok.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RawCheck {
+    /// Shell command; exit 0 means the check passes.
+    pub command: String,
+    /// Shown when the check fails (default: `check failed`).
+    pub message: Option<String>,
+    /// What to do about a failure.
+    pub hint: Option<String>,
+    /// `fail` (default) or `warn`.
+    pub severity: Option<CheckSeverity>,
+    /// Kill the command after this long (default `2s`, max `30s`).
+    pub timeout: Option<Dur>,
+    /// Shell command `stems doctor --fix` runs to repair a failure.
+    pub fix: Option<String>,
+    /// Where it runs: any of `doctor`, `up`, `validate` (default
+    /// `[doctor, up]`).
+    pub when: Option<Vec<CheckWhen>>,
 }

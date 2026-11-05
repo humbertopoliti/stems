@@ -16,6 +16,8 @@
 //! - [`overlays`]: overlay rendering, ownership decisions, atomic writes.
 //! - [`selection`]: profiles and the stem selection closure of `up`/`start`.
 
+pub mod checks;
+pub mod envfiles;
 mod error;
 pub mod graph;
 pub mod health;
@@ -23,6 +25,7 @@ pub mod layout;
 pub mod logs;
 pub mod metrics;
 pub mod overlays;
+pub mod redact;
 pub mod render;
 pub mod restart;
 pub mod scriptargs;

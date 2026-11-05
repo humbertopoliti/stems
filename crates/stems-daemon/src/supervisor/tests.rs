@@ -1,6 +1,6 @@
 //! Supervisor and scheduler tests with a fake runtime and a fake waiter.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -435,6 +435,51 @@ async fn without_fail_fast_only_dependants_are_skipped() {
 }
 
 #[tokio::test]
+async fn dependants_of_a_disabled_stem_start_unless_the_edge_says_skip() {
+    // `worker`'s plain edge (51: `if_disabled: start` by default) is dropped;
+    // `api` opts into 46's skip, which is transitive over hard edges (`web`).
+    let yaml = format!(
+        "  off: {{ type: process, command: run, enabled: false }}\n{}{}{}{}",
+        proc("db", ""),
+        proc("api", "{ stem: off, if_disabled: skip }, db"),
+        proc("web", "api"),
+        proc("worker", "off"),
+    );
+    let r = rig(&yaml, FakeRuntime::default(), FakeWaiter::default());
+    let res = r.sup.up(UpParams::default(), "cli:test").await.unwrap();
+    assert!(res.ok, "disabled-dependency skips do not fail `up`");
+    assert_eq!(res.ready, ["db", "worker"]);
+    assert_eq!(res.skipped, ["api", "web"]);
+    assert_eq!(res.skipped_reasons["api"], "dependency_disabled:off");
+    assert_eq!(res.skipped_reasons["web"], "dependency_disabled:off");
+    assert_eq!(res.disabled, ["off"]);
+    let st = r.sup.status(&StatusParams::default(), "cli:test").unwrap();
+    let names: Vec<&str> = st.stems.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["db", "api", "web", "worker", "off"]);
+    let off = &st.stems[4];
+    assert_eq!(off.state, StemState::Disabled);
+    assert!(!off.enabled);
+    assert_eq!(off.reason.as_deref(), Some("enabled: false in stems.yaml"));
+    assert_eq!(
+        st.stems[1].reason.as_deref(),
+        Some("skipped: dependency off is disabled")
+    );
+    assert_eq!(st.summary.disabled, 1);
+    // A disabled stem may be named.
+    let one = r
+        .sup
+        .status(
+            &StatusParams {
+                stems: vec!["off".into()],
+                ..StatusParams::default()
+            },
+            "cli:test",
+        )
+        .unwrap();
+    assert_eq!(one.stems.len(), 1);
+}
+
+#[tokio::test]
 async fn health_failure_stops_the_process_and_fails() {
     let w = FakeWaiter {
         fail: ["a".to_string()].into_iter().collect(),
@@ -572,6 +617,59 @@ async fn restart_keeps_auto_ports_and_changes_pid() {
     assert_ne!(st.stems[0].pid.unwrap(), pid);
     assert_eq!(st.stems[0].ports[0].port, Some(port));
     assert!(st.stems[0].env.is_none(), "env only with verbose");
+}
+
+#[tokio::test]
+async fn restart_keeps_the_pass_env_of_the_last_start_unless_given() {
+    let r = rig(
+        &proc("web", ""),
+        FakeRuntime::default(),
+        FakeWaiter::default(),
+    );
+    let pass = |kv: &[(&str, &str)]| -> BTreeMap<String, String> {
+        kv.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    };
+    let up = UpParams {
+        pass_env: pass(&[("BAR", "up")]),
+        ..UpParams::default()
+    };
+    assert!(r.sup.up(up, "cli:t").await.unwrap().ok);
+    let bar = |r: &Rig| {
+        let st = r
+            .sup
+            .status(
+                &StatusParams {
+                    verbose: true,
+                    ..StatusParams::default()
+                },
+                "t",
+            )
+            .unwrap();
+        st.stems[0].env.as_ref().unwrap().get("BAR").cloned()
+    };
+    assert_eq!(bar(&r).as_deref(), Some("up"));
+    let restart = |pass_env| stems_api::RestartParams {
+        stems: vec!["web".into()],
+        pass_env,
+        ..Default::default()
+    };
+    // No `--pass-env`: the set of the last start is kept (51).
+    assert!(r.sup.restart(restart(None), "cli:t").await.unwrap().ok);
+    assert_eq!(bar(&r).as_deref(), Some("up"));
+    // `--pass-env` replaces it.
+    let given = Some(pass(&[("BAR", "restarted")]));
+    assert!(r.sup.restart(restart(given), "cli:t").await.unwrap().ok);
+    assert_eq!(bar(&r).as_deref(), Some("restarted"));
+    assert!(
+        r.sup
+            .restart(restart(Some(pass(&[]))), "cli:t")
+            .await
+            .unwrap()
+            .ok
+    );
+    assert_eq!(bar(&r), None);
 }
 
 #[tokio::test]
@@ -1613,4 +1711,98 @@ fn pull_restarts_only_running_stems_whose_image_changed() {
     let pulled = [img("a", true), img("b", true), img("c", false)];
     assert_eq!(images::to_restart(&pulled, |s| s != "b"), ["a"]);
     assert!(images::to_restart(&pulled, |_| false).is_empty());
+}
+
+/// A host whose config loads substitute `${env.X}` with the latest noted
+/// caller env, slowly (to widen the window between note and load).
+struct EnvHost {
+    dir: tempfile::TempDir,
+    applied: Arc<Resolved>,
+    caller: Mutex<BTreeMap<String, String>>,
+}
+
+fn env_load(dir: &std::path::Path, env: &BTreeMap<String, String>) -> Arc<Resolved> {
+    Arc::new(
+        stems_config::load(stems_config::LoadOptions {
+            workspace: Some(dir.to_path_buf()),
+            cwd: dir.to_path_buf(),
+            env: env.clone().into_iter().collect(),
+            skip_local: true,
+        })
+        .unwrap(),
+    )
+}
+
+impl EnvHost {
+    fn load(&self) -> Arc<Resolved> {
+        let env = self.caller.lock().unwrap().clone();
+        env_load(self.dir.path(), &env)
+    }
+}
+
+impl Host for EnvHost {
+    fn resolved(&self) -> Option<Arc<Resolved>> {
+        Some(self.applied.clone())
+    }
+    fn reload(&self, _actor: &str) -> Result<Arc<Resolved>, Error> {
+        Ok(self.load())
+    }
+    fn load_candidate(
+        &self,
+        _actor: &str,
+        _check: bool,
+    ) -> Result<Arc<Resolved>, stems_core::Errors> {
+        std::thread::sleep(Duration::from_millis(30));
+        Ok(self.load())
+    }
+    fn note_caller_env(&self, env: &BTreeMap<String, String>) {
+        *self.caller.lock().unwrap() = env.clone();
+    }
+    fn request_shutdown(&self, _actor: &str, _reason: &str) {}
+    fn started_by_up(&self) -> bool {
+        false
+    }
+    fn set_started_by_up(&self) {}
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_requests_load_with_their_own_caller_env() {
+    // 49: noting a request's env and loading the config with it happen
+    // under one lock, so another request cannot swap the env in between.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("stems.yaml"),
+        "schema_version: 1\nname: t\nstems:\n  a: { type: process, command: run, env: { V: '${env.X}' } }\n",
+    )
+    .unwrap();
+    let caller = |x: &str| BTreeMap::from([("X".to_string(), x.to_string())]);
+    let h = EnvHost {
+        applied: env_load(dir.path(), &caller("init")),
+        dir,
+        caller: Mutex::new(caller("init")),
+    };
+    let mut reg = RuntimeRegistry::default();
+    reg.register(StemType::Process, Arc::new(FakeRuntime::default()));
+    let sup = Supervisor::new(
+        Arc::new(EventBus::default()),
+        Arc::new(h),
+        reg,
+        Arc::new(FakeWaiter::default()),
+    );
+    std::thread::scope(|s| {
+        let runs: Vec<_> = (0..6)
+            .map(|i| {
+                let sup = &sup;
+                s.spawn(move || {
+                    let x = format!("v{i}");
+                    let ws = sup.workspace_for("t", Some(&caller(&x)), &[]).unwrap();
+                    (x, ws.workspace.stem("a").unwrap().env["V"].clone())
+                })
+            })
+            .collect();
+        for r in runs {
+            let (want, got) = r.join().unwrap();
+            assert_eq!(got, want, "loaded with another request's env");
+        }
+    });
 }

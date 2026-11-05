@@ -1,0 +1,6 @@
+---
+source: crates/stems-cli/src/commands/ports.rs
+expression: "lines(&v, false)"
+---
+STEMS_API_PORT=8080
+STEMS_WEB_PORT=18501

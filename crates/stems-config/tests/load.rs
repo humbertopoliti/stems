@@ -1341,3 +1341,343 @@ fn notifications_unknown_field_is_rejected() {
         e.errors[0].message
     );
 }
+
+#[test]
+fn env_files_accept_paths_and_required_false_entries() {
+    let ws = Ws::new(&[(
+        "stems.yaml",
+        r#"
+schema_version: 1
+name: demo
+stems:
+  api:
+    type: process
+    command: run
+    env_files:
+      - env/api.env
+      - { path: env/api.local.env, required: false }
+      - { path: env/also.env, required: true }
+  cache:
+    type: compose
+    file: compose.yml
+    inject_env: true
+"#,
+    )]);
+    let r = ws.load();
+    let api = r.workspace.stem("api").unwrap();
+    let got: Vec<(PathBuf, bool)> = api
+        .env_files
+        .iter()
+        .map(|f| (f.path.clone(), f.required))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            (ws.root.join("env/api.env"), true),
+            (ws.root.join("env/api.local.env"), false),
+            (ws.root.join("env/also.env"), true),
+        ]
+    );
+    // `stems show` keeps the plain form for required files.
+    let json = serde_json::to_value(&api.env_files).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!([
+            ws.root.join("env/api.env"),
+            { "path": ws.root.join("env/api.local.env"), "required": false },
+            ws.root.join("env/also.env"),
+        ])
+    );
+    let back: Vec<stems_config::EnvFile> = serde_json::from_value(json).unwrap();
+    assert_eq!(back, api.env_files);
+    let StemRuntime::Compose(c) = &r.workspace.stem("cache").unwrap().runtime else {
+        panic!("compose");
+    };
+    assert!(c.inject_env);
+    assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+}
+
+#[test]
+fn env_file_entries_reject_unknown_keys_and_inject_env_is_compose_only() {
+    let ws = Ws::new(&[(
+        "stems.yaml",
+        r#"
+schema_version: 1
+name: demo
+stems:
+  api:
+    type: process
+    command: run
+    env_files: [{ path: a.env, optional: true }]
+"#,
+    )]);
+    let e = ws.fail();
+    assert!(format!("{e}").contains("optional"), "{e}");
+    let ws = Ws::new(&[(
+        "stems.yaml",
+        r#"
+schema_version: 1
+name: demo
+stems:
+  api:
+    type: process
+    command: run
+    inject_env: true
+"#,
+    )]);
+    let r = load(ws.opts());
+    let text = match r {
+        Ok(r) => format!("{:?}", r.diagnostics),
+        Err(e) => format!("{e}"),
+    };
+    assert!(text.contains("inject_env"), "{text}");
+}
+
+// 39: `null` removes an inherited key in every layer (a variant, an
+// include, stems.local.yaml), including script and env entries, which the
+// typed per-file check would otherwise reject.
+#[test]
+fn null_removes_inherited_scripts_and_env_in_any_layer() {
+    let ws = Ws::new(&[
+        (
+            "stems.yaml",
+            "schema_version: 1\nname: n\ninclude: [more.yaml]\nstems:\n  api:\n    type: process\n    command: x\n    env: { A: '1', B: '2', C: '3' }\n    scripts: { setup: echo s, seed: echo d }\n    variant: bare\n    variants:\n      bare:\n        scripts: { setup: ~ }\n        env: { A: ~ }\n",
+        ),
+        (
+            "more.yaml",
+            "stems:\n  db:\n    type: process\n    command: y\n    env: { X: ~ }\n",
+        ),
+        (
+            "stems.local.yaml",
+            "stems:\n  api:\n    env: { B: ~ }\n    health: ~\n",
+        ),
+    ]);
+    let r = ws.load();
+    let api = r.workspace.stem("api").unwrap();
+    assert!(
+        !api.scripts.contains_key("setup"),
+        "{:?}",
+        api.scripts.keys()
+    );
+    assert!(api.scripts.contains_key("seed"));
+    assert_eq!(api.env.keys().collect::<Vec<_>>(), ["C"]);
+    assert!(!api.local_env.contains_key("B"));
+    let from = &api.inherited_from;
+    assert_eq!(from["scripts.setup"], "removed");
+    assert_eq!(from["scripts.seed"], "base");
+    assert_eq!(from["env.A"], "removed");
+    assert_eq!(from["env.B"], "removed");
+    assert_eq!(from["env.C"], "base");
+    assert_eq!(from["command"], "base");
+    // A `null` with nothing below it removes nothing: not listed (the
+    // default applies).
+    assert!(!from.contains_key("health"), "{from:?}");
+    // A `null` in an included file with no value below it: not listed either.
+    let db = r.workspace.stem("db").unwrap();
+    assert!(db.env.is_empty());
+    assert!(
+        !db.inherited_from.contains_key("env.X"),
+        "{:?}",
+        db.inherited_from
+    );
+}
+
+#[test]
+fn a_null_file_still_reports_its_other_schema_errors() {
+    let ws = Ws::new(&[(
+        "stems.yaml",
+        "schema_version: 1\nname: n\nstems:\n  api:\n    type: process\n    env: { A: ~ }\n    imag: x\n",
+    )]);
+    let e = ws.fail();
+    let d = &e.errors[0];
+    assert_eq!(d.code, codes::SCHEMA_INVALID);
+    assert_eq!(d.path.as_ref().unwrap().to_string(), "stems.api", "{d:?}");
+    assert!(d.message.contains("imag"), "{d:?}");
+    assert_eq!(d.location.as_ref().unwrap().line, 4, "{d:?}");
+}
+
+#[test]
+fn show_variant_overrides_the_selection_for_one_stem() {
+    let ws = Ws::new(&[(
+        "stems.yaml",
+        "schema_version: 1\nname: n\nstems:\n  api:\n    type: process\n    command: x\n    variants:\n      d: { type: docker, image: i }\n",
+    )]);
+    let over = std::collections::BTreeMap::from([("api".to_string(), "d".to_string())]);
+    let r = stems_config::load_with_variants(ws.opts(), &over).unwrap();
+    let api = r.workspace.stem("api").unwrap();
+    assert_eq!(api.variant.as_deref(), Some("d"));
+    assert_eq!(api.inherited_from["type"], "variant");
+    assert_eq!(api.inherited_from["image"], "variant");
+    assert!(!api.inherited_from.contains_key("command"));
+    let plain = ws.load();
+    assert_eq!(
+        plain.workspace.stem("api").unwrap().variant.as_deref(),
+        Some("local")
+    );
+    // Variants alone are enough to list `inherited_from` (all `base`).
+    assert_eq!(
+        plain.workspace.stem("api").unwrap().inherited_from["command"],
+        "base"
+    );
+}
+
+#[test]
+fn enabled_accepts_bools_and_substituted_strings() {
+    let ws = Ws::new(&[(
+        "stems.yaml",
+        "stems:\n  a: { type: process, command: x, enabled: \"${env.SECRET}\" }\n  b: { type: process, command: x, enabled: \"${env.WITH_SEARCH}\" }\n  c: { type: process, command: x, enabled: 'Yes' }\n  d: { type: process, command: x, enabled: 'off' }\n  e: { type: process, command: x, enabled: 1 }\n  f: { type: process, command: x, enabled: false }\n  g: { type: process, command: x, enabled: \"${env.HOME}\" }\n",
+    )]);
+    let r = ws.load();
+    let enabled = |n: &str| r.workspace.stem(n).unwrap().enabled;
+    // `s3cret` is not a truthy spelling: SCHEMA_INVALID, default kept.
+    assert!(enabled("a"));
+    // Unset: false, no UNRESOLVED_VARIABLE, the variable recorded.
+    assert!(!enabled("b"));
+    let t = r
+        .workspace
+        .stem("b")
+        .unwrap()
+        .enabled_template
+        .clone()
+        .unwrap();
+    assert_eq!(t.text, "${env.WITH_SEARCH}");
+    assert_eq!(t.unset, ["WITH_SEARCH"]);
+    assert!(enabled("c"));
+    assert!(!enabled("d"));
+    assert!(enabled("e"));
+    assert!(!enabled("f"));
+    assert!(r.workspace.stem("f").unwrap().enabled_template.is_none());
+    let codes: Vec<(&str, String)> = r
+        .diagnostics
+        .iter()
+        .map(|d| (d.code.as_str(), d.path.as_ref().unwrap().to_string()))
+        .collect();
+    assert_eq!(
+        codes,
+        [
+            (codes::SCHEMA_INVALID, "stems.a.enabled".to_string()),
+            (codes::SCHEMA_INVALID, "stems.g.enabled".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn enabled_maybe_is_schema_invalid_and_if_disabled_parses() {
+    let ws = Ws::new(&[(
+        "stems.yaml",
+        "stems:\n  s: { type: process, command: x, enabled: maybe }\n  a:\n    type: process\n    command: x\n    depends_on: [{ stem: s, if_disabled: skip }, s]\n",
+    )]);
+    let r = ws.load();
+    assert_eq!(r.diagnostics.len(), 1);
+    assert_eq!(r.diagnostics[0].code, codes::SCHEMA_INVALID);
+    assert!(r.diagnostics[0].message.contains("got `maybe`"));
+    let deps = &r.workspace.stem("a").unwrap().depends_on;
+    assert_eq!(deps[0].if_disabled, stems_config::IfDisabled::Skip);
+    // `start` is the default (51).
+    assert_eq!(deps[1].if_disabled, stems_config::IfDisabled::Start);
+}
+
+// ---------------------------------------------------------------------------
+// Build secrets and allow_read (44)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn build_secrets_allow_read_and_the_compose_object_form() {
+    let ws = Ws::new(&[(
+        "stems.yaml",
+        "stems:\n  d:\n    type: docker\n    build:\n      context: .\n      dockerfile: \"${workspace.root}/../infra/Dockerfile\"\n      secrets:\n        - { id: adc, file: secrets/adc.json }\n        - { id: tok, env: NPM_TOKEN }\n      allow_read: [\"${workspace.root}/../infra\", relative/path]\n  c:\n    type: compose\n    file: compose.yml\n    build:\n      services: [c, migrate]\n      before_setup: true\n      secrets: [{ id: adc, file: /abs/adc.json }]\n  plain: { type: compose, file: compose.yml, build: false }\n",
+    )]);
+    let r = ws.load();
+    assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+    let root = r.workspace.root.clone();
+    let StemRuntime::Docker(d) = &r.workspace.stem("d").unwrap().runtime else {
+        panic!()
+    };
+    let b = d.build.as_ref().unwrap();
+    assert_eq!(b.secrets[0].id, "adc");
+    assert_eq!(
+        b.secrets[0].source,
+        stems_config::SecretSource::File(root.join("secrets/adc.json"))
+    );
+    assert_eq!(
+        b.secrets[1].source,
+        stems_config::SecretSource::Env("NPM_TOKEN".into())
+    );
+    // Absolute paths are normalised; anything else is kept for validate.
+    assert_eq!(
+        b.allow_read,
+        [
+            stems_config::normalize(&root.join("../infra")),
+            PathBuf::from("relative/path")
+        ]
+    );
+    let StemRuntime::Compose(c) = &r.workspace.stem("c").unwrap().runtime else {
+        panic!()
+    };
+    assert!(c.build, "the object form builds");
+    assert_eq!(c.build_options.services, ["c", "migrate"]);
+    assert!(c.build_options.before_setup);
+    assert_eq!(c.build_options.secrets.len(), 1);
+    let StemRuntime::Compose(p) = &r.workspace.stem("plain").unwrap().runtime else {
+        panic!()
+    };
+    assert!(!p.build && p.build_options.is_plain());
+    // `show`: the bool form serialises as before; a secret as `{id, file}`.
+    let v = serde_json::to_value(&r.workspace).unwrap();
+    assert!(v["stems"]["plain"].get("build_options").is_none());
+    assert_eq!(v["stems"]["d"]["build"]["secrets"][1]["env"], "NPM_TOKEN");
+    assert_eq!(v["stems"]["c"]["build_options"]["before_setup"], true);
+    let json = serde_json::to_string(&r.workspace).unwrap();
+    let back: Workspace = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, r.workspace);
+}
+
+#[test]
+fn build_keys_of_the_wrong_stem_type_and_secret_shape_are_schema_invalid() {
+    let ws = Ws::new(&[(
+        "stems.yaml",
+        "stems:\n  d:\n    type: docker\n    build: { context: ., services: [d], secrets: [{ id: a, file: f, env: E }, { id: b }] }\n  c: { type: compose, file: compose.yml, build: { context: ., secrets: [{ id: x, file: f }] } }\n  p: { type: process, command: x, build: { before_setup: true } }\n",
+    )]);
+    let r = ws.load();
+    let paths: Vec<String> = r
+        .diagnostics
+        .iter()
+        .map(|d| format!("{} {}", d.code, d.path.as_ref().unwrap()))
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            "SCHEMA_INVALID stems.d.build.services",
+            "SCHEMA_INVALID stems.d.build.secrets[0]",
+            "SCHEMA_INVALID stems.d.build.secrets[1]",
+            "SCHEMA_INVALID stems.c.build",
+            "SCHEMA_INVALID stems.p.build",
+        ]
+    );
+    // A process stem builds with its `build` script (`when:`), not `build:`.
+    let p = r.diagnostics.last().unwrap();
+    assert!(
+        p.hint.as_deref().is_some_and(|h| h.contains("build.when")),
+        "{p:?}"
+    );
+}
+
+#[test]
+fn before_setup_on_a_docker_stem_resolves() {
+    // 51: a docker stem may build its image before `setup` too.
+    let ws = Ws::new(&[(
+        "stems.yaml",
+        "stems:\n  d: { type: docker, build: { context: ., before_setup: true } }\n  e: { type: docker, build: { context: . } }\n",
+    )]);
+    let r = ws.load();
+    assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+    let build = |n: &str| match &r.workspace.stem(n).unwrap().runtime {
+        StemRuntime::Docker(d) => d.build.clone().unwrap(),
+        _ => panic!(),
+    };
+    assert!(build("d").before_setup);
+    assert!(!build("e").before_setup);
+    let v = serde_json::to_value(&r.workspace).unwrap();
+    assert_eq!(v["stems"]["d"]["build"]["before_setup"], true);
+    assert!(v["stems"]["e"]["build"].get("before_setup").is_none());
+}

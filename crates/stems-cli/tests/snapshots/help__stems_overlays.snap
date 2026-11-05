@@ -2,9 +2,16 @@
 source: crates/stems-cli/tests/help.rs
 expression: help
 ---
-Show the overlays stems has written into codebases
+Show the overlays stems has written into codebases, or render a stem's overlays now (`stems overlays
+render <stem>`)
 
 Usage: stems overlays [OPTIONS] [STEM]
+       stems overlays <COMMAND>
+
+Commands:
+  render  Render a stem's overlays now, without starting it, and write and record them like a start
+          does (a later `down` removes them)
+  help    Print this message or the help of the given subcommand(s)
 
 Arguments:
   [STEM]
@@ -12,7 +19,7 @@ Arguments:
 
 Options:
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -41,3 +48,5 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: docs/overlays.md; `stems features scripts`.

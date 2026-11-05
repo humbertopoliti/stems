@@ -704,7 +704,9 @@ pub fn get_config(b: &Backend, a: &GetConfigArgs) -> Result<Value, Error> {
             .collect();
         obj.insert("defaults".into(), Value::Object(defaults));
     }
-    Ok(redacted(v))
+    let redactor = stems_core::redact::Redactor::new(ws);
+    crate::redact::redact_config(&mut v, a.stem.as_deref(), &redactor);
+    Ok(v)
 }
 
 /// `doctor`, run in-process (there is no doctor RPC), like `stems doctor`.
@@ -763,7 +765,9 @@ pub async fn doctor(b: &Backend, actor: &str, a: DoctorArgs) -> Result<Value, Er
 pub async fn simple(b: &Backend, actor: &str, tool: &str, args: &Value) -> Result<Value, Error> {
     match tool {
         "start" => {
-            let p: StartParams = parse(tool, args)?;
+            let mut p: StartParams = parse(tool, args)?;
+            // An agent never sets the caller environment (37).
+            p.caller_env = None;
             proxy(b, actor, Method::START, &p, LONG).await
         }
         "stop" => {
@@ -771,7 +775,9 @@ pub async fn simple(b: &Backend, actor: &str, tool: &str, args: &Value) -> Resul
             proxy(b, actor, Method::STOP, &p, LONG).await
         }
         "restart" => {
-            let p: RestartParams = parse(tool, args)?;
+            let mut p: RestartParams = parse(tool, args)?;
+            // An agent never sets the caller environment (37).
+            p.caller_env = None;
             proxy(b, actor, Method::RESTART, &p, LONG).await
         }
         "reset" => {
@@ -868,7 +874,9 @@ pub fn run_script_params(
         args: ScriptArgsInput::Object(args),
         wait: true,
         start_deps,
+        stop_deps: false,
         ready_timeout_ms: None,
+        caller_env: None,
     }
 }
 

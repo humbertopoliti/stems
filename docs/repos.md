@@ -47,10 +47,19 @@ touches developer work**. The clone is left exactly as it is and reported
 
 * the working tree has changes (`git status --porcelain` is not empty) —
   `uncommitted_changes`;
-* HEAD is no longer where stems put it: you switched to another branch, or
-  from a detached tag to a branch (stems records what it checked out in the
-  clone's git dir, `stems-sync`) — `moved`;
+* HEAD is no longer where stems put it: you switched to another branch,
+  from a detached tag to a branch, or to another commit of a detached HEAD
+  (`stems repos checkout` counts as moving it; stems records what it
+  checked out in the clone's git dir, `stems-sync`) — `moved`. `stems
+  repos sync --reset <stem>` returns such a tree to the configured ref;
 * HEAD has commits that are on no remote branch or tag — `unpushed_commits`.
+
+> **Changed in this release:** the `moved` rule is stricter. Before, a
+> clone was `moved` only when switched to another branch or from a detached
+> tag to a branch; now a detached HEAD moved to another commit (including
+> by `stems repos checkout`) is `moved` too and left alone, where `repos
+> sync` used to put it back. `stems repos sync --reset <stem>` returns such
+> a tree to the configured ref.
 
 Otherwise stems runs `git fetch --tags --force --prune origin` and checks out
 the ref: a branch is checked out (created tracking `origin/<ref>` if needed)
@@ -77,9 +86,12 @@ stems:
 You can also keep the git form and only change a key, e.g.
 `stems: { shop-api: { codebase: { ref: my-branch } } }`.
 
-## `stems repos sync [stems…] [--json]`
+## `stems repos sync [stems…] [--reset] [--json]`
 
-Default: every enabled stem with a codebase. `data`:
+Default: every enabled stem with a codebase. `--reset` drops the `moved`
+rule: a tree you switched to another branch or ref (`repos checkout`) goes
+back to the configured ref; uncommitted changes and unpushed commits are
+still left alone. `data`:
 
 ```json
 { "ok": true,
@@ -98,8 +110,67 @@ in the envelope's `errors` (exit 1).
 Per stem: `stem`, `source` (`git` | `local`), `path`, `url`, `ref`
 (configured), `branch` (current; `null` when detached), `sha` (HEAD),
 `dirty`, `ahead` / `behind` (against the branch's upstream; `null` without
-one) and `exists`. Local codebases that are git checkouts get the same git
-fields. Nothing is fetched.
+one), `exists`, `checked_out` (what HEAD is: the branch, else a tag at
+HEAD, else a remote branch at HEAD such as `origin/feature`, else the sha)
+and `drift` (git codebases: HEAD is not the configured ref — another or
+no branch for a branch ref, another commit for a tag or sha, a detached
+HEAD or a branch other than the remote's default without a ref). Local
+codebases that are git checkouts get the same git fields (never `drift`).
+Nothing is fetched. The human table shows a drifted tree's `REF` as
+`origin/feature (ref main)`.
+
+## `stems repos checkout <stem> <ref> [--force] [--json]`
+
+Try a feature branch, a tag or a commit without editing `stems.yaml`:
+
+```text
+stems repos checkout shop-api feature/payments   # origin/feature/payments, detached
+stems repos checkout shop-api v2.3.0
+stems repos checkout shop-api 3f2c1a9
+stems repos sync shop-api --reset                # back to the configured ref
+```
+
+Clones the codebase if it is missing, fetches (`git fetch --tags --force
+--prune origin`), then `git checkout --detach` the ref: a branch name as
+`origin/<branch>`, else a tag, else the ref as given (a sha). A working
+tree with uncommitted changes is refused with `REPO_DIRTY` (exit 1, nothing
+fetched or moved); `--force` checks out anyway and carries the changes
+over, exactly as `git checkout` does (it fails, changing nothing, when they
+conflict). Likewise a HEAD with commits that no remote branch or tag has
+is refused with `REPO_DIRTY` (`details.unpushed_commits: true`): after the
+checkout they would only be reachable from the reflog; push them (or put a
+branch on them) first, or pass `--force`. A ref starting with `-` is
+refused with `USAGE` (exit 2): it would be read as a git option. `data` is a sync entry with `action: checked_out`, the `ref`
+you asked for and the new `sha`; event `repo.checked_out` (`data` also has
+`declared`, the configured ref).
+
+Nothing is recorded: `repos status` shows `drift: true`, `repos sync` and
+`up --sync` leave the tree alone (`moved`) until `repos sync --reset`. A
+running stem keeps running from the files it has: restart it to pick up
+the new checkout. Local codebases (a path) are refused with `USAGE`: use
+git there yourself.
+
+## Codebase paths in one place
+
+Git codebases live under `repos_dir` (one setting for every stem). For
+local paths that differ per developer, declare the root once as a variable
+and override only it in `stems.local.yaml`:
+
+```yaml
+# stems.yaml
+vars: { root: ../repos }
+stems:
+  api: { codebase: "${var.root}/api", ... }
+```
+
+```yaml
+# stems.local.yaml
+vars: { root: /Users/me/src/acme }
+```
+
+Scripts get the resolved, absolute paths as `STEMS_CODEBASE` (the stem's
+own) and `STEMS_<DEP>_CODEBASE` (each dependency's), and `stems env <stem>`
+prints them.
 
 Both commands run inside the daemon when one runs for the workspace (so
 `repo.*` events are emitted and git's output is logged), and in-process
@@ -125,11 +196,16 @@ The output of the git commands that change something (`clone`, `fetch`,
 |---|---|---|
 | `GIT_CLONE_FAILED` | clone, fetch or checkout failed; `details: { stem, url, ref, tail }` (last lines of git's stderr) | 1 |
 | `GIT_NOT_INSTALLED` | `git` is not on `PATH` | 1 |
+| `REPO_DIRTY` | `repos checkout` without `--force` on a tree with uncommitted changes (`details: { stem, path, ref, changes }`) or with commits on HEAD that no remote has (`details: { stem, path, ref, sha, unpushed_commits: true }`) | 1 |
 | `CODEBASE_NOT_FOUND` | a *local* codebase path does not exist (`validate`) | 2 |
 | `SCHEMA_INVALID` | `codebase.git` is not a URL (`validate`), path `stems.<s>.codebase.git` | 2 |
 
 ## RPCs
 
-`repos_sync` (`{stems, force_fetch = true, recurse_submodules}` →
-`{ok, repos}`) and `repos_status` (`{stems}` → `{repos}`); `up` takes
-`sync: bool`. Library: `stems_daemon::repos::{sync, status, ensure_clone}`.
+`repos_sync` (`{stems, force_fetch = true, recurse_submodules, reset}` →
+`{ok, repos}`), `repos_status` (`{stems}` → `{repos}`) and
+`repos_checkout` (`{stem, ref, force}` → one sync entry); `up` takes
+`sync: bool`. Library: `stems_daemon::repos::{sync, status, checkout,
+ensure_clone}`.
+
+See also: [Doctor](doctor.md) · [Config](config.md) · [Scripts](scripts.md) · [What stems can do](features.md)

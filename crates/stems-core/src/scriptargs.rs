@@ -62,6 +62,9 @@ pub struct ScriptCatalogEntry {
     pub args: Vec<ScriptArg>,
     /// Stems that must be healthy first.
     pub requires: Vec<String>,
+    /// Stems that must not run first (49; `stems run --stop-deps`).
+    #[serde(default)]
+    pub requires_stopped: Vec<String>,
     /// Lifecycle or custom.
     pub kind: ScriptKind,
     /// Timeout; `None` = no timeout.
@@ -70,6 +73,8 @@ pub struct ScriptCatalogEntry {
     pub retries: u32,
     /// Whether concurrent runs are allowed.
     pub concurrent: bool,
+    /// Whether the script inherits the caller's environment (37).
+    pub inherit_env: bool,
 }
 
 impl ScriptCatalogEntry {
@@ -80,10 +85,12 @@ impl ScriptCatalogEntry {
             description: script.description.clone(),
             args: script.args.clone(),
             requires: script.requires.clone(),
+            requires_stopped: script.requires_stopped.clone(),
             kind,
             timeout: script.timeout,
             retries: script.retries,
             concurrent: script.concurrent,
+            inherit_env: script.inherit_env,
         }
     }
 

@@ -9,6 +9,7 @@
 //! | `flapping` | at least [`FLAP_TRANSITIONS`] health transitions in [`FLAP_WINDOW`] | 21 |
 //! | `restarts` | the restart tracker says so (`is_restart_degraded`) | 22 |
 //! | `memory` / `cpu` / ... | a metric threshold is crossed | 25 |
+//! | `setup exited 3 (soft_fail)` | a `soft_fail` script failed in this run of the stem | 41 |
 //!
 //! Only a `healthy` stem can be degraded. A dependency in state `unknown`
 //! (an external stem whose probe cannot run) does **not** degrade its
@@ -54,6 +55,35 @@ pub enum DegradedReason {
         /// Human description of the threshold.
         what: String,
     },
+    /// A `soft_fail` script failed in the stem's current run (41).
+    Script(SoftFailure),
+}
+
+/// A `soft_fail` script that failed (41): how it ended.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SoftFailure {
+    /// Script name (`setup`, `seed`, ...).
+    pub script: String,
+    /// Exit code (`None` when killed or timed out).
+    pub exit: Option<i32>,
+    /// Signal that killed it.
+    pub signal: Option<i32>,
+    /// It ran into its `timeout`.
+    pub timed_out: bool,
+}
+
+impl fmt::Display for SoftFailure {
+    /// `setup exited 3 (soft_fail)`, `seed timed out (soft_fail)`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = &self.script;
+        match (self.timed_out, self.exit, self.signal) {
+            (true, _, _) => write!(f, "{s} timed out"),
+            (false, Some(c), _) => write!(f, "{s} exited {c}"),
+            (false, None, Some(sig)) => write!(f, "{s} was killed by signal {sig}"),
+            (false, None, None) => write!(f, "{s} failed"),
+        }?;
+        f.write_str(" (soft_fail)")
+    }
 }
 
 impl fmt::Display for DegradedReason {
@@ -65,6 +95,7 @@ impl fmt::Display for DegradedReason {
             DegradedReason::Flapping { .. } => f.write_str("flapping"),
             DegradedReason::Restarts { count } => write!(f, "restarts ({count} recently)"),
             DegradedReason::Metric { what } => f.write_str(what),
+            DegradedReason::Script(s) => s.fmt(f),
         }
     }
 }
@@ -82,6 +113,8 @@ pub struct DegradedInputs {
     pub restarts_degraded: Option<u32>,
     /// Crossed metric thresholds (25), already described.
     pub metrics: Vec<String>,
+    /// `soft_fail` scripts that failed in the stem's current run (41).
+    pub soft_failures: Vec<SoftFailure>,
 }
 
 /// The degraded reasons of a stem, in table order; empty = not degraded.
@@ -111,6 +144,7 @@ pub fn derive_degraded(i: &DegradedInputs) -> Vec<DegradedReason> {
             .iter()
             .map(|w| DegradedReason::Metric { what: w.clone() }),
     );
+    out.extend(i.soft_failures.iter().cloned().map(DegradedReason::Script));
     out
 }
 
@@ -207,5 +241,37 @@ mod tests {
         );
         let v = serde_json::to_value(&r[0]).unwrap();
         assert_eq!(v, serde_json::json!({"kind": "restarts", "count": 4}));
+    }
+
+    #[test]
+    fn soft_failed_scripts_degrade_healthy_stems_only() {
+        let fail = |script: &str, exit, signal, timed_out| SoftFailure {
+            script: script.into(),
+            exit,
+            signal,
+            timed_out,
+        };
+        let mut i = DegradedInputs {
+            state: Some(Healthy),
+            soft_failures: vec![
+                fail("setup", Some(3), None, false),
+                fail("seed", None, None, true),
+                fail("post_start", None, Some(9), false),
+            ],
+            ..Default::default()
+        };
+        let r = derive_degraded(&i);
+        assert_eq!(
+            degraded_text(&r).as_deref(),
+            Some(
+                "setup exited 3 (soft_fail); seed timed out (soft_fail); post_start was killed by signal 9 (soft_fail)"
+            )
+        );
+        assert_eq!(
+            serde_json::to_value(&r[0]).unwrap(),
+            serde_json::json!({"kind": "script", "script": "setup", "exit": 3, "signal": null, "timed_out": false})
+        );
+        i.state = Some(Failed);
+        assert!(derive_degraded(&i).is_empty());
     }
 }

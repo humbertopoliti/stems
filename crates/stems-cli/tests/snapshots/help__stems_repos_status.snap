@@ -2,7 +2,10 @@
 source: crates/stems-cli/tests/help.rs
 expression: help
 ---
-Show each git codebase's branch, commit and cleanliness
+Show each git codebase's branch, commit and cleanliness.
+
+`checked_out` is what HEAD is (branch, tag, `origin/<branch>` or sha); `drift: true` when it is not
+the declared `ref`.
 
 Usage: stems repos status [OPTIONS] [STEMS]...
 
@@ -14,8 +17,11 @@ Options:
       --recurse-submodules
           (sync) Pass `--recurse-submodules` to git clone / checkout
 
+      --reset
+          (sync) Return trees you moved (another branch, `repos checkout`) to the declared ref
+
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -44,3 +50,5 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems repos sync`; docs/repos.md; `stems features repos`.

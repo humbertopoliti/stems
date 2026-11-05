@@ -9,10 +9,12 @@ expression: pretty(&build_catalog(&ws))
     "description": null,
     "args": [],
     "requires": [],
+    "requires_stopped": [],
     "kind": "lifecycle",
     "timeout": null,
     "retries": 0,
-    "concurrent": false
+    "concurrent": false,
+    "inherit_env": true
   },
   {
     "stem": null,
@@ -22,10 +24,12 @@ expression: pretty(&build_catalog(&ws))
     "requires": [
       "postgres"
     ],
+    "requires_stopped": [],
     "kind": "custom",
     "timeout": null,
     "retries": 0,
-    "concurrent": false
+    "concurrent": false,
+    "inherit_env": true
   },
   {
     "stem": null,
@@ -33,10 +37,12 @@ expression: pretty(&build_catalog(&ws))
     "description": null,
     "args": [],
     "requires": [],
+    "requires_stopped": [],
     "kind": "lifecycle",
     "timeout": null,
     "retries": 0,
-    "concurrent": false
+    "concurrent": false,
+    "inherit_env": true
   },
   {
     "stem": "postgres",
@@ -44,10 +50,12 @@ expression: pretty(&build_catalog(&ws))
     "description": null,
     "args": [],
     "requires": [],
+    "requires_stopped": [],
     "kind": "lifecycle",
     "timeout": null,
     "retries": 0,
-    "concurrent": false
+    "concurrent": false,
+    "inherit_env": true
   },
   {
     "stem": "postgres",
@@ -55,10 +63,12 @@ expression: pretty(&build_catalog(&ws))
     "description": "Apply migrations and insert a handful of sample rows",
     "args": [],
     "requires": [],
+    "requires_stopped": [],
     "kind": "lifecycle",
     "timeout": null,
     "retries": 0,
-    "concurrent": false
+    "concurrent": false,
+    "inherit_env": true
   },
   {
     "stem": "postgres",
@@ -75,10 +85,12 @@ expression: pretty(&build_catalog(&ws))
       }
     ],
     "requires": [],
+    "requires_stopped": [],
     "kind": "custom",
     "timeout": null,
     "retries": 0,
-    "concurrent": false
+    "concurrent": false,
+    "inherit_env": true
   },
   {
     "stem": "shop-api",
@@ -106,10 +118,12 @@ expression: pretty(&build_catalog(&ws))
       }
     ],
     "requires": [],
+    "requires_stopped": [],
     "kind": "custom",
     "timeout": null,
     "retries": 0,
-    "concurrent": false
+    "concurrent": false,
+    "inherit_env": true
   },
   {
     "stem": "shop-api",
@@ -117,10 +131,12 @@ expression: pretty(&build_catalog(&ws))
     "description": null,
     "args": [],
     "requires": [],
+    "requires_stopped": [],
     "kind": "lifecycle",
     "timeout": null,
     "retries": 0,
-    "concurrent": false
+    "concurrent": false,
+    "inherit_env": true
   },
   {
     "stem": "shop-api",
@@ -128,10 +144,12 @@ expression: pretty(&build_catalog(&ws))
     "description": null,
     "args": [],
     "requires": [],
+    "requires_stopped": [],
     "kind": "lifecycle",
     "timeout": null,
     "retries": 0,
-    "concurrent": false
+    "concurrent": false,
+    "inherit_env": true
   },
   {
     "stem": "shop-api",
@@ -139,10 +157,12 @@ expression: pretty(&build_catalog(&ws))
     "description": null,
     "args": [],
     "requires": [],
+    "requires_stopped": [],
     "kind": "lifecycle",
     "timeout": null,
     "retries": 0,
-    "concurrent": false
+    "concurrent": false,
+    "inherit_env": true
   },
   {
     "stem": "shop-worker",
@@ -150,10 +170,12 @@ expression: pretty(&build_catalog(&ws))
     "description": null,
     "args": [],
     "requires": [],
+    "requires_stopped": [],
     "kind": "lifecycle",
     "timeout": null,
     "retries": 0,
-    "concurrent": false
+    "concurrent": false,
+    "inherit_env": true
   },
   {
     "stem": "shop-web",
@@ -161,9 +183,11 @@ expression: pretty(&build_catalog(&ws))
     "description": null,
     "args": [],
     "requires": [],
+    "requires_stopped": [],
     "kind": "lifecycle",
     "timeout": null,
     "retries": 0,
-    "concurrent": false
+    "concurrent": false,
+    "inherit_env": true
   }
 ]

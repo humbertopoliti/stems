@@ -8,7 +8,7 @@ Usage: stems config diff [OPTIONS]
 
 Options:
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -37,3 +37,5 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems config apply`; docs/config.md#reload-on-change-fr-wd-3; `stems features config`.

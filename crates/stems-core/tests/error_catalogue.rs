@@ -101,8 +101,15 @@ fn sample(code: ErrorCode) -> Error {
             code,
             "stems.shop-web.depends_on",
             40,
-            "stem `shop-web` needs `shop-api`, which is disabled (`enabled: false`)",
-            "enable `shop-api` (remove `enabled: false`, usually in stems.local.yaml), disable `shop-web` too, or mark the edge `soft: true`",
+            "stem `shop-web` depends on `shop-api`, which is disabled; `shop-web` starts without it",
+            "enable `shop-api` if `shop-web` needs it (usually in stems.local.yaml), or mark the edge `if_disabled: skip` to leave `shop-web` out too",
+        ),
+        EnabledVarUnset => cfg(
+            code,
+            "stems.search.enabled",
+            30,
+            "search disabled: WITH_SEARCH is unset",
+            "export WITH_SEARCH=1 to enable `search`",
         ),
         Cycle => cfg(
             code,
@@ -260,6 +267,39 @@ fn sample(code: ErrorCode) -> Error {
             "`shop-worker` exited with code 3 before it became ready",
             "check `stems logs shop-worker`; run its start command by hand in the codebase to see why it exits",
         ),
+        StemNotRunning => rt(
+            code,
+            "`postgres` is not running: there is no container to exec into",
+            "start it with `stems start postgres`, or run on the host with `--host`",
+        ),
+        EnvFileNotFound => cfg(
+            code,
+            "stems.shop-api.env_files[1]",
+            14,
+            "env file env/shop-api.local.env of `shop-api` does not exist",
+            "create it, or mark it optional: `- { path: env/shop-api.local.env, required: false }`",
+        ),
+        EnvShadowed => cfg(
+            code,
+            "stems.shop-api.env_files[0]",
+            13,
+            "`API_URL` of `shop-api` from env/shop-api.env shadows the value set in `stems.shop-api.env`",
+            "remove one, or move the value into stems.local.yaml if it is a local override",
+        ),
+        RequiresNotChecked => cfg(
+            code,
+            "stems.shop-web.requires.node",
+            21,
+            "`node` of `shop-web` is not checked: its range comes from .nvmrc in a git codebase that is not cloned yet",
+            "`stems up shop-web` clones it; run `stems validate` or `stems doctor` again afterwards to check the version",
+        ),
+        ComposeInjectEnvMixed => cfg(
+            code,
+            "stems.shop-cache.inject_env",
+            30,
+            "`shop-cache` and `shop-db` share the compose project `shop` but only `shop-cache` sets `inject_env: true`",
+            "set the same `inject_env` on every stem of the project: compose may recreate a service without the injected environment when another stem of the project starts",
+        ),
         StopTimeoutKilled => rt(
             code,
             "`shop-worker` ignored SIGTERM for 2s and was killed",
@@ -315,6 +355,16 @@ fn sample(code: ErrorCode) -> Error {
             "cloning git@github.com:acme/shop-api.git failed: permission denied (publickey)",
             "check your SSH key / access to the repository, then `stems repos sync shop-api`",
         ),
+        RepoDirty => rt(
+            code,
+            "the codebase of `shop-api` has 2 uncommitted change(s); not checked out",
+            "commit, stash or discard them, or rerun with `--force` to carry them over",
+        ),
+        StatusMismatch => rt(
+            code,
+            "1 of 2 stems is not healthy: shop-api (starting)",
+            "wait for it with `--timeout <duration>` (e.g. `--timeout 30s`)",
+        ),
         LockHeld => rt(
             code,
             "another stems daemon (pid 777) holds the lock for this workspace",
@@ -324,6 +374,11 @@ fn sample(code: ErrorCode) -> Error {
             code,
             "`brew upgrade stems` exited with status 1",
             "run `brew upgrade stems` yourself to see why; `stems upgrade --dry-run` prints the command",
+        ),
+        CheckFailed => rt(
+            code,
+            "check `registry-login` failed: not logged in to ghcr.io",
+            "run `docker login ghcr.io`",
         ),
         NotImplemented => rt(
             code,

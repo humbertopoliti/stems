@@ -101,7 +101,7 @@ impl Supervisor {
             }
             let pulls = images.iter().map(|(image, stem)| {
                 let puller = puller.clone();
-                let progress = progress_sink(&self.core, stem);
+                let progress = progress_sink(&self.core, stem, Vec::new());
                 async move {
                     let t0 = Instant::now();
                     let r = puller.pull(image, progress).await;

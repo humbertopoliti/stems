@@ -510,10 +510,16 @@ pub trait Check: Send + Sync {
     fn id(&self) -> String;
     /// Run; blocking work goes through `spawn_blocking`.
     async fn run(&self, cx: Arc<DoctorCtx>) -> Vec<CheckResult>;
+    /// A time budget longer than the default (a user-defined check with its
+    /// own `timeout`); never shorter than the default.
+    fn timeout(&self) -> Option<Duration> {
+        None
+    }
 }
 
 /// Run one check within `timeout`.
 pub async fn run_one(check: &dyn Check, cx: Arc<DoctorCtx>, timeout: Duration) -> Vec<CheckResult> {
+    let timeout = check.timeout().map_or(timeout, |t| t.max(timeout));
     match tokio::time::timeout(timeout, check.run(cx)).await {
         Ok(r) => r,
         Err(_) => vec![
@@ -559,6 +565,61 @@ pub async fn run(input: DoctorInput, strict: bool) -> DoctorReport {
 /// docker or compose stem. Ports and orphans are `up`'s orphan scan; a stale
 /// lock is reclaimed by the daemon it starts.
 pub async fn preflight_up(
+    resolved: &Resolved,
+    requested: &[String],
+    docker_host: Option<String>,
+) -> Result<(), Error> {
+    preflight_docker(resolved, requested, docker_host).await?;
+    preflight_checks(resolved, requested).await
+}
+
+/// User-defined `checks:` with `up` in `when` (48), after the Docker
+/// preflight: a failing `fail` check aborts with `CHECK_FAILED`, a failing
+/// `warn` check is printed to stderr. Workspace checks always run; a stem's
+/// only when it is in the selection.
+async fn preflight_checks(resolved: &Resolved, requested: &[String]) -> Result<(), Error> {
+    let resolved = resolved.clone();
+    let requested = requested.to_vec();
+    let result = tokio::task::spawn_blocking(move || {
+        let ws = &resolved.workspace;
+        let mut first = None;
+        // Select first, then run: a stem outside the selection never runs
+        // its checks.
+        let entries = stems_core::checks::entries(ws, stems_config::CheckWhen::Up)
+            .into_iter()
+            .filter(|e| e.stem.is_none_or(|s| requested.iter().any(|r| r == s)))
+            .collect();
+        for (entry, run) in stems_core::checks::run_failures(entries) {
+            match entry.spec.severity {
+                stems_config::CheckSeverity::Warn => {
+                    eprintln!(
+                        "warning: check `{}`: {}",
+                        entry.id().trim_start_matches("check."),
+                        entry.failure_message(&run)
+                    );
+                    if let Some(h) = &entry.spec.hint {
+                        eprintln!("  hint: {h}");
+                    }
+                }
+                stems_config::CheckSeverity::Fail => {
+                    first.get_or_insert_with(|| entry.error(&run));
+                }
+            }
+        }
+        first
+    })
+    .await;
+    match result {
+        Ok(Some(e)) => Err(if e.hint.is_some() {
+            e
+        } else {
+            e.with_hint("fix it, or run `stems doctor` for details")
+        }),
+        _ => Ok(()),
+    }
+}
+
+async fn preflight_docker(
     resolved: &Resolved,
     requested: &[String],
     docker_host: Option<String>,

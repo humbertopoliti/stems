@@ -1,0 +1,27 @@
+# redaction — fixture for logs/redaction.feature (deliverable 47, FR-AI-3).
+#
+# `api` has a secret by name pattern (API_TOKEN), one by the stem's
+# `secrets:` list (PLAIN), an exception (`!PUBLIC_KEY`), a short secret that
+# is too short to scrub from logs (PIN_TOKEN), a plain value (GREETING) and
+# a secret that only an env file sets (FILE_SECRET, secrets.env).
+# Its start script echoes them all, then serves a port for the health check.
+schema_version: 1
+name: redaction
+
+stems:
+  api:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    secrets: [PLAIN, "!PUBLIC_KEY"]
+    env:
+      API_TOKEN: s3cr3tvalue
+      PLAIN: hunter22
+      PUBLIC_KEY: pk-public-1
+      PIN_TOKEN: "1234"
+      GREETING: hello-there
+    env_files: [secrets.env]
+    ports: [{ name: http, port: 18871 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts:
+      start: 'echo "token=$API_TOKEN plain=$PLAIN public=$PUBLIC_KEY pin=$PIN_TOKEN greeting=$GREETING file=$FILE_SECRET"; exec python3 app.py'

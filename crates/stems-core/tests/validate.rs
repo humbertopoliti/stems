@@ -63,7 +63,12 @@ impl Fake {
 }
 
 impl ToolVersions for Fake {
-    fn detect(&mut self, tool: &str, _req: &Requirement) -> ToolVersion {
+    fn detect(
+        &mut self,
+        tool: &str,
+        _req: &Requirement,
+        _cwd: Option<&std::path::Path>,
+    ) -> ToolVersion {
         self.calls.push(tool.into());
         self.tools
             .get(tool)
@@ -168,10 +173,41 @@ fn seeded_without_seed_and_disabled_dependencies() {
         "stems:\n  db: { type: docker, image: pg }\n  off: { type: process, command: x, enabled: false }\n  api:\n    type: process\n    command: x\n    depends_on:\n      - { stem: db, condition: seeded }\n      - off\n      - { stem: off, soft: true }\n",
         &[],
     );
+    // A hard edge to a disabled stem is no longer an error (46) ...
     let es = ws.check();
-    assert_eq!(codes(&es), ["SEEDED_WITHOUT_SEED", "DEPENDENCY_DISABLED"]);
-    assert_eq!(paths(&es), ["stems.api.depends_on", "stems.api.depends_on"]);
-    assert!(es[0].span.as_ref().unwrap().line < es[1].span.as_ref().unwrap().line);
+    assert_eq!(codes(&es), ["SEEDED_WITHOUT_SEED"]);
+    // ... but a warning, located at the edge: api starts without it (51).
+    let w = stems_core::validate::warnings(&ws.load());
+    assert_eq!(codes(&w), ["DEPENDENCY_DISABLED"]);
+    assert_eq!(paths(&w), ["stems.api.depends_on"]);
+    assert_eq!(
+        w[0].details,
+        serde_json::json!({ "stem": "api", "dependency": "off", "if_disabled": "start" })
+    );
+    assert_eq!(
+        w[0].message,
+        "stem `api` depends on `off`, which is disabled; `api` starts without it"
+    );
+}
+
+#[test]
+fn if_disabled_skip_and_unset_enabled_variables() {
+    let ws = Ws::new(
+        "stems:\n  search: { type: process, command: x, enabled: \"${env.WITH_SEARCH}\" }\n  api:\n    type: process\n    command: x\n    depends_on: [{ stem: search, if_disabled: skip }]\n",
+        &[],
+    );
+    assert!(ws.check().is_empty());
+    let r = ws.load();
+    let w = stems_core::validate::warnings(&r);
+    assert_eq!(codes(&w), ["ENABLED_VAR_UNSET", "DEPENDENCY_DISABLED"]);
+    assert_eq!(
+        w[1].message,
+        "stem `api` needs `search`, which is disabled: `up` skips `api` (`if_disabled: skip`)"
+    );
+    assert_eq!(w[1].details["if_disabled"], "skip");
+    assert_eq!(paths(&w), ["stems.search.enabled", "stems.api.depends_on"]);
+    assert_eq!(w[0].message, "search disabled: WITH_SEARCH is unset");
+    assert_eq!(w[0].details["level"], "info");
 }
 
 #[test]
@@ -376,4 +412,73 @@ fn git_codebase_urls_must_look_like_urls() {
     let es = ws.check();
     assert_eq!(codes(&es), ["SCHEMA_INVALID"]);
     assert_eq!(paths(&es), ["stems.a.codebase.git"]);
+}
+
+#[test]
+fn checks_shape_and_validate_opt_in() {
+    let ws = Ws::new(
+        "schema_version: 1\nname: w\nchecks:\n  long: { command: 'true', timeout: 31s }\n  empty: { command: ' ' }\n  nowhen: { command: 'true', when: [] }\n  ok: { command: 'true', timeout: 30s }\n  v: { command: 'false', when: [validate] }\n  d: { command: 'false' }\nstems:\n  a: { type: external }\n",
+        &[],
+    );
+    let es = ws.check();
+    let at: Vec<String> = paths(&es);
+    assert_eq!(
+        at,
+        ["checks.long", "checks.empty", "checks.nowhen"],
+        "{es:?}"
+    );
+    assert!(es.iter().all(|e| e.code == ErrorCode::SchemaInvalid));
+
+    // Shape fine: `validate()` backs every daemon config load, so it never
+    // runs user checks (not even `when: [validate]` ones).
+    let ws = Ws::new(
+        "schema_version: 1\nname: w\nchecks:\n  v: { command: 'echo run >> runs.txt; echo no >&2; exit 2', message: broke, when: [validate] }\n  w: { command: 'echo run >> runs.txt; false', severity: warn, when: [validate] }\n  d: { command: 'false' }\nstems:\n  a: { type: external }\n",
+        &[],
+    );
+    assert!(ws.check().is_empty());
+    assert!(!ws.root.join("runs.txt").exists(), "validate() ran a check");
+
+    // `stems validate` runs them through `validate_results`: each check once,
+    // split by severity.
+    let (errors, warnings) = stems_core::checks::validate_results(&ws.load().workspace);
+    assert_eq!(codes(&errors), ["CHECK_FAILED"]);
+    assert_eq!(errors[0].details["check"], "check.v");
+    assert_eq!(errors[0].details["exit"], 2);
+    assert_eq!(codes(&warnings), ["CHECK_FAILED"]);
+    assert_eq!(warnings[0].details["check"], "check.w");
+    let runs = fs::read_to_string(ws.root.join("runs.txt")).unwrap();
+    assert_eq!(runs.lines().count(), 2, "each check runs exactly once");
+}
+
+#[test]
+fn build_allow_read_must_be_exact_absolute_paths_and_secret_ids_valid() {
+    // 44: globs, relative paths and symlinks are rejected; ids are checked.
+    let ws = Ws::new(
+        "stems:\n  d:\n    type: docker\n    build:\n      context: .\n      secrets: [{ id: ok, file: s.txt }, { id: ok, file: s.txt }, { id: 'a b', env: X }]\n      allow_read:\n        - \"${workspace.root}/infra\"\n        - \"${workspace.root}/infra/*\"\n        - \"${workspace.root}/link\"\n        - relative/dir\n        - \"${workspace.root}/{a,b}\"\n",
+        &["Dockerfile", "s.txt", "infra/x"],
+    );
+    std::os::unix::fs::symlink(ws.root.join("infra"), ws.root.join("link")).unwrap();
+    let es = ws.check();
+    assert_eq!(
+        paths(&es),
+        [
+            "stems.d.build.secrets[1]",
+            "stems.d.build.secrets[2]",
+            "stems.d.build.allow_read[1]",
+            "stems.d.build.allow_read[2]",
+            "stems.d.build.allow_read[3]",
+            "stems.d.build.allow_read[4]",
+        ],
+        "{es:#?}"
+    );
+    assert!(codes(&es).iter().all(|c| *c == "SCHEMA_INVALID"));
+    assert!(es[2].message.contains("glob"), "{}", es[2].message);
+    assert!(es[3].message.contains("symlink"), "{}", es[3].message);
+    assert!(es[4].message.contains("absolute"), "{}", es[4].message);
+    // The compose object form is checked the same way.
+    let ws = Ws::new(
+        "stems:\n  c:\n    type: compose\n    file: compose.yml\n    build: { allow_read: [\"/x/**\"] }\n",
+        &["compose.yml"],
+    );
+    assert_eq!(paths(&ws.check()), ["stems.c.build.allow_read[0]"]);
 }

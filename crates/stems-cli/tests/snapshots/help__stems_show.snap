@@ -19,6 +19,14 @@ Options:
       --effective
           Also print the table of defaults applied to unset fields
 
+      --variant <NAME>
+          Resolve the stem with this variant (or `local` for the base) active instead of the
+          selected one. Nothing is written: `stems switch` changes the selection. Needs a stem
+
+      --reveal
+          Show secret env values instead of `<redacted>` (human output on a terminal only; refused
+          with `--json`)
+
   -h, --help
           Print help (see a summary with '-h')
 
@@ -49,3 +57,6 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems env`, `stems logs`, `stems up`, `stems status`, `stems switch`; docs/config.md,
+docs/config.md#include--extends-fr-ws-9, docs/config.md#secrets; `stems features config`.

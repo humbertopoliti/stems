@@ -69,7 +69,9 @@ died (a `MAX_RESTARTS` tail is the *last* attempt's; an earlier attempt's
 lines are never shown). The ring is in memory: after a crash recovery the
 tail is empty and `output_truncated` is `false`. `START_TIMEOUT` and
 health failures do not carry a tail (the process is alive; `stems health`
-and `stems logs` are the tools). Log text is not redacted.
+and `stems logs` are the tools). The lines are the stored log lines, so
+secret env values are already `<redacted:KEY>` in them
+([logs.md](logs.md)).
 
 `stems status` prints the tail under the table for each such stem
 (`error <stem>: <message>`, then `stderr | <line>` / `stdout | <line>`),
@@ -89,8 +91,8 @@ The delay of consecutive attempt `n` (1-based) is
 
 ## What a restart keeps and reruns
 
-A policy restart uses the configuration, environment (`--pass-env`
-included) and ports of the stem's last start by you — `port: auto` ports
+A policy restart uses the configuration, environment (the caller's
+environment and `--pass-env` included) and ports of the stem's last start by you — `port: auto` ports
 are sticky, and overlays stay in place. It runs `pre_start` and
 `post_start` again but **never `setup` or `seed`**: their stamps are
 intact, the data they produced is still there, and `seeded` keeps its
@@ -275,3 +277,5 @@ aborted}`; the human output prints one line per dependant (`restarted b
 - Pending restarts are not persisted: if the daemon itself dies during a
   backoff, the stem is simply not running afterwards (crash recovery,
   [recovery.md](recovery.md), adopts only live units).
+
+See also: [Health](health.md) · [Watchdogs](watchdogs.md) · [Lifecycle](lifecycle.md) · [What stems can do](features.md)

@@ -1,6 +1,7 @@
 //! The daemon: built-in methods, the supervisor slot and the lifecycle
 //! (`Daemon::run`).
 
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -94,6 +95,10 @@ pub struct Daemon {
     started_by_up: AtomicBool,
     logs: Arc<LogHub>,
     state: Arc<StateStore>,
+    /// The environment of the latest `stems` command whose request carried
+    /// one (49): config loads substitute `${env.X}` with it over the
+    /// daemon's own environment.
+    caller_env: Mutex<Option<HashMap<String, String>>>,
 }
 
 fn read<T>(l: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
@@ -148,6 +153,7 @@ impl Daemon {
             shutdown_by: Mutex::new(None),
             started_by_up: AtomicBool::new(false),
             state,
+            caller_env: Mutex::new(None),
         })
     }
 
@@ -264,7 +270,7 @@ impl Daemon {
         let load = LoadOptions {
             workspace: Some(path.to_path_buf()),
             cwd,
-            env: std::env::vars().collect(),
+            env: self.load_env(),
             skip_local: false,
         };
         // Overlay conflicts are decided when a stem starts (by content hash,
@@ -275,6 +281,27 @@ impl Daemon {
             ..ValidateOptions::default()
         };
         stems_core::load_and_validate(load, &opts)
+    }
+
+    /// Remember the environment of a request's `stems` command (49; without
+    /// `STEMS_*`): later config loads substitute `${env.X}` with it.
+    pub fn set_caller_env(&self, env: &BTreeMap<String, String>) {
+        let env = env
+            .iter()
+            .filter(|(k, _)| !k.starts_with("STEMS_"))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        *self.caller_env.lock().unwrap_or_else(|e| e.into_inner()) = Some(env);
+    }
+
+    /// What `${env.X}` resolves against: the daemon's own environment,
+    /// overlaid with the latest caller's ([`Daemon::set_caller_env`]).
+    fn load_env(&self) -> HashMap<String, String> {
+        let mut env: HashMap<String, String> = std::env::vars().collect();
+        if let Some(c) = &*self.caller_env.lock().unwrap_or_else(|e| e.into_inner()) {
+            env.extend(c.iter().map(|(k, v)| (k.clone(), v.clone())));
+        }
+        env
     }
 
     /// Make `resolved` the applied workspace: log settings, the stored
@@ -289,6 +316,7 @@ impl Daemon {
         };
         self.logs
             .configure(crate::logs::LogSettings::from_config(&ws.logs));
+        self.logs.set_redaction(ws);
         {
             let mut w = write(&self.workspace);
             w.root = ws.root.clone();

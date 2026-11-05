@@ -1,0 +1,38 @@
+# script-preconditions — fixture for run/requires-stopped.feature (FR-SC-6),
+# status/expect.feature (FR-HS-2), deliverable 49.
+#
+# `api` is shop-api. The workspace script
+# `migrate` must only run while `api` is stopped (`requires_stopped`).
+# `web` depends on `api` and prints the dependency's codebase path
+# (`STEMS_API_CODEBASE`). `conflict` requires `web` healthy but `api`
+# stopped: `--start-deps` starting `web` starts `api` too.
+schema_version: 1
+name: script-preconditions
+
+stems:
+  api:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    ports: [{ name: http, port: 18811 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts:
+      start: exec python3 app.py
+  web:
+    type: process
+    depends_on: [api]
+    stop_grace: 1s
+    scripts:
+      start: exec sleep 300
+      api-path: 'echo "API=$STEMS_API_CODEBASE"'
+
+scripts:
+  migrate:
+    command: echo migrated
+    description: Needs api stopped
+    requires_stopped: [api]
+  conflict:
+    command: echo ran
+    description: Needs web healthy and api stopped (cannot both hold)
+    requires: [web]
+    requires_stopped: [api]

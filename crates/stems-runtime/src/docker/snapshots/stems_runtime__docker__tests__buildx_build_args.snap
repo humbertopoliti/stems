@@ -1,0 +1,5 @@
+---
+source: crates/stems-runtime/src/docker/tests.rs
+expression: "crate::compose::display_command(std::ffi::OsStr::new(\"docker\"), &args)"
+---
+docker buildx build --load --progress plain -t stems/hello-shop/shop-api:01J8ZQ7Y6M5X4W3V2T1S0R9Q8P --label stems.workspace=hello-shop --label stems.stem=shop-api -f /infra/Dockerfile.api --secret id=adc,src=/home/me/.config/gcloud/adc.json --secret id=tok,env=NPM_TOKEN /repos/shop-api

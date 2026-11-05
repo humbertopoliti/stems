@@ -1,0 +1,8 @@
+---
+source: crates/stems-cli/src/commands/ports.rs
+expression: "table(&[a, row(\"web\", \"http\", Some(18501), false, true), b])"
+---
+STEM  NAME   PORT   CONTAINER  SOURCE  VAR
+api   http   -      80         auto    STEMS_API_PORT
+web   http   18501  -          fixed   STEMS_WEB_PORT
+web   admin  18502  -          fixed   STEMS_WEB_PORT_ADMIN

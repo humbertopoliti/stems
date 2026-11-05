@@ -1,0 +1,15 @@
+# requires-both — `version` and `from` together are a SCHEMA_INVALID
+# (deliverable 40; tests/features/validate/requires-both.feature).
+schema_version: 1
+name: requires-both
+
+requires:
+  node: { version: ">=18", from: .nvmrc }
+
+stems:
+  api:
+    type: process
+    ports: [{ name: http, port: auto }]
+    scripts: { start: python3 -m http.server }
+    requires:
+      python3: {}

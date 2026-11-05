@@ -125,12 +125,12 @@ the connection stays usable. For a stream:
 | `subscribe_events` | `{since_seq?}` | ack `{subscribed: true, last_seq}`, then `event` notifications (see below) |
 | `load_workspace` | `{path}` | `{root, name, stems: [name], sources: [path]}`; emits `workspace.loaded` (`data: {root, name, stems, configuration}`); config errors are returned as the first error with all of them in `details.errors` |
 | `shutdown` | `{}` | `{stopping: true}`, then the orderly shutdown path runs |
-| `up` | `UpParams {stems?, profile?, detach?, timeout_ms?, fail_fast? (true), max_parallel? (4), pass_env? {K: V}, daemon_auto_started?, fresh?, force_overlays?, sync?, no_watch?}` | `UpResult {ok, requested, ready: [stem], failed: [{stem, error}], skipped: [stem]}` — long-running; progress is the event stream (see [lifecycle.md](lifecycle.md)) |
+| `up` | `UpParams {stems?, profile?, detach?, timeout_ms?, fail_fast? (true), max_parallel? (4), pass_env? {K: V}, caller_env? {K: V}, daemon_auto_started?, fresh?, force_overlays?, sync?, no_watch?}` | `UpResult {ok, requested, ready: [stem], failed: [{stem, error}], skipped: [stem], skipped_reasons?, degraded?: [{stem, script, exit, timed_out?}], disabled?: [stem]}` (`degraded`: ready stems whose `soft_fail` script failed, 41; `skipped_reasons.<stem>`: `seed_degraded` or `dependency_disabled:<dep>`; `disabled`: disabled stems the selection covered, 46) — long-running; progress is the event stream (see [lifecycle.md](lifecycle.md)) |
 | `down` | `DownParams {stems?, all?, timeout_ms?, volumes?}` | `DownResult {ok, stopped, skipped, failed: [{stem, error}], daemon_stopping, volumes_removed?}`; with `daemon_stopping` the daemon shuts down right after replying; `volumes` removes the selected docker stems' named volumes (14) |
-| `start` | `StartParams {stems, no_deps?, timeout_ms?}` | `UpResult`; external stems: `NOT_MANAGED` |
+| `start` | `StartParams {stems, no_deps?, timeout_ms?, caller_env?}` | `UpResult`; external stems: `NOT_MANAGED` |
 | `stop` | `StopParams {stems, cascade?, timeout_ms?}` | `DownResult`; running dependants without `cascade`: `HAS_DEPENDANTS` (`details.dependants`) |
-| `restart` | `RestartParams {stems, no_deps?, build?, timeout_ms?}` | `UpResult` (ports kept); `build: true` runs each stem's `build` script between stop and start ([scripts.md](scripts.md)) |
-| `status` | `StatusParams {stems?, verbose?}` | `StatusResult {stems: [StemStatus], summary: {healthy, degraded, failed, unhealthy, stopped, unknown, starting}}` (`unhealthy`, a running or external stem whose probe fails, is counted apart from `failed`); `StemStatus` has `degraded` and `health {type, last: {ts, ok, outcome, latency_ms, detail}, consecutive_failures, transitions_60s, container?}` ([health.md](health.md)) |
+| `restart` | `RestartParams {stems, no_deps?, build?, timeout_ms?, cascade?, pass_env? {K: V}, caller_env?}` (`pass_env` given: replaces each stem's `--pass-env` set; absent: each keeps the one of its last start) | `UpResult` (ports kept); `build: true` runs each stem's `build` script between stop and start ([scripts.md](scripts.md)) |
+| `status` | `StatusParams {stems?, verbose?}` | `StatusResult {stems: [StemStatus], summary: {healthy, degraded, failed, unhealthy, stopped, unknown, starting, disabled?}}` (`disabled` only when > 0, so a workspace without disabled stems has the same summary as before 46; `unhealthy`, a running or external stem whose probe fails, is counted apart from `failed`; disabled stems come last with state `disabled` and `enabled: false`, 46); `StemStatus` has `degraded` and `health {type, last: {ts, ok, outcome, latency_ms, detail}, consecutive_failures, transitions_60s, container?}` ([health.md](health.md)) |
 | `health` | `HealthParams {stems?, last? (10, max 50)}` | `HealthResult {stems: [{name, type, state, consecutive_failures, transitions_60s, results: [{ts, ok, outcome: ok\|fail\|unknown, latency_ms, detail}]}]}` — the last probe results per stem, oldest first ([health.md](health.md)) |
 | `metrics` | `MetricsParams {stems?, history_ms?, last?, sort?: cpu\|mem, disk?}` | `MetricsResult {interval_ms, stems: [{name, type, state, latest: Sample \| null, history?: [Sample], open_ports, limits: [{metric, limit, for_s, crossed}], disk?: {codebase_build_bytes, dirs: [{path, bytes}], volumes_bytes, truncated}}], totals: {cpu_pct, rss_bytes, children, disk_bytes?}}`; `Sample = {ts, cpu_pct, rss_bytes, children, uptime_s, restarts}`. `history_ms` returns that window, `last` the last N samples; `sort` orders highest first; `disk` measures build outputs and volumes (cached 60 s). Unknown stem: `UNKNOWN_STEM` ([metrics.md](metrics.md)) |
 | `outputs` | `OutputsParams {stems?, reveal?}` | `OutputsResult {stems: [{name, outputs: [{name, value, secret}]}]}` — evaluated stem outputs (26); `value` `null` until healthy, `"<redacted>"` for secrets unless `reveal` ([config.md](config.md#outputs-fr-st-6)) |
@@ -149,18 +149,23 @@ the connection stays usable. For a stream:
 | `build` | `BuildParams {stems?}` | `BuildResult {ok, built: [{stem, script, exit, duration_ms}], skipped, failed: [{stem, error}]}` — runs `build` scripts ([scripts.md](scripts.md)) |
 | `reset` | `ResetParams {stems?}` | `ResetResult {ok, stopped, reset: [{stem, script, exit, duration_ms}], cleared, failed}` — stops the stems, runs `reset`, clears their stamps |
 | `stamps` | `StampsParams {stem?, clear?}` | `StampsResult {stamps: [{stem, script, hash, computed_at, inputs}], cleared}` |
-| `run_script` | `RunScriptParams {stem? (null: workspace script), name, args? ([argv] \| {name: value}), wait? (true), start_deps?, ready_timeout_ms? (30000)}` | `RunScriptResult {run_id, stem, script, ok, exit, signal, duration_ms, timed_out, attempts, argv, tail, queued, error?}`; with `wait: false` at once `RunScriptAccepted {run_id, stem, script}` (follow the `script.*` events with that `data.run_id`). A failed script is a successful call with `ok: false` and `error` (`SCRIPT_FAILED`); bad args: `SCRIPT_ARGS_INVALID` (`details {arg, reason, stem, script}`); unhealthy `requires`: `SCRIPT_REQUIRES_UNMET` (`details {requires, unmet: [{stem, state}], start_error}`); stem still starting past the bound: `START_TIMEOUT` ([scripts.md](scripts.md#custom-scripts-and-stems-run)) |
+| `run_script` | `RunScriptParams {stem? (null: workspace script), name, args? ([argv] \| {name: value}), wait? (true), start_deps?, stop_deps?, ready_timeout_ms? (30000), caller_env?}` | `RunScriptResult {run_id, stem, script, ok, exit, signal, duration_ms, timed_out, attempts, argv, tail, queued, soft?, error?}` (`soft: true`: a failed `soft_fail` script, still `ok: false`); with `wait: false` at once `RunScriptAccepted {run_id, stem, script}` (follow the `script.*` events with that `data.run_id`). A failed script is a successful call with `ok: false` and `error` (`SCRIPT_FAILED`); bad args: `SCRIPT_ARGS_INVALID` (`details {arg, reason, stem, script}`); unhealthy `requires` or running `requires_stopped`: `SCRIPT_REQUIRES_UNMET` (`details {requires, unmet: [{stem, state}], start_error, requires_stopped, unmet_stopped: [{stem, state}], stop_error}`); stem still starting past the bound: `START_TIMEOUT` ([scripts.md](scripts.md#custom-scripts-and-stems-run)) |
 | `script_catalog` | `ScriptCatalogParams {stem?}` | `ScriptCatalogResult {scripts: [{stem, name, description, args: [{name, type, default, required, description, values}], requires, kind: lifecycle\|custom, timeout, retries, concurrent, mcp_tool, input_schema}], lifecycle_hooks: [names]}` — what the TUI (30) and MCP (31) consume |
+| `stem_env` | `StemEnvParams {stem, reveal?}` | `StemEnvResult {stem, type, cwd, env, container, state, running, unresolved}` — a stem's context for `stems exec`/`shell`/`env` (37): `env` = what stems sets (layers 2–7 + `STEMS_STATE_DIR`, never the base; the live env of a running stem; secret outputs redacted unless `reveal`), `cwd` its codebase else its state dir, `container` the container id of a running docker/compose stem, `unresolved` the variables still holding a `${stem...}` reference (auto port not allocated: never allocates). `UNKNOWN_STEM` ([exec.md](exec.md)) |
 | `stem_config` | `{stem}` | the stem's resolved config (`stems_config::Stem` JSON: `type`, `env`, `ports`, `scripts`, `health`, ...; `UNKNOWN_STEM` otherwise) — the TUI detail view (27) |
 | `overlays` | `OverlaysParams {stem?}` | `OverlaysResult {overlays: [{stem, dest, status: present\|modified\|missing, keep, sha256, run_id}]}` ([overlays.md](overlays.md)) |
-| `repos_sync` | `ReposSyncParams {stems?, force_fetch? (true), recurse_submodules?}` | `ReposSyncResult {ok, repos: [{stem, path, action, ref, sha, message, error?}]}` — clone / fetch / check out git codebases ([repos.md](repos.md)) |
-| `repos_status` | `ReposStatusParams {stems?}` | `ReposStatusResult {repos: [{stem, source, path, url, ref, branch, sha, dirty, ahead, behind, exists}]}` |
+| `overlays_render` | `OverlaysRenderParams {stem, dry_run?}` | `OverlaysRenderResult {stem, dry_run, files: [{dest, mode, keep, content, written}]}` — renders the stem's overlays now (47) and, unless `dry_run`, writes and records them like a start. `UNRESOLVED_VARIABLE` lists every unresolved reference; `OVERLAY_CONFLICT`, `UNKNOWN_STEM` ([overlays.md](overlays.md#rendering-on-demand)) |
+| `repos_sync` | `ReposSyncParams {stems?, force_fetch? (true), recurse_submodules?, reset?}` (`reset`: return codebases the developer moved to the declared ref) | `ReposSyncResult {ok, repos: [{stem, path, action, ref, sha, message, error?}]}` — clone / fetch / check out git codebases ([repos.md](repos.md)) |
+| `repos_status` | `ReposStatusParams {stems?}` | `ReposStatusResult {repos: [{stem, source, path, url, ref, branch, sha, dirty, ahead, behind, exists, checked_out, drift}]}` |
+| `repos_checkout` | `ReposCheckoutParams {stem, ref, force?}` | `RepoSyncResult {stem, path, action: checked_out, ref, sha, message}` — fetch, then check out `ref` detached (a branch as `origin/<branch>`); `REPO_DIRTY` for uncommitted changes without `force`; `GIT_CLONE_FAILED` when git fails; event `repo.checked_out` ([repos.md](repos.md#repos-checkout)) |
 | `_debug.start_raw` | `{spec: ProcessSpec}` | runtime `Handle` (only with `STEMS_DEBUG_RPC=1`) |
 | `_debug.stop_raw` | `{handle, grace_ms?}` | `"graceful" \| "killed" \| "already_dead"` |
 | `_debug.describe` | `{handle}` | `RuntimeFacts` |
 
 `StemStatus` is `{name, type, state, glyph, reason, pid, pgid, ports: [{name,
-port, auto}], uptime_s, started_at, restarts, restarts_in_window, seeded, health, error}` plus `metrics`
+port, auto}], uptime_s, started_at, restarts, restarts_in_window, seeded, degraded, health, error}`
+plus `warnings` (`[{script, exit, signal, timed_out, tail, at}]`, failed
+`soft_fail` scripts of the current run, omitted when empty; 41), `metrics`
 (`{ts, cpu_pct, rss_bytes, children}`, the latest sample of a running stem; 25) and `env` (what
 stems set for the process) with `verbose`, and `outputs` (`{NAME: value}`,
 secrets `"<redacted>"`, omitted when empty; 26) and `watch` (`{paused, rules}`,
@@ -213,7 +218,7 @@ Kinds defined so far (`stems_api::EventKind`; later deliverables add more, so
 consumers must ignore unknown kinds): `daemon.started`, `daemon.stopping`,
 `daemon.stopped`, `workspace.loaded`, `stem.state`, `stem.port_allocated`,
 `stem.adopted`, `stem.recovered_dead`, `stem.restarting`, `stem.gave_up`,
-`cascade.started`, `cascade.queued`, `cascade.finished`, `cascade.aborted`,
+`stem.degraded`, `cascade.started`, `cascade.queued`, `cascade.finished`, `cascade.aborted`,
 `stem.health`, `stem.threshold`, `stem.outputs`, `process.exited`, `process.output`, `profile.expanded`, `up.started`, `up.finished`,
 `down.started`, `down.finished`, `script.queued`, `script.started`,
 `script.finished`, `watch.triggered`, `watch.action_finished`, `watch.paused`,
@@ -254,7 +259,10 @@ container_id}` (the state entry was cleared). See [recovery.md](recovery.md).
 
 Script payloads (deliverables 16, 17): `script.started` `data: {script,
 actor, args, run_id?, attempt?}`; `script.finished` `data: {script, exit,
-signal, duration_ms, timed_out, cancelled, ok, run_id?, attempt?}`;
+signal, duration_ms, timed_out, cancelled, ok, soft?, run_id?, attempt?}`
+(`soft: true` when a `soft_fail` script failed; 41); `stem.degraded`
+`data: {script, exit, signal, timed_out}` (the soft failure degrades the
+stem; `stem` is `_workspace` for `bootstrap`);
 `script.queued` `data: {script, run_id, actor, reason}` (a `run_script` waiting
 for another script of the same stem). `run_id` and `attempt` (1-based) are
 set for `run_script` runs. See [scripts.md](scripts.md).
@@ -347,3 +355,5 @@ and lock → `daemon.stopped` (best effort to subscribers) → exit 0. After a
 `kill -9` the lock stays behind with a dead pid: clients see
 `DAEMON_NOT_RUNNING` and `lock::probe` reports it as stale; the next start
 reclaims it.
+
+See also: [MCP](mcp.md) · [CLI reference](cli.md) · [Recovery](recovery.md) · [What stems can do](features.md)

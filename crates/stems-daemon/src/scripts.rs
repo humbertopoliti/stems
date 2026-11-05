@@ -12,13 +12,17 @@
 //!   exits (scripts never leak daemons).
 //! * **Environment.** The caller's environment (a stem's resolved env, see
 //!   `supervisor::env`) plus `STEMS_STATE_DIR` (created), `STEMS_SCRIPT`,
-//!   `STEMS_RUN_ID`, `STEMS_WORKSPACE`, then `RunContext::extra_env`.
+//!   `STEMS_RUN_ID`, `STEMS_WORKSPACE`, then `RunContext::extra_env`. With
+//!   `inherit_env: false` (37) the inherited part is cut to the minimal
+//!   allowlist (`supervisor::env::MINIMAL_ENV`) under
+//!   `RunContext::own_env`.
 //! * **Output.** Every line goes to the stem's log as `stream: script, tag:
 //!   <name>` ([`OutputSink::script_writer`]); the last [`TAIL_LINES`] are
 //!   returned for error details.
 //! * **Record.** Events `script.started {script, actor}` and
 //!   `script.finished {script, exit, signal, duration_ms, timed_out,
-//!   cancelled}`, and a [`ScriptRun`] in `state.json`.
+//!   cancelled, ok}` (`soft: true` when a `soft_fail` script failed, 41),
+//!   and a [`ScriptRun`] in `state.json`.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -62,6 +66,9 @@ pub struct RunContext {
     pub args: Vec<String>,
     /// The base environment (for stem scripts: the stem's full env).
     pub env: BTreeMap<String, String>,
+    /// What stems sets within `env` (layers 2–7): all a script with
+    /// `inherit_env: false` keeps of `env`, over the minimal allowlist (37).
+    pub own_env: Option<BTreeMap<String, String>>,
     /// Added last.
     pub extra_env: BTreeMap<String, String>,
     /// Working directory instead of the script's `cwd`.
@@ -99,12 +106,36 @@ pub struct ScriptResult {
     pub cancelled: bool,
     /// The script's `timeout`.
     pub timeout: Option<Duration>,
+    /// The script is `soft_fail` (41).
+    pub soft_fail: bool,
 }
+
+/// Lines of output a soft-failure warning keeps (41).
+pub const WARNING_TAIL_LINES: usize = 10;
 
 impl ScriptResult {
     /// Exited 0, in time, not cancelled.
     pub fn success(&self) -> bool {
         !self.timed_out && !self.cancelled && self.exit.success()
+    }
+
+    /// A `soft_fail` script that failed (non-zero exit, signal or timeout;
+    /// a cancellation is not a failure): the stem goes on, degraded (41).
+    pub fn soft_failed(&self) -> bool {
+        self.soft_fail && !self.success() && !self.cancelled
+    }
+
+    /// The stem's warning for this (soft) failure.
+    pub fn warning(&self) -> stems_api::ScriptWarning {
+        let skip = self.tail.len().saturating_sub(WARNING_TAIL_LINES);
+        stems_api::ScriptWarning {
+            script: self.script.clone(),
+            exit: self.exit.code,
+            signal: self.exit.signal,
+            timed_out: self.timed_out,
+            tail: self.tail[skip..].to_vec(),
+            at: Utc::now(),
+        }
     }
 
     fn how(&self) -> String {
@@ -352,7 +383,14 @@ impl ScriptRunner {
         let state_dir = self.state_dir(stem);
         std::fs::create_dir_all(&state_dir)
             .map_err(|e| Error::internal(format!("cannot create {}: {e}", state_dir.display())))?;
-        let mut env = ctx.env.clone();
+        let mut env = if sref.script.inherit_env {
+            ctx.env.clone()
+        } else {
+            crate::supervisor::env::without_inherited(
+                &ctx.env,
+                ctx.own_env.as_ref().unwrap_or(&BTreeMap::new()),
+            )
+        };
         if stem.is_none() {
             env.remove("STEMS_STEM");
             env.remove("STEMS_CODEBASE");
@@ -408,7 +446,16 @@ impl ScriptRunner {
                     .with_hint("check the script's file (it must be readable) and `cwd`")
                     .with_details(json!({ "stem": stem, "script": name, "reason": "spawn" }));
                 if !ctx.quiet {
-                    self.finished(stem, name, &ctx, ExitStatus::UNKNOWN, t0, false, false);
+                    self.finished(
+                        stem,
+                        name,
+                        &ctx,
+                        ExitStatus::UNKNOWN,
+                        t0,
+                        false,
+                        false,
+                        false,
+                    );
                     self.record(stem, name, started, None, false);
                 }
                 return Err(err);
@@ -490,7 +537,8 @@ impl ScriptRunner {
         }
 
         if !ctx.quiet {
-            self.finished(stem, name, &ctx, status, t0, timed_out, cancelled);
+            let soft = sref.script.soft_fail;
+            self.finished(stem, name, &ctx, status, t0, timed_out, cancelled, soft);
             self.record(stem, name, started, status.code, timed_out);
         }
         let tail = tail
@@ -508,6 +556,7 @@ impl ScriptRunner {
             timed_out,
             cancelled,
             timeout,
+            soft_fail: sref.script.soft_fail,
         })
     }
 
@@ -521,7 +570,9 @@ impl ScriptRunner {
         t0: Instant,
         timed_out: bool,
         cancelled: bool,
+        soft_fail: bool,
     ) {
+        let ok = status.success() && !timed_out && !cancelled;
         let mut data = json!({
             "script": name,
             "exit": status.code,
@@ -529,8 +580,12 @@ impl ScriptRunner {
             "duration_ms": t0.elapsed().as_millis() as u64,
             "timed_out": timed_out,
             "cancelled": cancelled,
-            "ok": status.success() && !timed_out && !cancelled,
+            "ok": ok,
         });
+        // A failed `soft_fail` script (41): its stem goes on, degraded.
+        if soft_fail && !ok && !cancelled {
+            data["soft"] = json!(true);
+        }
         extend(&mut data, &ctx.event_extra);
         let mut ev = EventDraft::new(EventKind::SCRIPT_FINISHED, &ctx.actor).data(data);
         if let Some(s) = stem {
@@ -571,11 +626,15 @@ mod tests {
             args: Vec::new(),
             inputs: Vec::new(),
             requires: Vec::new(),
+            requires_stopped: Vec::new(),
             timeout: None,
             retries: 0,
+            soft_fail: false,
+            when: stems_config::BuildWhen::OnDemand,
             concurrent: false,
             stamp_env: Vec::new(),
             cwd: cwd.to_path_buf(),
+            inherit_env: true,
             cwd_set: false,
         }
     }
@@ -629,8 +688,10 @@ mod tests {
             timed_out: false,
             cancelled: false,
             timeout: None,
+            soft_fail: false,
         };
         assert!(!r.success());
+        assert!(!r.soft_failed());
         let e = r.setup_error();
         assert_eq!(e.code, ErrorCode::SetupFailed);
         assert_eq!(
@@ -653,6 +714,46 @@ mod tests {
             e.message,
             "script `setup` of `api` timed out after 1s and was killed"
         );
+    }
+
+    #[test]
+    fn soft_failures_and_their_warning() {
+        let r = ScriptResult {
+            stem: Some("api".into()),
+            script: "setup".into(),
+            exit: ExitStatus {
+                code: Some(3),
+                signal: None,
+            },
+            duration_ms: 12,
+            tail: (1..=15).map(|i| format!("line {i}")).collect(),
+            timed_out: false,
+            cancelled: false,
+            timeout: None,
+            soft_fail: true,
+        };
+        assert!(r.soft_failed());
+        let w = r.warning();
+        assert_eq!(
+            (w.script.as_str(), w.exit, w.timed_out),
+            ("setup", Some(3), false)
+        );
+        assert_eq!(w.tail.len(), WARNING_TAIL_LINES);
+        assert_eq!(w.tail[0], "line 6");
+        // A cancellation (a stop) is not a failure; a success is not either.
+        let c = ScriptResult {
+            cancelled: true,
+            ..r.clone()
+        };
+        assert!(!c.soft_failed());
+        let ok = ScriptResult {
+            exit: ExitStatus {
+                code: Some(0),
+                signal: None,
+            },
+            ..r
+        };
+        assert!(!ok.soft_failed());
     }
 
     #[tokio::test]

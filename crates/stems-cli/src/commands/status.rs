@@ -3,8 +3,10 @@
 //! JSON: `data: { stems: [ { name, type, state, glyph, reason, pid, pgid,
 //! ports: [{name, port, auto}], uptime_s, started_at, restarts, health,
 //! error } ], summary: { healthy, degraded, failed, unhealthy, stopped,
-//! unknown, starting } }` (`unhealthy`: running, health check failing;
-//! counted apart from `failed`). With `-v`/`--verbose` each running stem also has `env`:
+//! unknown, starting, disabled } }` (`unhealthy`: running, health check failing;
+//! counted apart from `failed`). Disabled stems (46) come last with state
+//! and glyph `disabled`, `enabled: false` and the reason (`enabled: false
+//! in stems.local.yaml`); `--enabled` hides them (and their count). With `-v`/`--verbose` each running stem also has `env`:
 //! the resolved environment its process was started with (for debugging
 //! substitution).
 //!
@@ -24,6 +26,14 @@
 //! is cleared before each frame, on a pipe frames are separated by a blank
 //! line; in JSON mode each frame is one NDJSON line holding `data`. A failed
 //! refresh (e.g. the daemon stopped) is shown in the frame and retried.
+//!
+//! `--expect <healthy|stopped|failed|running> [--timeout D]` (49) checks
+//! that every named (else every enabled) stem is in that state: `data` gets
+//! `expect` and `mismatch: [{stem, state}]`; a mismatch is
+//! `STATUS_MISMATCH` (exit 1). `--timeout` re-checks every 200 ms until the
+//! deadline. Without a daemon every stem is `stopped` (`data = {stems:
+//! [{name, state}], daemon: false, expect, mismatch}`), so `--expect
+//! stopped` succeeds and any other state is `DAEMON_NOT_RUNNING` (exit 4).
 
 use std::io::Write;
 use std::time::Duration;
@@ -31,9 +41,9 @@ use std::time::Duration;
 use serde_json::json;
 use stems_api::client::Client;
 use stems_api::{Method, StatusParams, StatusResult, StatusSummary, StemStatus};
-use stems_core::{Error, Errors};
+use stems_core::{Error, ErrorCode, Errors, StemState};
 
-use crate::cli::StatusArgs;
+use crate::cli::{ExpectState, StatusArgs};
 use crate::client::{self, block_on};
 use crate::commands::Ctx;
 use crate::output::{CommandOutput, Mode};
@@ -95,20 +105,33 @@ pub fn run(ctx: &Ctx, args: &StatusArgs, mode: Mode, stdout: &mut dyn Write) -> 
         stems: args.stems.clone(),
         verbose: ctx.global.verbose > 0,
     };
+    if let Some(want) = args.expect {
+        let style = Style::detect(ctx, mode);
+        return block_on(expect(ctx, args, params, want, &style))
+            .unwrap_or_else(CommandOutput::failed);
+    }
     if let Some(raw) = &args.watch {
         let every = match parse_interval(raw) {
             Ok(d) => d,
             Err(e) => return CommandOutput::failed(e),
         };
-        return block_on(watch(ctx, params, every, mode, stdout))
+        return block_on(watch(ctx, params, every, args.enabled, mode, stdout))
             .unwrap_or_else(CommandOutput::failed);
     }
     let style = Style::detect(ctx, mode);
+    let verbose = params.verbose;
     block_on(async {
         let c = client::connect(ctx).await?;
-        let st: StatusResult = c.call(Method::STATUS, params).await?;
+        let mut st: StatusResult = c.call(Method::STATUS, params).await?;
+        if args.enabled {
+            only_enabled(&mut st);
+        }
         let data = serde_json::to_value(&st).unwrap_or_default();
-        Ok::<_, Errors>(CommandOutput::data(data).with_human(table(&st, &style)))
+        let mut human = table(&st, &style);
+        if verbose {
+            human.push_str(&warnings(&st));
+        }
+        Ok::<_, Errors>(CommandOutput::data(data).with_human(human))
     })
     .unwrap_or_else(CommandOutput::failed)
 }
@@ -130,10 +153,210 @@ pub fn parse_interval(raw: &str) -> Result<Duration, Error> {
     })
 }
 
+/// Poll interval of `--expect --timeout`.
+const EXPECT_POLL: Duration = Duration::from_millis(200);
+
+/// The `--expect` name of a state.
+fn expect_name(want: ExpectState) -> &'static str {
+    match want {
+        ExpectState::Healthy => "healthy",
+        ExpectState::Stopped => "stopped",
+        ExpectState::Failed => "failed",
+        ExpectState::Running => "running",
+    }
+}
+
+/// Is `state` what `--expect want` asks for?
+pub fn expect_matches(want: ExpectState, state: StemState) -> bool {
+    match want {
+        ExpectState::Healthy => state == StemState::Healthy,
+        ExpectState::Stopped => stems_daemon::supervisor::run::is_stopped(state),
+        ExpectState::Failed => state == StemState::Failed,
+        // Up or on its way up (every transitioning-or-up state).
+        ExpectState::Running => matches!(
+            state,
+            StemState::Setup
+                | StemState::Starting
+                | StemState::Seeding
+                | StemState::Healthy
+                | StemState::Unhealthy
+        ),
+    }
+}
+
+/// `(stem, state)` of the checked stems not in `want`: the named ones (the
+/// daemon already selected them), else every enabled stem.
+fn mismatch(st: &StatusResult, named: bool, want: ExpectState) -> Vec<(String, StemState)> {
+    st.stems
+        .iter()
+        .filter(|s| named || s.enabled)
+        .filter(|s| !expect_matches(want, s.state))
+        .map(|s| (s.name.clone(), s.state))
+        .collect()
+}
+
+/// The stems `--expect` checks without a daemon: the named ones (each must
+/// exist: `UNKNOWN_STEM`, like the daemon's `status`), else every enabled
+/// stem.
+fn no_daemon_names(ws: &stems_config::Workspace, named: &[String]) -> Result<Vec<String>, Errors> {
+    if named.is_empty() {
+        return Ok(ws.stems().map(|s| s.name.clone()).collect());
+    }
+    let unknown: Vec<Error> = named
+        .iter()
+        .filter(|n| ws.stem(n).is_none())
+        .map(|n| {
+            Error::new(
+                ErrorCode::UnknownStem,
+                format!("stem `{n}` does not exist in workspace `{}`", ws.name),
+            )
+            .with_hint(format!(
+                "known stems: {}",
+                ws.stems.keys().cloned().collect::<Vec<_>>().join(", ")
+            ))
+            .with_details(json!({ "stem": n }))
+        })
+        .collect();
+    if unknown.is_empty() {
+        Ok(named.to_vec())
+    } else {
+        Err(Errors(unknown))
+    }
+}
+
+/// `status --expect` (49).
+async fn expect(
+    ctx: &Ctx,
+    args: &StatusArgs,
+    params: StatusParams,
+    want: ExpectState,
+    style: &Style,
+) -> Result<CommandOutput, Errors> {
+    let timeout = match &args.timeout {
+        None => Duration::ZERO,
+        Some(raw) => stems_core::logs::parse_duration(raw.trim()).map_err(|_| {
+            Error::usage(
+                format!("invalid --timeout `{raw}`"),
+                "use a duration such as `30s`, `2m` or `500ms`",
+            )
+            .with_details(json!({ "flag": "--timeout", "value": raw }))
+        })?,
+    };
+    let deadline = tokio::time::Instant::now() + timeout;
+    let named = !args.stems.is_empty();
+    let mut conn = None;
+    loop {
+        let (mut data, human, wrong, no_daemon) = match refresh(ctx, &mut conn, &params).await {
+            Ok(mut st) => {
+                if args.enabled {
+                    only_enabled(&mut st);
+                }
+                let wrong = mismatch(&st, named, want);
+                let data = serde_json::to_value(&st).unwrap_or_default();
+                (data, table(&st, style), wrong, None)
+            }
+            Err(e) if e.0.iter().any(|x| x.code == ErrorCode::DaemonNotRunning) => {
+                // No daemon: every stem is stopped; named ones must exist.
+                let ws = stems_config::load(ctx.load_options())
+                    .map_err(Errors::from)?
+                    .workspace;
+                let names = no_daemon_names(&ws, &args.stems)?;
+                let wrong: Vec<(String, StemState)> = names
+                    .iter()
+                    .filter(|_| !expect_matches(want, StemState::Stopped))
+                    .map(|n| (n.clone(), StemState::Stopped))
+                    .collect();
+                let stems: Vec<_> = names
+                    .iter()
+                    .map(|n| json!({ "name": n, "state": StemState::Stopped }))
+                    .collect();
+                let human = format!(
+                    "no daemon is running: every stem is stopped ({})\n",
+                    names.join(", ")
+                );
+                (
+                    json!({ "stems": stems, "daemon": false }),
+                    human,
+                    wrong,
+                    Some(e),
+                )
+            }
+            Err(e) => return Err(e),
+        };
+        let done = wrong.is_empty() || tokio::time::Instant::now() >= deadline;
+        if !done {
+            tokio::time::sleep_until(deadline.min(tokio::time::Instant::now() + EXPECT_POLL)).await;
+            continue;
+        }
+        if !wrong.is_empty()
+            && let Some(e) = no_daemon
+        {
+            return Err(e);
+        }
+        let name = expect_name(want);
+        if let serde_json::Value::Object(m) = &mut data {
+            m.insert("expect".into(), json!(name));
+            m.insert(
+                "mismatch".into(),
+                json!(
+                    wrong
+                        .iter()
+                        .map(|(n, s)| json!({ "stem": n, "state": s }))
+                        .collect::<Vec<_>>()
+                ),
+            );
+        }
+        if wrong.is_empty() {
+            let human = format!("{human}expect {name}: ok\n");
+            return Ok(CommandOutput::data(data).with_human(human));
+        }
+        let list: Vec<String> = wrong.iter().map(|(n, s)| format!("{n} ({s})")).collect();
+        let checked = data.get("stems").and_then(|s| s.as_array()).map_or(0, |a| {
+            a.iter()
+                .filter(|s| named || s.get("enabled") != Some(&json!(false)))
+                .count()
+        });
+        let hint = if timeout.is_zero() {
+            format!(
+                "wait for it with `--timeout <duration>` (e.g. `stems status --expect {name} --timeout 30s`)"
+            )
+        } else {
+            format!(
+                "still not {name} after {}; see `stems status` and `stems logs`",
+                args.timeout.as_deref().unwrap_or_default()
+            )
+        };
+        let err = Error::new(
+            ErrorCode::StatusMismatch,
+            format!(
+                "{} of {checked} stem(s) not {name}: {}",
+                wrong.len(),
+                list.join(", ")
+            ),
+        )
+        .with_hint(hint)
+        .with_details(json!({
+            "expect": name,
+            "mismatch": data.get("mismatch").cloned().unwrap_or_default(),
+        }));
+        let human = format!("{human}expect {name}: {}\n", list.join(", "));
+        return Ok(CommandOutput::data(data)
+            .with_human(human)
+            .with_errors(Errors(vec![err])));
+    }
+}
+
+/// `--enabled`: drop the disabled stems (46) and recount.
+pub fn only_enabled(st: &mut StatusResult) {
+    st.stems.retain(|s| s.enabled);
+    st.summary = StatusSummary::of(&st.stems);
+}
+
 async fn watch(
     ctx: &Ctx,
     params: StatusParams,
     every: Duration,
+    enabled_only: bool,
     mode: Mode,
     stdout: &mut dyn Write,
 ) -> Result<CommandOutput, Errors> {
@@ -145,7 +368,10 @@ async fn watch(
     let mut conn = None;
     let mut first = true;
     loop {
-        let res = refresh(ctx, &mut conn, &params).await;
+        let mut res = refresh(ctx, &mut conn, &params).await;
+        if enabled_only && let Ok(st) = res.as_mut() {
+            only_enabled(st);
+        }
         let frame = match (&res, mode) {
             (Err(e), _) if first => return Err(e.clone()),
             (Ok(st), Mode::Json) => serde_json::to_string(st).unwrap_or_default() + "\n",
@@ -338,6 +564,21 @@ fn tails(st: &StatusResult) -> String {
     out
 }
 
+/// `status -v`: a `warning <stem>: <script> exited 3 (soft_fail)` block
+/// with the output tail for each failed `soft_fail` script (41).
+pub fn warnings(st: &StatusResult) -> String {
+    let mut out = String::new();
+    for s in &st.stems {
+        for w in &s.warnings {
+            out.push_str(&format!("\nwarning {}: {}\n", s.name, w.failure()));
+            for l in &w.tail {
+                out.push_str(&format!("  {} | {l}\n", w.script));
+            }
+        }
+    }
+    out
+}
+
 /// `1 healthy, 0 degraded, 0 failed, 0 unhealthy, 0 starting, 0 stopped,
 /// 0 unknown`; when that is wider than `width`, only the non-zero counts.
 fn summary_line(m: &StatusSummary, width: Option<usize>) -> String {
@@ -358,9 +599,19 @@ fn summary_line(m: &StatusSummary, width: Option<usize>) -> String {
             .collect::<Vec<_>>()
             .join(", ")
     };
-    let full = join(true);
+    let mut full = join(true);
+    // Disabled stems (46) only when there are some.
+    let disabled = |mut s: String| {
+        if m.disabled > 0 {
+            s.push_str(&format!(", {} disabled", m.disabled));
+        }
+        s
+    };
+    full = disabled(full);
     match width {
-        Some(w) if full.chars().count() > w && parts.iter().any(|(n, _)| *n > 0) => join(false),
+        Some(w) if full.chars().count() > w && parts.iter().any(|(n, _)| *n > 0) => {
+            disabled(join(false))
+        }
         _ => full,
     }
 }
@@ -372,6 +623,39 @@ mod tests {
     use stems_core::{Glyph, StemState};
 
     #[test]
+    fn expect_running_includes_every_up_or_transitioning_state() {
+        use StemState::*;
+        for st in [Setup, Starting, Seeding, Healthy, Unhealthy] {
+            assert!(expect_matches(ExpectState::Running, st), "{st}");
+        }
+        for st in [Stopped, Stopping, Failed, Disabled] {
+            assert!(!expect_matches(ExpectState::Running, st), "{st}");
+        }
+    }
+
+    #[test]
+    fn expect_without_a_daemon_checks_names_against_the_config() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(
+            d.path().join("stems.yaml"),
+            "schema_version: 1\nname: t\nstems:\n  a: { type: process, command: x }\n  b: { type: process, command: x, enabled: false }\n",
+        )
+        .unwrap();
+        let ws = stems_config::load(stems_config::LoadOptions {
+            cwd: d.path().to_path_buf(),
+            ..Default::default()
+        })
+        .unwrap()
+        .workspace;
+        assert_eq!(no_daemon_names(&ws, &[]).unwrap(), ["a"]);
+        assert_eq!(no_daemon_names(&ws, &["b".into()]).unwrap(), ["b"]);
+        let e = no_daemon_names(&ws, &["a".into(), "nope".into()]).unwrap_err();
+        assert_eq!(e.0.len(), 1);
+        assert_eq!(e.0[0].code, ErrorCode::UnknownStem);
+        assert_eq!(e.0[0].details["stem"], "nope");
+    }
+
+    #[test]
     fn table_golden() {
         let stem = |name: &str, state: StemState, pid: Option<i32>, port: Option<u16>| StemStatus {
             name: name.into(),
@@ -379,7 +663,9 @@ mod tests {
             state,
             glyph: state.glyph(false),
             reason: None,
+            enabled: true,
             degraded: false,
+            warnings: Vec::new(),
             pid,
             pgid: pid,
             ports: vec![PortStatus {
@@ -411,6 +697,11 @@ mod tests {
             stem("echo-svc", StemState::Healthy, Some(4242), Some(18090)),
             web,
             hosted,
+            StemStatus::disabled(
+                "search",
+                "process",
+                Some("enabled: ${env.WITH_SEARCH} → false".into()),
+            ),
         ];
         let st = StatusResult {
             summary: StatusSummary::of(&stems),
@@ -431,7 +722,9 @@ mod tests {
             state: StemState::Failed,
             glyph: Glyph::Failed,
             reason: Some(reason.into()),
+            enabled: true,
             degraded: false,
+            warnings: Vec::new(),
             pid: None,
             pgid: None,
             ports: vec![],
@@ -453,6 +746,34 @@ mod tests {
             summary: StatusSummary::of(&stems),
             stems,
         }
+    }
+
+    #[test]
+    fn verbose_lists_soft_fail_warnings() {
+        let mut st = one("api", "setup exited 3 (soft_fail)");
+        let s = &mut st.stems[0];
+        (s.state, s.glyph, s.degraded, s.restarts) = (StemState::Healthy, Glyph::Degraded, true, 0);
+        s.warnings = vec![stems_api::ScriptWarning {
+            script: "setup".into(),
+            exit: Some(3),
+            signal: None,
+            timed_out: false,
+            tail: vec!["checking poetry".into(), "poetry missing; skipping".into()],
+            at: chrono::DateTime::UNIX_EPOCH,
+        }];
+        st.summary = StatusSummary::of(&st.stems);
+        let mut out = table(&st, &Style::default());
+        out.push_str(&warnings(&st));
+        insta::assert_snapshot!(out, @r"
+        STEM  TYPE     STATUS     REASON                      PID  PORTS  UPTIME  RESTARTS
+        api   process  ! healthy  setup exited 3 (soft_fail)  -    -      -       0
+
+        0 healthy, 1 degraded, 0 failed, 0 unhealthy, 0 starting, 0 stopped, 0 unknown
+
+        warning api: setup exited 3 (soft_fail)
+          setup | checking poetry
+          setup | poetry missing; skipping
+        ");
     }
 
     #[test]

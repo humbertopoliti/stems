@@ -49,14 +49,24 @@ for stem in resolved.workspace.stems() { /* enabled stems, declaration order */ 
    stem of the committed tree with the merge rules below, except that a
    variant setting a different `type` first drops the base's type-specific
    fields (`variants::TYPE_SPECIFIC_FIELDS`). An unknown name is a non-fatal
-   `UNKNOWN_VARIANT` (the base is used). `variant`/`variants` are removed from
-   the merged tree after the local overlay; `Stem::variant` / `variants`
-   record them. See `docs/config.md#variants-fr-st-8`.
+   `UNKNOWN_VARIANT` (the base is used). A variant with `inherit: false` is
+   merged over an empty stem instead (only `enabled` and the selection are
+   kept); `inherit` anywhere else is `SCHEMA_INVALID`.
+   `variant`/`variants`/`inherit` are removed from the merged tree after the
+   local overlay; `Stem::variant` / `variants` record them.
+   `load_with_variants(opts, {stem: name})` replaces a stem's selection
+   (`stems show <stem> --variant <name>`; nothing is written). See
+   `docs/config.md#variants-fr-st-8`.
 6. **Local overlay**: `stems.local.yaml` next to `stems.yaml` (unless
    `skip_local`) is expanded the same way and merged last (it still wins
    over a configuration and a variant).
-7. **Substitution** over every string of the merged tree (see below).
-8. **Resolution**: typed parse of the merged tree, defaults applied from
+7. **Provenance and removals**: `Stem::inherited_from` is computed from
+   the layers (`provenance.rs`: each top-level field, and each `env`,
+   `scripts`, `outputs` key, to the last of `base`, `configuration`,
+   `variant`, `local` that sets it, or `removed`), for stems with variants
+   or a configuration/local override; then the `null` markers are dropped.
+8. **Substitution** over every string of the merged tree (see below).
+9. **Resolution**: typed parse of the merged tree, defaults applied from
    `defaults.rs`, paths made absolute. A stem with no `type` after merging is
    fatal (`SCHEMA_INVALID`); a field that does not apply to the stem's type
    (e.g. `image` on a process stem) is a non-fatal diagnostic.
@@ -78,7 +88,17 @@ has been merged so far, "overlay" the file being merged on top):
 | mapping with `type: A` | mapping with `type: B` (A ≠ B) | replaced whole (a stem or a health check changing kind) |
 | list | anything | replaced (lists never concatenate: `ports`, `depends_on`, `env_files`, `watch`, profile lists, …) |
 | `stems.<n>.ports` list | list | replaced, except that an overlay entry `{name: p, …}` without `container_port` keeps the `container_port` of the replaced entry named `p` (see below) |
-| anything | scalar / list / `null` | replaced (`null` clears the value, restoring the default) |
+| anything | scalar / list | replaced |
+| anything | `null` (`~`) | **removed**: the key is dropped from the merged result, so the default applies (`scripts: { setup: ~ }` drops an inherited script, `env: { X: ~ }` a variable, `health: ~` restores the type's default) |
+
+`null` is kept as a removal marker while layers are merged (so a `null`
+in a local file with includes, or in a variant defined in both
+`stems.yaml` and `stems.local.yaml`, still removes the key from the layers
+below) and every marker is dropped before the typed parse
+(`merge::prune_nulls`); the per-file schema check accepts `null` for any
+key. `stems.<n>.variant: null` keeps its meaning (the base definition),
+and so do `configuration: null` / `default_configuration: null`: they are
+read before the merge.
 
 `container_port` is kept by port name because the usual reason to
 replace `ports` in a later layer (a variant or `stems.local.yaml`) is to

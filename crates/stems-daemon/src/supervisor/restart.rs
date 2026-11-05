@@ -23,7 +23,6 @@
 //! start (`up`, `start`, `restart`) builds a fresh tracker: the window and
 //! the backoff start over; the lifetime `restarts` count is kept.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -38,6 +37,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::Core;
 use super::actor::{Cmd, StemCell};
+use super::env::CallEnv;
 use crate::events::EventDraft;
 
 /// Per-stem restart bookkeeping, kept in the actor's `StemInfo`.
@@ -47,10 +47,10 @@ pub(crate) struct RestartState {
     config: Option<Restart>,
     /// Window, backoff and totals since the last user start.
     tracker: Option<RestartTracker>,
-    /// The workspace and `--pass-env` of the last user start (a respawn
-    /// uses the same config, environment and ports).
+    /// The workspace, caller environment and `--pass-env` of the last
+    /// user start (a respawn uses the same config, environment and ports).
     ws: Option<Arc<Resolved>>,
-    pass_env: BTreeMap<String, String>,
+    call_env: CallEnv,
     /// Cancels the pending backoff timer (a stop/down/shutdown).
     backoff: Option<CancellationToken>,
     /// Cancels the `unhealthy_grace` timer (the stem left `unhealthy`).
@@ -67,19 +67,20 @@ pub(crate) struct RestartState {
 impl RestartState {
     /// A user start: fresh tracker for `stem`'s settings (this is the
     /// counter reset of `stems restart`).
-    pub(crate) fn begin(
-        &mut self,
-        ws: &Arc<Resolved>,
-        stem: &Stem,
-        pass_env: &BTreeMap<String, String>,
-    ) {
+    pub(crate) fn begin(&mut self, ws: &Arc<Resolved>, stem: &Stem, call_env: &CallEnv) {
         self.cancel_timers();
         self.config = Some(stem.restart.clone());
         self.tracker = Some(RestartTracker::new(&stem.restart));
         self.ws = Some(ws.clone());
-        self.pass_env = pass_env.clone();
+        self.call_env = call_env.clone();
         self.respawning = false;
         self.attempt = 0;
+    }
+
+    /// The caller environment and `--pass-env` of the last user start (37):
+    /// a start stems performs on its own reuses both.
+    pub(crate) fn call_env(&self) -> CallEnv {
+        self.call_env.clone()
     }
 
     /// A config reload was applied (33): policy restarts use the latest
@@ -114,7 +115,7 @@ impl RestartState {
     /// An adopted unit (crash recovery, `adopt_orphans`): the policy applies
     /// to it from now on (with no `--pass-env`).
     pub(crate) fn adopted(&mut self, ws: &Arc<Resolved>, stem: &Stem) {
-        self.begin(ws, stem, &BTreeMap::new());
+        self.begin(ws, stem, &CallEnv::default());
     }
 
     /// Restarts in the window now (`StemStatus.restarts_in_window`).
@@ -453,7 +454,7 @@ fn give_up_stale(core: &Core, cell: &StemCell, e: Error, status: ExitStatus) {
 /// `setup`/`seed` do not (their stamps are intact).
 pub(crate) async fn respawn(core: &Arc<Core>, cell: &Arc<StemCell>, generation: u64) {
     let actor = stems_api::DAEMON_ACTOR;
-    let (ws, pass_env, attempt) = {
+    let (ws, call_env, attempt) = {
         let mut info = cell.info();
         if info.generation != generation || info.state != StemState::Starting {
             return;
@@ -466,7 +467,7 @@ pub(crate) async fn respawn(core: &Arc<Core>, cell: &Arc<StemCell>, generation: 
             return;
         };
         info.restart.respawning = true;
-        (ws, info.restart.pass_env.clone(), info.restart.attempt)
+        (ws, info.restart.call_env.clone(), info.restart.attempt)
     };
     let Some(stem) = ws.workspace.stem(&cell.name).cloned() else {
         let e = Error::internal(format!("`{}` vanished from the workspace", cell.name));
@@ -478,7 +479,7 @@ pub(crate) async fn respawn(core: &Arc<Core>, cell: &Arc<StemCell>, generation: 
     } else {
         format!("restarting (attempt {attempt})")
     });
-    if super::hooks::before_start(core, cell, &ws, &stem, actor, &pass_env)
+    if super::hooks::before_start(core, cell, &ws, &stem, actor, &call_env)
         .await
         .is_err()
     {
@@ -490,7 +491,7 @@ pub(crate) async fn respawn(core: &Arc<Core>, cell: &Arc<StemCell>, generation: 
         }
         return;
     }
-    if let Err(e) = super::actor::spawn(core, cell, &ws, &stem, &pass_env).await {
+    if let Err(e) = super::actor::spawn(core, cell, &ws, &stem, &call_env).await {
         cell.fail(core, e, actor);
     }
 }

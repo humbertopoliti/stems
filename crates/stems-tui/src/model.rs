@@ -608,6 +608,7 @@ fn state_rank(s: &StemStatus) -> u8 {
         Glyph::Unknown => 3,
         Glyph::Healthy => 4,
         Glyph::Stopped => 5,
+        Glyph::Disabled => 6,
     }
 }
 

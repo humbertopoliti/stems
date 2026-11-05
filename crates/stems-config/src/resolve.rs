@@ -12,7 +12,7 @@ use crate::model::*;
 use crate::path::ConfigPath;
 use crate::raw::*;
 use crate::subst::{DeferredKind, DeferredRef};
-use crate::types::{HealthType, Scalar, StemType};
+use crate::types::{CHECK_DEFAULT_TIMEOUT, CheckWhen, Dur, HealthType, Scalar, StemType};
 
 /// Inputs shared by every resolution step.
 pub(crate) struct Ctx<'a> {
@@ -173,6 +173,7 @@ pub(crate) fn resolve_workspace(
         vars,
         env: ws_env,
         requires: raw.requires,
+        checks: resolve_checks(raw.checks),
         profiles: raw
             .profiles
             .into_iter()
@@ -217,6 +218,15 @@ pub(crate) fn resolve_workspace(
             },
         },
         notifications: resolve_notifications(raw.notifications.as_ref()),
+        secrets: raw.secrets.clone(),
+        redaction: raw
+            .redaction
+            .as_ref()
+            .map(|r| Redaction {
+                patterns: r.patterns.clone().unwrap_or_default(),
+                builtin: r.builtin.unwrap_or(true),
+            })
+            .unwrap_or_default(),
         repos_dir: ctx.repos_dir.clone(),
         scripts,
         stems,
@@ -286,8 +296,11 @@ fn resolve_script(s: &RawScript, default_cwd: &Path, p: &ConfigPath, ctx: &mut C
             .collect(),
         inputs: spec.inputs.unwrap_or_default(),
         requires: spec.requires.unwrap_or_default(),
+        requires_stopped: spec.requires_stopped.unwrap_or_default(),
         timeout: spec.timeout,
         retries: spec.retries.unwrap_or(d::SCRIPT_RETRIES),
+        soft_fail: spec.soft_fail.unwrap_or(d::SCRIPT_SOFT_FAIL),
+        when: spec.when.unwrap_or_default(),
         concurrent: spec.concurrent.unwrap_or(d::SCRIPT_CONCURRENT),
         stamp_env: spec.stamp_env.unwrap_or_default(),
         cwd: match spec.cwd.as_deref() {
@@ -295,6 +308,7 @@ fn resolve_script(s: &RawScript, default_cwd: &Path, p: &ConfigPath, ctx: &mut C
             Some("workspace") => ctx.root.to_path_buf(),
             Some(c) => ctx.path(default_cwd, c),
         },
+        inherit_env: spec.inherit_env.unwrap_or(d::SCRIPT_INHERIT_ENV),
         cwd_set: spec.cwd.is_some(),
     }
 }
@@ -337,6 +351,7 @@ fn type_specific_fields(rs: &RawStem) -> Vec<(&'static str, bool, &'static [Stem
         ("service", rs.service.is_some(), &[Compose]),
         ("project_name", rs.project_name.is_some(), &[Compose]),
         ("adopt", rs.adopt.is_some(), &[Compose]),
+        ("inject_env", rs.inject_env.is_some(), &[Compose]),
     ]
 }
 
@@ -368,13 +383,22 @@ fn resolve_stem(
     for (field, set, allowed) in type_specific_fields(rs) {
         if set && !allowed.contains(&kind) {
             let list: Vec<String> = allowed.iter().map(ToString::to_string).collect();
-            ctx.schema(
-                p.key(field),
+            let mut diag = Diagnostic::new(
+                codes::SCHEMA_INVALID,
                 format!(
                     "field `{field}` is not valid for a {kind} stem (only {})",
                     list.join(", ")
                 ),
-            );
+            )
+            .with_path(p.key(field));
+            if field == "build" && kind == StemType::Process {
+                // `build.before_setup` and friends (44, 51) are for images;
+                // a process stem builds with its `build` script.
+                diag = diag.with_hint(
+                    "use build.when: a `scripts.build` with `when: changed` or `when: always` runs in every start, after `setup` (docs/scripts.md)",
+                );
+            }
+            ctx.diagnostics.push(diag);
         }
     }
 
@@ -412,6 +436,7 @@ fn resolve_stem(
                 stem,
                 condition: d::DEP_CONDITION,
                 soft: d::DEP_SOFT,
+                if_disabled: d::DEP_IF_DISABLED,
                 protocol: None,
                 via: None,
             },
@@ -419,6 +444,7 @@ fn resolve_stem(
                 stem: s.stem,
                 condition: s.condition.unwrap_or(d::DEP_CONDITION),
                 soft: s.soft.unwrap_or(d::DEP_SOFT),
+                if_disabled: s.if_disabled.unwrap_or(d::DEP_IF_DISABLED),
                 protocol: s.protocol,
                 via: s.via,
             },
@@ -540,6 +566,9 @@ fn resolve_stem(
                 DockerBuild {
                     context,
                     dockerfile,
+                    secrets: build_secrets(b, &p.key("build"), ctx),
+                    allow_read: allow_read(b, ctx),
+                    before_setup: b.before_setup.unwrap_or(false),
                 }
             }),
             volumes: rs.volumes.clone().unwrap_or_default(),
@@ -565,6 +594,8 @@ fn resolve_stem(
                 .unwrap_or_else(|| format!("stems-{}", ctx.ws_name)),
             adopt: rs.adopt.unwrap_or(d::COMPOSE_ADOPT),
             build: compose_build(rs, p, ctx),
+            build_options: compose_build_options(rs, p, ctx),
+            inject_env: rs.inject_env.unwrap_or(d::COMPOSE_INJECT_ENV),
         }),
         StemType::External => StemRuntime::External,
     };
@@ -574,7 +605,23 @@ fn resolve_stem(
         runtime,
         description: rs.description.clone(),
         codebase,
-        enabled: rs.enabled.unwrap_or(d::STEM_ENABLED),
+        enabled: match &rs.enabled {
+            None => d::STEM_ENABLED,
+            Some(e) => e.value().unwrap_or_else(|| {
+                let shown = match e {
+                    RawEnabled::Text(t) => t.as_str(),
+                    RawEnabled::Bool(_) => "",
+                };
+                ctx.schema(
+                    p.key("enabled"),
+                    format!(
+                        "`enabled` must be a boolean or one of true|1|yes|on / false|0|no|off|\"\" (case-insensitive), got `{shown}`"
+                    ),
+                );
+                d::STEM_ENABLED
+            }),
+        },
+        enabled_template: None,
         env,
         local_env: Default::default(),
         env_files: rs
@@ -582,7 +629,10 @@ fn resolve_stem(
             .clone()
             .unwrap_or_default()
             .iter()
-            .map(|f| ctx.path(root, f))
+            .map(|f| EnvFile {
+                path: ctx.path(root, f.path()),
+                required: f.required(),
+            })
             .collect(),
         ports,
         depends_on,
@@ -594,9 +644,13 @@ fn resolve_stem(
         outputs: resolve_outputs(&rs.outputs, &p.key("outputs"), ctx),
         overlays,
         tags: rs.tags.clone().unwrap_or_default(),
+        secrets: rs.secrets.clone().unwrap_or_default(),
         stop_grace: rs.stop_grace.unwrap_or(d::STOP_GRACE),
+        requires: rs.requires.clone(),
+        checks: resolve_checks(rs.checks.clone()),
         variant: None,
         variants: Vec::new(),
+        inherited_from: Default::default(),
     })
 }
 
@@ -608,7 +662,15 @@ fn docker_build<'a>(
     ctx: &mut Ctx<'_>,
 ) -> Option<&'a RawDockerBuild> {
     match rs.build.as_ref()? {
-        RawBuild::Docker(b) => Some(b),
+        RawBuild::Spec(b) => {
+            if b.services.is_some() {
+                ctx.schema(
+                    p.key("build").key("services"),
+                    "`build.services` is for compose stems; a docker stem's `build` takes `context`, `dockerfile`, `before_setup`, `secrets` and `allow_read`",
+                );
+            }
+            Some(b)
+        }
         RawBuild::Flag(_) => {
             ctx.schema(
                 p.key("build"),
@@ -619,20 +681,85 @@ fn docker_build<'a>(
     }
 }
 
-/// The compose form of `stems.<n>.build` (default `COMPOSE_BUILD`); an
-/// object on a compose stem is `SCHEMA_INVALID` (the default applies).
+/// The compose form of `stems.<n>.build` (default `COMPOSE_BUILD`): the
+/// bool, or `true` for the object form (44). `context`/`dockerfile` on a
+/// compose stem are `SCHEMA_INVALID` (the service's `build:` lives in the
+/// compose file).
 fn compose_build(rs: &RawStem, p: &ConfigPath, ctx: &mut Ctx<'_>) -> bool {
     match rs.build.as_ref() {
         None => d::COMPOSE_BUILD,
         Some(RawBuild::Flag(b)) => *b,
-        Some(RawBuild::Docker(_)) => {
-            ctx.schema(
-                p.key("build"),
-                "`build` on a compose stem is a bool (`build: true|false`, whether `up` runs `compose up --build`); the object form (`context`, `dockerfile`) is for docker stems and the service's `build:` lives in the compose file",
-            );
-            d::COMPOSE_BUILD
+        Some(RawBuild::Spec(b)) => {
+            if b.context.is_some() || b.dockerfile.is_some() {
+                ctx.schema(
+                    p.key("build"),
+                    "`build` on a compose stem is a bool (`build: true|false`, whether `up` runs `compose up --build`) or `{ services, before_setup, secrets, allow_read }`; `context` and `dockerfile` are for docker stems and the service's `build:` lives in the compose file",
+                );
+            }
+            true
         }
     }
+}
+
+/// The object form's options of a compose stem's `build:` (44); the bool
+/// form is all defaults.
+fn compose_build_options(rs: &RawStem, p: &ConfigPath, ctx: &mut Ctx<'_>) -> ComposeBuild {
+    let Some(RawBuild::Spec(b)) = rs.build.as_ref() else {
+        return ComposeBuild::default();
+    };
+    ComposeBuild {
+        services: b.services.clone().unwrap_or_default(),
+        before_setup: b.before_setup.unwrap_or(false),
+        secrets: build_secrets(b, &p.key("build"), ctx),
+        allow_read: allow_read(b, ctx),
+    }
+}
+
+/// `build.secrets`: each `{id, file}` or `{id, env}` (exactly one of the
+/// two, else `SCHEMA_INVALID` and the entry is dropped). Files resolve
+/// against the workspace root.
+fn build_secrets(b: &RawDockerBuild, p: &ConfigPath, ctx: &mut Ctx<'_>) -> Vec<BuildSecret> {
+    let root = ctx.root;
+    let mut out = Vec::new();
+    for (i, s) in b.secrets.iter().flatten().enumerate() {
+        let source = match (&s.file, &s.env) {
+            (Some(f), None) => SecretSource::File(ctx.path(root, f)),
+            (None, Some(e)) => SecretSource::Env(e.clone()),
+            _ => {
+                ctx.schema(
+                    p.key("secrets").index(i),
+                    format!(
+                        "build secret `{}` needs exactly one of `file` and `env` (`{{ id: {}, file: <path> }}` or `{{ id: {}, env: <VAR> }}`)",
+                        s.id, s.id, s.id
+                    ),
+                );
+                continue;
+            }
+        };
+        out.push(BuildSecret {
+            id: s.id.clone(),
+            source,
+        });
+    }
+    out
+}
+
+/// `build.allow_read`: an absolute path (after substitution and `~`) is
+/// normalised (`..` folded); anything else is kept as written for
+/// `validate` to reject (exact absolute paths only).
+fn allow_read(b: &RawDockerBuild, ctx: &Ctx<'_>) -> Vec<PathBuf> {
+    b.allow_read
+        .iter()
+        .flatten()
+        .map(|s| {
+            let p = crate::codebase::expand_tilde(s, ctx.home);
+            if p.is_absolute() {
+                crate::codebase::normalize(&p)
+            } else {
+                p
+            }
+        })
+        .collect()
 }
 
 /// Outputs (FR-ST-6): names must be identifiers (they become env var
@@ -745,6 +872,31 @@ fn resolve_health(
         start_period: h.start_period.unwrap_or(d::HEALTH_START_PERIOD),
         start_timeout: h.start_timeout.unwrap_or(d::HEALTH_START_TIMEOUT),
     })
+}
+
+/// Resolve `checks:` entries (defaults: `severity: fail`, `timeout: 2s`,
+/// `when: [doctor, up]`).
+fn resolve_checks(
+    raw: IndexMap<String, crate::raw::RawCheck>,
+) -> IndexMap<String, CustomCheckSpec> {
+    raw.into_iter()
+        .map(|(name, c)| {
+            (
+                name,
+                CustomCheckSpec {
+                    command: c.command,
+                    message: c.message,
+                    hint: c.hint,
+                    severity: c.severity.unwrap_or_default(),
+                    timeout: c.timeout.unwrap_or(Dur(CHECK_DEFAULT_TIMEOUT)),
+                    fix: c.fix,
+                    when: c
+                        .when
+                        .unwrap_or_else(|| vec![CheckWhen::Doctor, CheckWhen::Up]),
+                },
+            )
+        })
+        .collect()
 }
 
 #[cfg(test)]

@@ -21,6 +21,25 @@ pub struct ReposSyncParams {
     /// Pass `--recurse-submodules` to `git clone` / `git checkout`.
     #[serde(default)]
     pub recurse_submodules: bool,
+    /// Return codebases the developer moved (another branch, `repos
+    /// checkout`) to the declared ref; uncommitted changes and unpushed
+    /// commits are still never touched (49).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reset: bool,
+}
+
+/// `repos_checkout` params (49).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ReposCheckoutParams {
+    /// The stem whose git codebase to move.
+    pub stem: String,
+    /// A branch (checked out as `origin/<branch>`), a tag or a sha.
+    #[serde(rename = "ref")]
+    pub git_ref: String,
+    /// Check out even with uncommitted changes (carried over, as `git
+    /// checkout` does); otherwise `REPO_DIRTY`.
+    #[serde(default)]
+    pub force: bool,
 }
 
 fn yes() -> bool {
@@ -123,6 +142,15 @@ pub struct RepoStatus {
     pub behind: Option<u32>,
     /// The directory exists.
     pub exists: bool,
+    /// What is checked out: the branch, else a tag at HEAD, else a remote
+    /// branch at HEAD (`origin/x`), else the sha (`null` without a checkout).
+    #[serde(default)]
+    pub checked_out: Option<String>,
+    /// HEAD is not the declared `ref` (git source only): another branch, a
+    /// detached HEAD for a branch ref, or another commit for a tag/sha ref
+    /// (e.g. after `stems repos checkout`). `repos sync --reset` goes back.
+    #[serde(default)]
+    pub drift: bool,
 }
 
 /// `repos_status` result.

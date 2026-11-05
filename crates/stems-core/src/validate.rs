@@ -11,13 +11,13 @@ use std::path::{Path, PathBuf};
 
 use serde_json::json;
 use stems_config::{
-    Codebase, Condition, ConfigPath, LoadOptions, PortRef, Profile, Requirement, Resolved, Script,
-    ScriptSource, SpanIndex, StemRuntime, StemType, Workspace,
+    Codebase, Condition, ConfigPath, IfDisabled, LoadOptions, PortRef, Profile, Requirement,
+    Resolved, Script, ScriptSource, SpanIndex, Stem, StemRuntime, StemType, Workspace,
 };
 
 use crate::error::{Error, ErrorCode, Errors, sort_errors};
 use crate::graph;
-use crate::tools::{SystemTools, ToolVersion, ToolVersions, version_command};
+use crate::tools::{SystemTools, ToolVersion, ToolVersions, requirement_source, version_command};
 use crate::version::{Version, VersionReq};
 
 /// `schema_version` values this binary understands (the table with the
@@ -37,6 +37,17 @@ pub struct ValidateOptions {
     /// time instead, by content hash and with `--force-overlays` (18).
     pub skip_overlays: bool,
 }
+
+/// Scripts that accept `soft_fail: true` (41): the stem's `setup`, `seed`,
+/// `pre_start`, `post_start`, `build` and the workspace `bootstrap`.
+pub const SOFT_FAIL_SCRIPTS: [&str; 6] = [
+    "setup",
+    "seed",
+    "pre_start",
+    "post_start",
+    "build",
+    "bootstrap",
+];
 
 /// Validate a loaded workspace, probing real tools for `requires:`.
 pub fn validate(resolved: &Resolved, opts: &ValidateOptions) -> Vec<Error> {
@@ -68,11 +79,23 @@ pub fn validate_with(
     v.ports();
     v.type_requirements();
     v.scripts();
+    v.soft_fail();
+    v.build_when();
     v.codebases();
+    v.env_files();
+    v.build_specs();
     if !opts.skip_overlays {
         v.overlays(&opts.owned_overlays);
     }
     v.profiles();
+    v.requires_shape();
+    for e in crate::checks::shape_errors(ws) {
+        v.push(e, None);
+    }
+    // `when: [validate]` checks (48) are not run here: this function backs
+    // every config load (the daemon's `up`/`start`/reloads included), and a
+    // check may take up to 30 s. Only `stems validate` runs them, through
+    // [`crate::checks::validate_results`], once a load is otherwise valid.
     if !opts.skip_requires {
         v.requires(tools);
     }
@@ -99,7 +122,9 @@ pub fn load_and_validate(load: LoadOptions, opts: &ValidateOptions) -> Result<Re
 
 /// Warnings (never errors; `validate` still exits 0): `OVERLAY_TRACKED_FILE`
 /// for each overlay `dest` tracked in its codebase's git index, since
-/// materialising it would dirty the repo (18). Sorted by location.
+/// materialising it would dirty the repo (18), and `ENV_SHADOWED` for each
+/// env-file key that overrides a different `env:` / earlier-file value
+/// (38). Sorted by location.
 pub fn warnings(resolved: &Resolved) -> Vec<Error> {
     let ws = &resolved.workspace;
     let mut v = Validator {
@@ -136,8 +161,94 @@ pub fn warnings(resolved: &Resolved) -> Vec<Error> {
             v.push(e, Some(&path.index(i)));
         }
     }
+    // `ENV_SHADOWED` (38): an env file overriding `env:` or an earlier file.
+    for stem in ws.stems() {
+        for e in crate::envfiles::shadow_warnings(&ws.root, stem) {
+            v.push(e, None);
+        }
+    }
+    // `COMPOSE_INJECT_ENV_MIXED` (38): one project, both `inject_env` values.
+    for e in inject_env_mixed(ws) {
+        v.push(e, None);
+    }
+    // `REQUIRES_NOT_CHECKED` (40): `from:` in a git codebase not cloned yet.
+    for (e, path) in deferred_requires_warnings(ws) {
+        v.push(e.with_path(path), None);
+    }
+    // `DEPENDENCY_DISABLED` and `ENABLED_VAR_UNSET` (46).
+    for (e, at) in disabled_warnings(ws) {
+        v.push(e, Some(&at));
+    }
     let mut out = v.out;
     sort_errors(&mut out);
+    out
+}
+
+/// The disabled-stem notes of `validate` (46), with the precise path to
+/// locate each: `DEPENDENCY_DISABLED` for a hard edge of an enabled stem to
+/// a disabled one (51: with `if_disabled: start`, the default, the stem
+/// starts without it; with `skip`, `up`/`start` skip it);
+/// `ENABLED_VAR_UNSET` (info) for a stem disabled because its `enabled:`
+/// names an unset environment variable.
+pub fn disabled_warnings(ws: &Workspace) -> Vec<(Error, ConfigPath)> {
+    let mut out = Vec::new();
+    for stem in ws.stems.values() {
+        if !stem.enabled {
+            if let Some(t) = stem
+                .enabled_template
+                .as_ref()
+                .filter(|t| !t.unset.is_empty())
+            {
+                let path = stem_path(&stem.name).key("enabled");
+                let e = Error::new(
+                    ErrorCode::EnabledVarUnset,
+                    format!("{} disabled: {} is unset", stem.name, t.unset.join(", ")),
+                )
+                .with_path(path.clone())
+                .with_hint(format!("export {}=1 to enable `{}`", t.unset[0], stem.name))
+                .with_details(json!({
+                    "stem": stem.name,
+                    "variables": t.unset,
+                    "enabled": t.text,
+                    "level": "info",
+                }));
+                out.push((e, path));
+            }
+            continue;
+        }
+        let deps_path = stem_path(&stem.name).key("depends_on");
+        for (i, dep) in stem.depends_on.iter().enumerate() {
+            if dep.soft || ws.stem(&dep.stem).is_none_or(|t| t.enabled) {
+                continue;
+            }
+            let (s, t) = (&stem.name, &dep.stem);
+            let (message, hint) = match dep.if_disabled {
+                IfDisabled::Start => (
+                    format!(
+                        "stem `{s}` depends on `{t}`, which is disabled; `{s}` starts without it"
+                    ),
+                    format!(
+                        "enable `{t}` if `{s}` needs it (usually in stems.local.yaml), or mark the edge `if_disabled: skip` to leave `{s}` out too"
+                    ),
+                ),
+                IfDisabled::Skip => (
+                    format!(
+                        "stem `{s}` needs `{t}`, which is disabled: `up` skips `{s}` (`if_disabled: skip`)"
+                    ),
+                    format!(
+                        "enable `{t}` (usually in stems.local.yaml), or drop `if_disabled: skip` from the edge to start `{s}` without it"
+                    ),
+                ),
+            };
+            let e = Error::new(ErrorCode::DependencyDisabled, message)
+                .with_path(deps_path.clone())
+                .with_hint(hint)
+                .with_details(
+                    json!({ "stem": s, "dependency": t, "if_disabled": dep.if_disabled }),
+                );
+            out.push((e, deps_path.index(i)));
+        }
+    }
     out
 }
 
@@ -196,8 +307,7 @@ impl Validator<'_> {
         self.push(e, None);
     }
 
-    /// Unknown targets, hard edges to disabled stems, `condition: seeded`
-    /// without a seed script.
+    /// Unknown targets and `condition: seeded` without a seed script.
     fn dependencies(&mut self) {
         let ws = self.ws;
         for stem in ws.stems.values() {
@@ -226,23 +336,8 @@ impl Validator<'_> {
                     self.push(e, Some(&at));
                     continue;
                 };
-                if stem.enabled && !dep.soft && !target.enabled {
-                    let e = Error::new(
-                        ErrorCode::DependencyDisabled,
-                        format!(
-                            "stem `{}` needs `{}`, which is disabled (`enabled: false`)",
-                            stem.name, dep.stem
-                        ),
-                    )
-                    .with_path(deps_path.clone())
-                    .with_hint(format!(
-                        "enable `{t}` (remove `enabled: false`, usually in stems.local.yaml), disable `{s}` too, or mark the edge `soft: true`",
-                        t = dep.stem,
-                        s = stem.name
-                    ))
-                    .with_details(json!({ "stem": stem.name, "dependency": dep.stem }));
-                    self.push(e, Some(&at));
-                }
+                // A hard edge to a disabled stem is a warning (46, 51, in
+                // [`warnings`]): the dependant starts without it.
                 if dep.condition == Condition::Seeded && !target.scripts.contains_key("seed") {
                     let e = Error::new(
                         ErrorCode::SeededWithoutSeed,
@@ -393,20 +488,95 @@ impl Validator<'_> {
         }
         for (path, script) in all {
             self.script_file(&path, script, &root_canon);
-            for (i, r) in script.requires.iter().enumerate() {
-                if ws.stem(r).is_none() {
-                    let at = path.key("requires").index(i);
-                    let e = Error::new(
-                        ErrorCode::UnknownStem,
-                        format!("script {path} requires `{r}`, which is not a stem"),
-                    )
-                    .with_path(at.clone())
-                    .with_hint(format!(
-                        "remove `{r}` from {path}.requires or define a stem named `{r}`"
-                    ));
-                    self.push(e, None);
+            let lists = [
+                ("requires", &script.requires),
+                ("requires_stopped", &script.requires_stopped),
+            ];
+            for (key, list) in lists {
+                for (i, r) in list.iter().enumerate() {
+                    if ws.stem(r).is_none() {
+                        let at = path.key(key).index(i);
+                        let e = Error::new(
+                            ErrorCode::UnknownStem,
+                            format!("script {path} {key} `{r}`, which is not a stem"),
+                        )
+                        .with_path(at.clone())
+                        .with_hint(format!(
+                            "remove `{r}` from {path}.{key} or define a stem named `{r}`"
+                        ));
+                        self.push(e, None);
+                    }
                 }
             }
+        }
+    }
+
+    /// `soft_fail: true` only on the scripts whose failure it can soften
+    /// (41): [`SOFT_FAIL_SCRIPTS`] of a stem, the workspace `bootstrap`.
+    fn soft_fail(&mut self) {
+        let ws = self.ws;
+        let mut all: Vec<(ConfigPath, bool)> = ws
+            .scripts
+            .iter()
+            .filter(|(_, s)| s.soft_fail)
+            .map(|(k, _)| (ConfigPath::root().key("scripts").key(k), k == "bootstrap"))
+            .collect();
+        for stem in ws.stems.values() {
+            for (k, _) in stem.scripts.iter().filter(|(_, s)| s.soft_fail) {
+                let ok = SOFT_FAIL_SCRIPTS.contains(&k.as_str()) && k != "bootstrap";
+                all.push((stem_path(&stem.name).key("scripts").key(k), ok));
+            }
+        }
+        for (path, ok) in all {
+            if ok {
+                continue;
+            }
+            let at = path.key("soft_fail");
+            let e = Error::new(
+                ErrorCode::SchemaInvalid,
+                format!(
+                    "{at}: soft_fail applies to setup, seed, pre_start, post_start, build and bootstrap"
+                ),
+            )
+            .with_path(at.clone())
+            .with_hint(format!(
+                "remove `soft_fail` from {path}: only start-sequence scripts and `bootstrap` can soft-fail (a failed stop hook never blocks anyway)"
+            ));
+            self.push(e, None);
+        }
+    }
+
+    /// `when:` only on a stem's `build` script (45).
+    fn build_when(&mut self) {
+        let mut bad = Vec::new();
+        for (k, _) in self
+            .ws
+            .scripts
+            .iter()
+            .filter(|(_, s)| !s.when.is_on_demand())
+        {
+            bad.push(ConfigPath::root().key("scripts").key(k));
+        }
+        for stem in self.ws.stems.values() {
+            for (k, _) in stem
+                .scripts
+                .iter()
+                .filter(|(k, s)| k.as_str() != "build" && !s.when.is_on_demand())
+            {
+                bad.push(stem_path(&stem.name).key("scripts").key(k));
+            }
+        }
+        for path in bad {
+            let at = path.key("when");
+            let e = Error::new(
+                ErrorCode::SchemaInvalid,
+                format!("{at}: when applies only to a stem's build script"),
+            )
+            .with_path(at.clone())
+            .with_hint(format!(
+                "remove `when` from {path}: only `build` can run in the start sequence (`when: changed | always`)"
+            ));
+            self.push(e, None);
         }
     }
 
@@ -451,6 +621,89 @@ impl Validator<'_> {
 
     /// Local codebase directories of enabled stems exist (git codebases are
     /// cloned later, so they are not checked).
+    /// `ENV_FILE_NOT_FOUND` for a required `env_files` entry that does not
+    /// exist, `CONFIG_READ_FAILED` for one that cannot be read (38).
+    fn env_files(&mut self) {
+        for stem in self.ws.stems() {
+            for e in crate::envfiles::errors(&self.ws.root, stem) {
+                self.push(e, None);
+            }
+        }
+    }
+
+    /// `build.secrets` and `build.allow_read` (44): secret ids are
+    /// non-empty, unique and `[A-Za-z0-9_.-]`; `allow_read` entries are
+    /// exact absolute paths (no glob characters `* ? [ {`) and not
+    /// symlinks (the final component; grant the target instead).
+    fn build_specs(&mut self) {
+        for stem in self.ws.stems() {
+            let (secrets, allow_read) = match &stem.runtime {
+                StemRuntime::Docker(d) => match &d.build {
+                    Some(b) => (&b.secrets, &b.allow_read),
+                    None => continue,
+                },
+                StemRuntime::Compose(c) => (&c.build_options.secrets, &c.build_options.allow_read),
+                _ => continue,
+            };
+            let base = stem_path(&stem.name).key("build");
+            let mut seen = std::collections::HashSet::new();
+            for (i, s) in secrets.iter().enumerate() {
+                let at = base.key("secrets").index(i);
+                let bad_chars = s.id.is_empty()
+                    || !s
+                        .id
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || "_.-".contains(c));
+                let problem = if bad_chars {
+                    Some("must be non-empty and use only letters, digits, `_`, `.` and `-`")
+                } else if !seen.insert(s.id.as_str()) {
+                    Some("is declared twice")
+                } else {
+                    None
+                };
+                if let Some(problem) = problem {
+                    let e = Error::new(
+                        ErrorCode::SchemaInvalid,
+                        format!("build secret id `{}` of `{}` {problem}", s.id, stem.name),
+                    )
+                    .with_path(at.clone())
+                    .with_hint(
+                        "the id is what the Dockerfile mounts: `RUN --mount=type=secret,id=<id>`",
+                    )
+                    .with_details(json!({ "stem": stem.name, "secret": s.id }));
+                    self.push(e, Some(&at));
+                }
+            }
+            for (i, p) in allow_read.iter().enumerate() {
+                let at = base.key("allow_read").index(i);
+                let text = p.to_string_lossy();
+                let problem = if text.contains(['*', '?', '[', '{']) {
+                    Some(
+                        "contains a glob character (`*`, `?`, `[` or `{`); list exact paths, wildcards are never allowed",
+                    )
+                } else if !p.is_absolute() {
+                    Some(
+                        "is not an absolute path; list exact absolute paths (e.g. `${workspace.root}/../infra` or `${env.HOME}/.config/…`)",
+                    )
+                } else if std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink()) {
+                    Some("is a symlink; symlinks are rejected, list the path it points to")
+                } else {
+                    None
+                };
+                if let Some(problem) = problem {
+                    let e = Error::new(
+                        ErrorCode::SchemaInvalid,
+                        format!("`allow_read` entry `{text}` of `{}` {problem}", stem.name),
+                    )
+                    .with_path(at.clone())
+                    .with_hint("`allow_read` grants exact paths outside the build context (Bake's `fs.read`): no globs, no symlinks; the context, the Dockerfile's directory and secret files are granted already")
+                    .with_details(json!({ "stem": stem.name, "path": text }));
+                    self.push(e, Some(&at));
+                }
+            }
+        }
+    }
+
     fn codebases(&mut self) {
         for stem in self.ws.stems() {
             // Git forms: the URL must look like one (20).
@@ -584,42 +837,278 @@ impl Validator<'_> {
         }
     }
 
-    /// `requires:` tool versions.
-    fn requires(&mut self, tools: &mut dyn ToolVersions) {
+    /// `requires:` shape (`version` xor `from`); always runs.
+    fn requires_shape(&mut self) {
+        let mut errs = Vec::new();
         for (tool, req) in &self.ws.requires {
-            if let Err(e) = check_requirement(tool, req, tools) {
-                self.push(e, None);
+            if let Some(e) = requirement_shape(&requires_path(None, tool), req) {
+                errs.push(e);
             }
+        }
+        for stem in self.ws.stems() {
+            for (tool, req) in &stem.requires {
+                if let Some(e) = requirement_shape(&requires_path(Some(&stem.name), tool), req) {
+                    errs.push(e);
+                }
+            }
+        }
+        for e in errs {
+            self.push(e, None);
+        }
+    }
+
+    /// `requires:` tool versions: the workspace's, then each enabled stem's.
+    fn requires(&mut self, tools: &mut dyn ToolVersions) {
+        let root = self.ws.root.clone();
+        let mut errs = Vec::new();
+        for (tool, req) in &self.ws.requires {
+            let scope = RequireScope {
+                dir: &root,
+                stem: None,
+            };
+            if requirement_shape(&requires_path(None, tool), req).is_some() {
+                continue; // reported by `requires_shape`
+            }
+            if let Err(e) = check_requirement(tool, req, &scope, tools) {
+                errs.push(e);
+            }
+        }
+        for stem in self.ws.stems().filter(|s| s.enabled) {
+            let dir = requires_dir(stem, &root);
+            for (tool, req) in &stem.requires {
+                let scope = RequireScope {
+                    dir,
+                    stem: Some(&stem.name),
+                };
+                if requirement_shape(&requires_path(Some(&stem.name), tool), req).is_some() {
+                    continue;
+                }
+                if requirement_deferred(stem, req) {
+                    continue; // `REQUIRES_NOT_CHECKED` warning (see `warnings`)
+                }
+                if let Err(e) = check_requirement(tool, req, &scope, tools) {
+                    errs.push(e);
+                }
+            }
+        }
+        for e in errs {
+            self.push(e, None);
         }
     }
 }
 
-/// Check one `requires:` entry (`validate`, `doctor`): `Ok(found version)`
-/// when the installed tool satisfies the range, else `TOOL_VERSION` (with
-/// `details { tool, required, found }`) or `SCHEMA_INVALID` for a bad range
-/// or regex. Errors carry the config path `requires.<tool>`.
+/// `COMPOSE_INJECT_ENV_MIXED` warnings: enabled compose stems that share a
+/// compose project but disagree on `inject_env`. Starting one recreates the
+/// project's services with its own setting, so the other may come back
+/// without (or with) the injected environment. One warning per stem that
+/// sets `inject_env: true`.
+fn inject_env_mixed(ws: &Workspace) -> Vec<Error> {
+    let mut projects: indexmap::IndexMap<&str, Vec<(&str, bool)>> = indexmap::IndexMap::new();
+    for stem in ws.stems().filter(|s| s.enabled) {
+        if let StemRuntime::Compose(c) = &stem.runtime {
+            projects
+                .entry(c.project_name.as_str())
+                .or_default()
+                .push((stem.name.as_str(), c.inject_env));
+        }
+    }
+    let mut out = Vec::new();
+    for (project, stems) in projects {
+        let (with, without): (Vec<_>, Vec<_>) = stems.iter().partition(|(_, inject)| *inject);
+        if with.is_empty() || without.is_empty() {
+            continue;
+        }
+        let others: Vec<&str> = without.iter().map(|(n, _)| *n).collect();
+        for (name, _) in &with {
+            let e = Error::new(
+                ErrorCode::ComposeInjectEnvMixed,
+                format!(
+                    "`{name}` and {} share the compose project `{project}` but only `{name}` sets `inject_env: true`",
+                    others
+                        .iter()
+                        .map(|n| format!("`{n}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            )
+            .with_path(stem_path(name).key("inject_env"))
+            .with_hint(
+                "set the same `inject_env` on every stem of the project: compose may recreate a service without the injected environment when another stem of the project starts",
+            )
+            .with_details(json!({ "stem": name, "project": project, "without": others }));
+            out.push(e);
+        }
+    }
+    out
+}
+
+/// `true` when `stem` has a git codebase that is not cloned yet: its
+/// `from:` files do not exist until `up` clones it (40).
+pub fn codebase_uncloned(stem: &Stem) -> bool {
+    matches!(&stem.codebase, Some(Codebase::Git { path, .. }) if !path.is_dir())
+}
+
+/// A per-stem `requires:` entry that cannot be checked yet: it reads its
+/// range `from:` a file of a git codebase that is not cloned. `validate`
+/// skips it with a `REQUIRES_NOT_CHECKED` warning, `doctor` reports `warn`.
+pub fn requirement_deferred(stem: &Stem, req: &Requirement) -> bool {
+    !req.from().is_empty() && codebase_uncloned(stem)
+}
+
+/// The directory of `stem`'s `requires:` (`from:` lookups, probe cwd): its
+/// codebase, or `root` when it has none or it is not cloned yet.
+pub fn requires_dir<'a>(stem: &'a Stem, root: &'a Path) -> &'a Path {
+    match &stem.codebase {
+        Some(c) if !codebase_uncloned(stem) => c.path(),
+        _ => root,
+    }
+}
+
+/// `REQUIRES_NOT_CHECKED` warnings: per-stem `from:` entries of enabled
+/// stems whose git codebase is not cloned yet.
+fn deferred_requires_warnings(ws: &Workspace) -> Vec<(Error, ConfigPath)> {
+    let mut out = Vec::new();
+    for stem in ws.stems().filter(|s| s.enabled) {
+        for (tool, req) in &stem.requires {
+            if !requirement_deferred(stem, req) {
+                continue;
+            }
+            let path = requires_path(Some(&stem.name), tool);
+            let e = Error::new(
+                ErrorCode::RequiresNotChecked,
+                format!(
+                    "`{tool}` of `{}` is not checked: its range comes from {} in a git codebase that is not cloned yet",
+                    stem.name,
+                    req.from().join(", ")
+                ),
+            )
+            .with_hint(format!(
+                "`stems up {}` clones it; run `stems validate` or `stems doctor` again afterwards to check the version",
+                stem.name
+            ))
+            .with_details(json!({ "stem": stem.name, "tool": tool, "from": req.from() }));
+            out.push((e, path));
+        }
+    }
+    out
+}
+
+/// `requires.<tool>` or `stems.<stem>.requires.<tool>`.
+pub fn requires_path(stem: Option<&str>, tool: &str) -> ConfigPath {
+    let base = match stem {
+        Some(s) => ConfigPath::root().key("stems").key(s),
+        None => ConfigPath::root(),
+    };
+    base.key("requires").key(tool)
+}
+
+/// Where a `requires:` entry lives, for [`check_requirement`].
+#[derive(Clone, Copy, Debug)]
+pub struct RequireScope<'a> {
+    /// Directory for `from:` lookups and the version probe's cwd: the stem's
+    /// codebase, or the workspace root.
+    pub dir: &'a Path,
+    /// The stem the entry belongs to; `None` for a workspace-level entry.
+    pub stem: Option<&'a str>,
+}
+
+/// A satisfied requirement.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Satisfied {
+    /// The installed version.
+    pub version: Version,
+    /// The range it satisfies (literal, or derived from `from`).
+    pub required: String,
+    /// The `from:` entry the range was read from, if any.
+    pub from: Option<String>,
+}
+
+/// `SCHEMA_INVALID` unless exactly one of `version` and `from` is set.
+fn requirement_shape(path: &ConfigPath, req: &Requirement) -> Option<Error> {
+    let (has_v, has_f) = (req.version().is_some(), !req.from().is_empty());
+    let msg = match (has_v, has_f) {
+        (true, false) | (false, true) => return None,
+        (true, true) => "set `version` or `from`, not both",
+        (false, false) => "set `version` or `from`",
+    };
+    Some(
+        Error::new(ErrorCode::SchemaInvalid, format!("{path}: {msg}"))
+            .with_path(path.clone())
+            .with_hint(
+                "e.g. `node: \">=20\"`, `node: { from: .nvmrc }` or `pnpm: { from: \"package.json#packageManager\" }`",
+            ),
+    )
+}
+
+/// Check one `requires:` entry (`validate`, `doctor`): `Ok` when the
+/// installed tool satisfies the range, else `TOOL_VERSION` (with `details
+/// { tool, required, found, from?, stem? }`) or `SCHEMA_INVALID` for a bad
+/// range, regex or shape. A `from:` range is read from the files under
+/// `scope.dir` first. Errors carry the config path `requires.<tool>` or
+/// `stems.<stem>.requires.<tool>`.
 pub fn check_requirement(
     tool: &str,
     req: &Requirement,
+    scope: &RequireScope<'_>,
     tools: &mut dyn ToolVersions,
-) -> Result<Version, Error> {
-    let path = ConfigPath::root().key("requires").key(tool);
-    let range: VersionReq =
-        req.version()
-            .parse()
-            .map_err(|err: crate::version::VersionReqError| {
-                Error::new(ErrorCode::SchemaInvalid, err.to_string())
-                    .with_path(path.clone())
-                    .with_hint("use a range such as `>=20`, `^1.2`, `~3.11` or `>=1 <2`")
-            })?;
-    let details =
-        |found: Option<String>| json!({ "tool": tool, "required": range.as_str(), "found": found });
+) -> Result<Satisfied, Error> {
+    let path = requires_path(scope.stem, tool);
+    if let Some(e) = requirement_shape(&path, req) {
+        return Err(e);
+    }
+    let with_stem = |mut d: serde_json::Value| {
+        if let (Some(stem), Some(o)) = (scope.stem, d.as_object_mut()) {
+            o.insert("stem".into(), json!(stem));
+        }
+        d
+    };
+    let (literal, from) = match req.version() {
+        Some(v) => (v.to_string(), None),
+        None => match requirement_source(tool, &req.from(), scope.dir) {
+            Ok(d) => (d.range, Some(d.from)),
+            Err(se) => {
+                let mut e = Error::new(ErrorCode::ToolVersion, format!("`{tool}`: {}", se.message))
+                    .with_path(path)
+                    .with_details(with_stem(
+                        json!({ "tool": tool, "required": null, "found": null, "from": req.from() }),
+                    ));
+                if let Some(h) = se.hint {
+                    e = e.with_hint(h);
+                }
+                return Err(e);
+            }
+        },
+    };
+    let range: VersionReq = literal
+        .parse()
+        .map_err(|err: crate::version::VersionReqError| {
+            Error::new(ErrorCode::SchemaInvalid, err.to_string())
+                .with_path(path.clone())
+                .with_hint("use a range such as `>=20`, `^1.2`, `~3.11` or `>=1 <2`")
+        })?;
+    let source = from
+        .as_ref()
+        .map(|f| format!(" (from {f})"))
+        .unwrap_or_default();
+    let details = |found: Option<String>| {
+        let mut d = json!({ "tool": tool, "required": range.as_str(), "found": found });
+        if let (Some(f), Some(o)) = (&from, d.as_object_mut()) {
+            o.insert("from".into(), json!(f));
+        }
+        with_stem(d)
+    };
     let cmd = version_command(tool, req);
-    let e = match tools.detect(tool, req) {
-        ToolVersion::Found { version, .. } if range.matches(version) => return Ok(version),
+    let e = match tools.detect(tool, req, Some(scope.dir)) {
+        ToolVersion::Found { version, .. } if range.matches(version) => {
+            return Ok(Satisfied {
+                version,
+                required: range.as_str().to_string(),
+                from,
+            });
+        }
         ToolVersion::Found { version, output } => Error::new(
             ErrorCode::ToolVersion,
-            format!("`{tool}` {version} does not satisfy the required range {range}"),
+            format!("`{tool}` {version} does not satisfy the required range {range}{source}"),
         )
         .with_hint(format!(
             "install {tool} {range} (e.g. with brew, nvm, asdf or pyenv) and make sure it is first on PATH (`{cmd}` printed `{output}`), or relax requires.{tool}"
@@ -627,7 +1116,7 @@ pub fn check_requirement(
         .with_details(details(Some(version.to_string()))),
         ToolVersion::Missing { reason } => Error::new(
             ErrorCode::ToolVersion,
-            format!("`{tool}` {range} is required but not available: {reason}"),
+            format!("`{tool}` {range} is required but not available: {reason}{source}"),
         )
         .with_hint(format!(
             "install {tool} {range} and make sure `{cmd}` works in this shell, or pass --skip-requires to validate without checking tools"

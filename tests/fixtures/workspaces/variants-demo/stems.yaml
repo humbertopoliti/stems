@@ -10,6 +10,9 @@
 #   8080 (the image sets HOST=0.0.0.0; stems rewrites PORT to the container
 #   port) and is published on the api's host port.
 #
+# `api` has a `setup` script (inherited by every variant unless a variant
+# sets `scripts: { setup: ~ }`, tests/features/variants/null-removes.feature).
+#
 # The e2e harness remaps ports through a generated stems.local.yaml that
 # replaces `stems.api.ports`; a replacing entry keeps the replaced entry's
 # `container_port` by port name, so the container still listens on 8080.
@@ -25,6 +28,7 @@ stems:
     command: python3 app.py
     env: { SHOP_CHAOS: "1" }
     ports: [{ name: http, port: 18651 }]
+    scripts: { setup: "echo api setup" }
     health:
       type: http
       url: "http://127.0.0.1:${stem.api.port}/healthz"

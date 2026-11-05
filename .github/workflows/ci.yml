@@ -61,7 +61,7 @@ jobs:
       - uses: taiki-e/install-action@nextest
       - run: make ci NEXTEST_PROFILE=ci
 
-  # Release packaging (deliverable 32): binary size budget (< 25 MB),
+  # Release packaging (deliverable 32): binary size budget (< 30 MB),
   # formula template golden, completions/man generation, cargo-dist config.
 # The installed-binary smoke test runs in the release pipeline (release-smoke.yml).
   release-checks:

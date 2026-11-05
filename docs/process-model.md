@@ -101,3 +101,5 @@ every live process in the group with `ppid`, `cpu_time_ms` (user+system) and
 `/proc/*/stat` scan. `ports` are TCP LISTEN sockets of those pids (macOS `lsof`,
 Linux `/proc/net/tcp{,6}` inode → `/proc/<pid>/fd`). `os::listeners_on_port(port)`
 answers the reverse question for orphan detection.
+
+See also: [Lifecycle](lifecycle.md) · [Recovery](recovery.md) · [What stems can do](features.md)

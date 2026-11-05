@@ -69,6 +69,7 @@ fn dependency(v: &Value) -> Option<Dependency> {
             stem: s.to_string(),
             condition: Condition::Healthy,
             soft: false,
+            if_disabled: Default::default(),
             protocol: None,
             via: None,
         });
@@ -80,6 +81,9 @@ fn dependency(v: &Value) -> Option<Dependency> {
             .and_then(|c| serde_json::from_value(c).ok())
             .unwrap_or(Condition::Healthy),
         soft: v.get("soft").and_then(Value::as_bool).unwrap_or(false),
+        if_disabled: parse("if_disabled")
+            .and_then(|c| serde_json::from_value(c).ok())
+            .unwrap_or_default(),
         protocol: parse("protocol").and_then(|p| serde_json::from_value::<Protocol>(p).ok()),
         via: v.get("via").and_then(Value::as_str).map(str::to_string),
     })
@@ -250,6 +254,7 @@ pub fn glyph_color(g: Glyph) -> Color {
         Glyph::Stopped => Color::DarkGray,
         Glyph::Unknown => Color::Magenta,
         Glyph::Transitioning => Color::Cyan,
+        Glyph::Disabled => Color::DarkGray,
     }
 }
 
@@ -539,6 +544,7 @@ mod tests {
             stem: stem.into(),
             condition: Condition::Healthy,
             soft: false,
+            if_disabled: Default::default(),
             protocol: None,
             via: None,
         }

@@ -120,6 +120,53 @@ Lists the recorded overlays and what is on disk now:
 `{stem?}` → `OverlaysResult {overlays}`) when one runs and reads
 `state.json` otherwise. An unknown stem is `UNKNOWN_STEM`.
 
+## Rendering on demand
+
+`stems overlays render <stem> [--dry-run] [--json]` renders a stem's
+overlays **now, without starting it**, with the same code and context as a
+start (its env, its ports, the outputs of running stems), and writes and
+records each file exactly as a start would (ledger first, atomic write,
+`mode`, never clobbering a file stems does not own: `OVERLAY_CONFLICT`). A
+later `stems down` removes them (`keep: true` ones stay). It uses the daemon
+when one runs (RPC `overlays_render`, event `overlay.materialised` per file
+written); otherwise the CLI renders locally and updates `state.json` while
+holding the workspace lock (ports as configured: a `port: auto` reference
+needs the daemon; a later daemon start, or `stems down`, cleans these
+records like those of any stem that is not running).
+
+```json
+{ "stem": "shop-api", "dry_run": false,
+  "files": [ { "dest": "/…/shop-api/config/local.ini", "mode": "0644",
+               "keep": false, "content": "…", "written": true } ] }
+```
+
+`written` is `false` for a dry run and for a file that already held exactly
+this content. `--dry-run` writes and records nothing and prints each file
+(human: a `# <dest> (mode …)` header then the content). If any reference
+cannot be resolved, nothing is written and the command fails with
+`UNRESOLVED_VARIABLE` (exit 2) listing **every** unresolved reference of
+every overlay (`details.problems`), not just the first.
+
+### Replacing envsubst
+
+A hand-written "render templates with `envsubst`, check that every variable
+is set, `chmod 600`, move into place atomically" script is one overlay:
+
+```yaml
+stems:
+  api:
+    codebase: ../api
+    overlays:
+      - { template: overlays/api/.env.tmpl, dest: .env.local, mode: 0o600 }
+```
+
+with `${env.DB_PASSWORD}` (the stem's environment, see
+[config.md](config.md#environment-fr-st-4)), `${stem.db.port}`, … in the
+template instead of `$DB_PASSWORD`. stems checks every reference (all missing ones reported at
+once), sets the mode and replaces the file atomically; `stems overlays
+render api` does it without starting anything, `stems up` does it on every
+start, and `down` cleans it up.
+
 ## Crashes
 
 The ledger lives in `state.json`, independent of whether the stem runs, and
@@ -127,3 +174,5 @@ is carried from daemon run to daemon run. After `kill -9` of the daemon,
 `stems down` starts a new daemon that adopts the still-running stems and
 stops them, which cleans their overlays as usual. Records of stems that did
 not survive the crash are cleaned (same rules) when the new daemon starts.
+
+See also: [Scripts](scripts.md) · [Lifecycle](lifecycle.md) · [Config](config.md) · [What stems can do](features.md)

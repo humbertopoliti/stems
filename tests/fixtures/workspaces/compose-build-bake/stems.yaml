@@ -1,0 +1,45 @@
+# compose-build-bake — a compose stem whose images are built with Bake
+# (deliverable 44, tests/features/compose/build-bake.feature; needs Docker
+# with compose v2 and buildx: `make e2e-docker`).
+#
+# Both services of compose.yml build app/Dockerfile, which mounts the
+# BuildKit secret `tok` (`RUN --mount=type=secret,id=tok`). The secret is a
+# file; stems declares it in its generated override file, so compose.yml
+# has no stems-specific edits. `migrate` is a one-shot service (run with
+# `docker compose run --rm migrate`) that must exist before `setup` runs:
+# `before_setup: true` builds both images first, and `setup` gets
+# STEMS_IMAGES / STEMS_IMAGE. The images are
+# `stems-compose-build-bake-{app,migrate}`.
+schema_version: 1
+name: compose-build-bake
+
+stems:
+  app:
+    type: compose
+    file: compose.yml
+    service: app
+    env:
+      APP_PORT: "${stem.self.port}"
+    ports: [{ name: http, port: 18842, container_port: 8080 }]
+    build:
+      services: [app, migrate]
+      before_setup: true
+      secrets:
+        - { id: tok, file: secrets/tok.txt }
+    scripts:
+      setup: |
+        echo "STEMS_IMAGES=$STEMS_IMAGES"
+        echo "STEMS_IMAGE=$STEMS_IMAGE"
+        if docker image inspect stems-compose-build-bake-migrate >/dev/null 2>&1; then
+          echo "migrate-built"
+        else
+          echo "migrate-missing"
+        fi
+    health:
+      type: http
+      url: "http://127.0.0.1:18842/index.txt"
+      interval: 400ms
+      timeout: 300ms
+      retries: 5
+      start_timeout: 120s
+    stop_grace: 2s

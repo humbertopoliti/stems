@@ -1,0 +1,57 @@
+# scripts-soft-fail — fixture for scripts/soft-fail.feature (FR-SC-5,
+# FR-HS-2): `api`'s setup "decides" to skip (exit 3, `soft_fail: true`):
+# `api` starts degraded, nothing is stamped. `db`'s seed soft-fails (exit 4):
+# `db` is healthy but not seeded, so `web` (`condition: seeded`) is skipped.
+# `builder`'s build soft-fails (exit 5) unless the caller sets BUILD_OK.
+# `front` depends on `web`, so it is skipped (seed_degraded) along with it.
+schema_version: 1
+name: scripts-soft-fail
+
+stems:
+  api:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    ports: [{ name: http, port: 18771 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts:
+      start: python3 app.py
+      setup:
+        command: 'echo "poetry missing; skipping"; exit 3'
+        soft_fail: true
+  db:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    ports: [{ name: http, port: 18772 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts:
+      start: python3 app.py
+      seed: { command: 'echo "seed data unavailable"; exit 4', soft_fail: true }
+  web:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    depends_on: [{ stem: db, condition: seeded }]
+    ports: [{ name: http, port: 18773 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts: { start: python3 app.py }
+  builder:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    ports: [{ name: http, port: 18774 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts:
+      start: python3 app.py
+      build:
+        command: 'test -n "$BUILD_OK" || { echo "toolchain missing"; exit 5; }'
+        soft_fail: true
+  front:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    depends_on: [web]
+    ports: [{ name: http, port: 18775 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts: { start: python3 app.py }

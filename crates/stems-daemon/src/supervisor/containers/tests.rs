@@ -156,6 +156,21 @@ fn hello_shop_redis_compose_spec_golden() {
     assert_eq!(spec.env["PORT"], "16379");
 }
 
+/// The env the stale check, `down` and adoption build their compose spec
+/// with (`config_env`) is what a start sets (minus the inherited base), so
+/// `-f`/project interpolate alike.
+#[test]
+fn off_start_compose_spec_env_matches_a_start() {
+    let r = hello_shop();
+    let ws = &r.workspace;
+    let redis = ws.stem("redis").unwrap();
+    let off = config_env(ws, redis, "RUN", &PortBook::default());
+    assert_eq!(mask(off.clone(), &ws.root), env_of(&r, "redis"));
+    let spec = compose_spec(ws, redis, "RUN", &off).unwrap();
+    assert_eq!(spec.env["PORT"], "16379");
+    assert_eq!(spec.env["STEMS_STEM"], "redis");
+}
+
 #[test]
 fn compose_project_defaults_to_stems_ws() {
     let dir = tempfile::tempdir().unwrap();
@@ -324,6 +339,46 @@ fn error_mapping_table() {
     );
     assert_eq!(e.details["tail"], json!(["t"]));
     assert!(e.message.contains("exit none"), "{}", e.message);
+}
+
+#[test]
+fn build_progress_lines_are_scrubbed() {
+    // 47: a build that echoes a secret value does not publish it.
+    let secrets = vec![("NPM_TOKEN".to_string(), "npm-s3cret".to_string())];
+    let p = scrub_progress(
+        ImageProgress::Build {
+            stem: "api".into(),
+            line: "#5 RUN echo npm-s3cret".into(),
+        },
+        &secrets,
+    );
+    let ImageProgress::Build { line, .. } = p else {
+        panic!("build line");
+    };
+    assert_eq!(line, "#5 RUN echo <redacted:NPM_TOKEN>");
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("stems.yaml"),
+        "schema_version: 1\nname: t\nstems:\n  d: { type: docker, image: x, env: { API_TOKEN: from-config-1 } }\n",
+    )
+    .unwrap();
+    let ws = stems_config::load(stems_config::LoadOptions {
+        workspace: Some(dir.path().to_path_buf()),
+        cwd: dir.path().to_path_buf(),
+        env: Default::default(),
+        skip_local: true,
+    })
+    .unwrap()
+    .workspace;
+    let extra = SecretEnv(BTreeMap::from([(
+        "CALLER_TOK".into(),
+        "caller-value-22".into(),
+    )]));
+    let keys: Vec<String> = build_secrets(&ws, ws.stem("d").unwrap(), &extra)
+        .into_iter()
+        .map(|(k, _)| k)
+        .collect();
+    assert_eq!(keys, ["CALLER_TOK", "API_TOKEN"]);
 }
 
 #[test]
@@ -589,6 +644,45 @@ async fn down_volumes_needs_docker_only_for_docker_stems() {
     assert_eq!(c.connects(), 1);
 }
 
+#[tokio::test]
+async fn a_prebuilt_marker_never_outlives_its_start() {
+    // 44: a marker left by a sequence that failed after its `before_setup`
+    // build must not make a later start skip the build.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("dc.yml"), "services: {}\n").unwrap();
+    std::fs::write(
+        dir.path().join("stems.yaml"),
+        "schema_version: 1\nname: pb\nstems:\n  c: { type: compose, file: dc.yml, service: redis, scripts: { setup: 'exit 3' } }\n",
+    )
+    .unwrap();
+    let ws = stems_config::load(stems_config::LoadOptions {
+        workspace: Some(dir.path().to_path_buf()),
+        cwd: dir.path().to_path_buf(),
+        env: Default::default(),
+        skip_local: true,
+    })
+    .unwrap();
+    let c = Arc::new(Containers::new(
+        unavailable(Arc::new(AtomicUsize::new(0))),
+        dir.path().join("compose"),
+    ));
+    let reg = RuntimeRegistry::default().with_containers(c.clone());
+    let host = Arc::new(OneWs {
+        ws: Arc::new(ws),
+        dir,
+    });
+    let sup = Supervisor::new(Arc::new(EventBus::default()), host, reg, Arc::new(Ready));
+    // Stale marker (e.g. setup failed after a `before_setup` build).
+    lock(&c.prebuilt).insert("c".into());
+    let res = sup.up(up(&["c"]), "cli:t").await.unwrap();
+    assert!(!res.ok, "{res:?}");
+    assert_eq!(res.failed[0].error.code, ErrorCode::SetupFailed);
+    assert!(
+        !lock(&c.prebuilt).contains("c"),
+        "the failed attempt cleared the marker"
+    );
+}
+
 #[test]
 fn status_gets_container_health_and_no_pid() {
     let c = Containers::new(unavailable(Arc::new(AtomicUsize::new(0))), "/tmp/x");
@@ -664,4 +758,226 @@ fn pull_errors_name_the_pull_not_a_start() {
             .starts_with("pulling `postgres:16` for `db` failed")
     );
     assert!(e.hint.as_deref().unwrap().contains("docker.credentials"));
+}
+
+// --- 44: build secrets, allow_read, Bake --------------------------------------
+
+fn load_dir(dir: &Path) -> Resolved {
+    stems_config::load(stems_config::LoadOptions {
+        workspace: Some(dir.to_path_buf()),
+        cwd: dir.to_path_buf(),
+        env: Default::default(),
+        skip_local: true,
+    })
+    .unwrap()
+}
+
+#[test]
+fn build_secrets_and_allow_read_reach_the_specs() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("api")).unwrap();
+    std::fs::write(dir.path().join("dc.yml"), "services: {}\n").unwrap();
+    std::fs::write(
+        dir.path().join("stems.yaml"),
+        "schema_version: 1\nname: w\nstems:\n  api:\n    type: docker\n    build: { context: api, secrets: [{ id: tok, file: tok.txt }], allow_read: [/etc] }\n  web:\n    type: compose\n    file: dc.yml\n    build: { services: [web, migrate], before_setup: true, secrets: [{ id: tok, env: TOK }] }\n",
+    )
+    .unwrap();
+    let r = load_dir(dir.path());
+    let ws = &r.workspace;
+    let spec = container_spec(ws, ws.stem("api").unwrap(), "RUN", &BTreeMap::new(), &[]).unwrap();
+    let b = spec.build.as_ref().unwrap();
+    assert!(b.needs_buildx());
+    assert_eq!(
+        b.secrets[0].flag(),
+        format!("id=tok,src={}", ws.root.join("tok.txt").display())
+    );
+    assert_eq!(b.allow_read, [std::path::PathBuf::from("/etc")]);
+    let cs = compose_spec(ws, ws.stem("web").unwrap(), "RUN", &BTreeMap::new()).unwrap();
+    assert!(cs.uses_bake() && cs.needs_override());
+    assert_eq!(cs.build_services(), ["web", "migrate"]);
+    assert!(cs.bake.before_setup);
+    assert_eq!(cs.bake.secrets[0].flag(), "id=tok,env=TOK");
+}
+
+#[test]
+fn missing_build_inputs_name_what_is_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("tok.txt");
+    let secret = |source| stems_runtime::docker::BuildSecret {
+        id: "tok".into(),
+        source,
+    };
+    let none = |_: &str| false;
+    let e = check_build_inputs(
+        "api",
+        &[secret(SecretSource::File(file.clone()))],
+        &[],
+        &BTreeMap::new(),
+        &none,
+    )
+    .unwrap_err();
+    assert_eq!(e.code, ErrorCode::SetupFailed);
+    assert_eq!(e.details["secret"], "tok");
+    assert_eq!(e.details["build"], true);
+    assert!(e.message.contains("tok"), "{}", e.message);
+    std::fs::write(&file, "x").unwrap();
+    assert!(
+        check_build_inputs(
+            "api",
+            &[secret(SecretSource::File(file))],
+            &[dir.path().to_path_buf()],
+            &BTreeMap::new(),
+            &none
+        )
+        .is_ok()
+    );
+    let env_secret = [secret(SecretSource::Env("TOK".into()))];
+    let e = check_build_inputs("api", &env_secret, &[], &BTreeMap::new(), &none).unwrap_err();
+    assert_eq!(e.details["env"], "TOK");
+    let set = BTreeMap::from([("TOK".to_string(), "v".to_string())]);
+    assert!(check_build_inputs("api", &env_secret, &[], &set, &none).is_ok());
+    assert!(check_build_inputs("api", &env_secret, &[], &BTreeMap::new(), &|v| v == "TOK").is_ok());
+    let gone = dir.path().join("gone");
+    let e = check_build_inputs(
+        "api",
+        &[],
+        std::slice::from_ref(&gone),
+        &BTreeMap::new(),
+        &none,
+    )
+    .unwrap_err();
+    assert_eq!(e.details["allow_read"], json!(gone));
+}
+
+#[test]
+fn image_vars_for_setup() {
+    let images = vec![
+        ("app".to_string(), "stems-w-app".to_string()),
+        ("migrate".to_string(), "w/migrate:dev".to_string()),
+    ];
+    let v = image_vars("app", &images);
+    assert_eq!(v["STEMS_IMAGES"], "app=stems-w-app,migrate=w/migrate:dev");
+    assert_eq!(v["STEMS_IMAGE"], "stems-w-app");
+    let v = image_vars("other", &images);
+    assert!(!v.contains_key("STEMS_IMAGE"));
+}
+
+#[tokio::test]
+async fn env_build_secrets_read_the_requesting_commands_env() {
+    // 44: an `{id, env}` secret the stem env does not set comes from the
+    // request's environment (caller env), given to the build process only.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Dockerfile"), "FROM scratch\n").unwrap();
+    std::fs::write(
+        dir.path().join("stems.yaml"),
+        "schema_version: 1\nname: sec\nstems:\n  d:\n    type: docker\n    build: { context: ., secrets: [{ id: tok, env: STEMS_TEST_CALLER_ONLY_TOK }] }\n",
+    )
+    .unwrap();
+    let ws = stems_config::load(stems_config::LoadOptions {
+        workspace: Some(dir.path().to_path_buf()),
+        cwd: dir.path().to_path_buf(),
+        env: Default::default(),
+        skip_local: true,
+    })
+    .unwrap();
+    let c = Arc::new(Containers::new(
+        unavailable(Arc::new(AtomicUsize::new(0))),
+        dir.path().join("compose"),
+    ));
+    let reg = RuntimeRegistry::default().with_containers(c);
+    let host = Arc::new(OneWs {
+        ws: Arc::new(ws),
+        dir,
+    });
+    let sup = Supervisor::new(
+        Arc::new(EventBus::default()),
+        host.clone(),
+        reg,
+        Arc::new(Ready),
+    );
+    let stem = host.ws.workspace.stem("d").unwrap();
+    let none = BTreeMap::new();
+    let e = start_spec(&sup.core, &host.ws.workspace, stem, &none, &none, &[]).unwrap_err();
+    assert_eq!(e.details["env"], "STEMS_TEST_CALLER_ONLY_TOK");
+    assert!(e.hint.unwrap().contains("shell that runs `stems`"));
+    let request = BTreeMap::from([(
+        "STEMS_TEST_CALLER_ONLY_TOK".to_string(),
+        "s3cret".to_string(),
+    )]);
+    let StartSpec::Docker(spec) =
+        start_spec(&sup.core, &host.ws.workspace, stem, &none, &request, &[]).unwrap()
+    else {
+        panic!("docker spec");
+    };
+    assert_eq!(spec.secret_env.0, request);
+    assert!(
+        !spec.env.contains_key("STEMS_TEST_CALLER_ONLY_TOK"),
+        "never the container's"
+    );
+}
+
+/// A one-stem workspace in a temp dir with a Dockerfile, its supervisor and
+/// containers (Docker unreachable).
+fn docker_ws(yaml: &str) -> (Arc<Supervisor>, Arc<Containers>, Arc<OneWs>) {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Dockerfile"), "FROM scratch\n").unwrap();
+    std::fs::write(dir.path().join("stems.yaml"), yaml).unwrap();
+    let ws = stems_config::load(stems_config::LoadOptions {
+        workspace: Some(dir.path().to_path_buf()),
+        cwd: dir.path().to_path_buf(),
+        env: Default::default(),
+        skip_local: true,
+    })
+    .unwrap();
+    let c = Arc::new(Containers::new(
+        unavailable(Arc::new(AtomicUsize::new(0))),
+        dir.path().join("compose"),
+    ));
+    let reg = RuntimeRegistry::default().with_containers(c.clone());
+    let host = Arc::new(OneWs {
+        ws: Arc::new(ws),
+        dir,
+    });
+    let sup = Supervisor::new(
+        Arc::new(EventBus::default()),
+        host.clone(),
+        reg,
+        Arc::new(Ready),
+    );
+    (sup, c, host)
+}
+
+#[tokio::test]
+async fn a_docker_before_setup_build_runs_before_setup() {
+    // 51: the image is built first; when that fails, `setup` never runs.
+    let (sup, c, host) = docker_ws(
+        "schema_version: 1\nname: bs\nstems:\n  d:\n    type: docker\n    build: { context: ., before_setup: true }\n    scripts: { setup: 'touch setup-ran' }\n",
+    );
+    let res = sup.up(up(&["d"]), "cli:t").await.unwrap();
+    assert!(!res.ok, "{res:?}");
+    assert_eq!(res.failed[0].error.code, ErrorCode::DockerUnavailable);
+    assert!(!host.dir.path().join("setup-ran").exists(), "setup ran");
+    assert!(!lock(&c.prebuilt).contains("d"));
+}
+
+#[tokio::test]
+async fn a_docker_start_after_a_before_setup_build_does_not_build_again() {
+    // 51: the marker makes the start skip the build (and its input checks:
+    // the build already had them); it is consumed by that one start.
+    let (sup, c, host) = docker_ws(
+        "schema_version: 1\nname: bs\nstems:\n  d:\n    type: docker\n    build: { context: ., before_setup: true, secrets: [{ id: tok, env: STEMS_TEST_NEVER_SET_TOK }] }\n",
+    );
+    let stem = host.ws.workspace.stem("d").unwrap();
+    let none = BTreeMap::new();
+    lock(&c.prebuilt).insert("d".into());
+    let StartSpec::Docker(spec) =
+        start_spec(&sup.core, &host.ws.workspace, stem, &none, &none, &[]).unwrap()
+    else {
+        panic!("docker spec");
+    };
+    assert!(spec.prebuilt);
+    assert!(!lock(&c.prebuilt).contains("d"), "consumed");
+    // The next start (e.g. a policy respawn without the step) builds again.
+    let e = start_spec(&sup.core, &host.ws.workspace, stem, &none, &none, &[]).unwrap_err();
+    assert_eq!(e.details["env"], "STEMS_TEST_NEVER_SET_TOK");
 }

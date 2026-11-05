@@ -18,6 +18,13 @@
 //! every [`FLUSH_IDLE`] under continuous output. Files are written whether or
 //! not any client is attached. Size rotation follows workspace `logs:`
 //! (`max_size`, `keep`) through [`stems_core::logs::rotate_plan`].
+//!
+//! Secret scrubbing (47, FR-AI-3): before a line is parsed and stored, each
+//! secret value of the stem's configured env (≥ 6 characters, names decided
+//! by [`stems_core::redact::Redactor`]) is replaced by `<redacted:KEY>`, so
+//! files, ring, live subscribers, `--export`, the TUI and MCP all see the
+//! scrubbed text. The values are set per stem when a workspace is installed
+//! ([`LogHub::set_redaction`]); each writer reads its stem's list per batch.
 
 pub mod export;
 
@@ -260,9 +267,13 @@ pub struct QueryOutcome {
     pub next_seq: HashMap<String, u64>,
 }
 
+/// Secret values per stem, `(KEY, value)`, longest first (47).
+type SecretValues = Arc<Mutex<HashMap<String, Arc<Vec<(String, String)>>>>>;
+
 /// All stems' log sinks of one daemon (see the module docs).
 pub struct LogHub {
     dir: PathBuf,
+    secrets: SecretValues,
     settings: Mutex<LogSettings>,
     sinks: Mutex<HashMap<String, Arc<LogSink>>>,
     live: broadcast::Sender<LiveRecord>,
@@ -289,6 +300,7 @@ impl LogHub {
         let (live, _) = broadcast::channel(LIVE_CAPACITY);
         Self {
             dir: dir.into(),
+            secrets: Arc::default(),
             settings: Mutex::new(LogSettings::default()),
             sinks: Mutex::new(HashMap::new()),
             live,
@@ -343,6 +355,19 @@ impl LogHub {
         }
     }
 
+    /// Scrub the secret values of each stem of `ws` from its log lines from
+    /// now on (47): replaces the previous workspace's values.
+    pub fn set_redaction(&self, ws: &stems_config::Workspace) {
+        let r = stems_core::redact::Redactor::new(ws);
+        let map = ws
+            .stems
+            .values()
+            .map(|s| (s.name.clone(), Arc::new(r.secret_values(s))))
+            .filter(|(_, v)| !v.is_empty())
+            .collect();
+        *lock(&self.secrets) = map;
+    }
+
     /// The sink of `stem`, created (with its writer task) on first use.
     pub fn sink(&self, stem: &str) -> Arc<LogSink> {
         let mut sinks = lock(&self.sinks);
@@ -356,6 +381,7 @@ impl LogHub {
         let (tx, rx) = mpsc::channel(SINK_QUEUE);
         let writer = Writer {
             stem: stem.to_string(),
+            secrets: self.secrets.clone(),
             file: LogFile::new(dir),
             policy: settings.rotation,
             ring: ring.clone(),
@@ -806,6 +832,7 @@ impl LogFile {
 
 struct Writer {
     stem: String,
+    secrets: SecretValues,
     file: LogFile,
     policy: RotationPolicy,
     ring: Arc<Mutex<RingBuffer<LogRecord>>>,
@@ -844,6 +871,7 @@ impl Writer {
                     Err(_) => break,
                 }
             }
+            let secrets = lock(&self.secrets).get(&self.stem).cloned();
             for m in batch.drain(..) {
                 match m {
                     Msg::Line {
@@ -852,6 +880,10 @@ impl Writer {
                         text,
                         ts,
                     } => {
+                        let text = secrets
+                            .as_deref()
+                            .and_then(|s| stems_core::redact::scrub(&text, s))
+                            .unwrap_or(text);
                         let rec = parse_line(&self.stem, stream, tag.as_deref(), &text, ts);
                         self.commit(rec);
                         dirty = true;

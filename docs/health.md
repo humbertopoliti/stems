@@ -106,17 +106,35 @@ joined with `; `:
 | `flapping` | ≥ 3 health transitions (`stem.health`) in the last 60 s | 21 |
 | `restarts (N recently)` | the restart tracker's threshold (`is_restart_degraded`) | 22 |
 | a metric threshold, e.g. `memory > 2GB` | a threshold of `limits` is crossed ([metrics.md](metrics.md#thresholds)) | 25 |
+| `setup exited 3 (soft_fail)`, `seed timed out (soft_fail)` | a `soft_fail` script failed in the stem's current run (`status.warnings`; cleared by a stop or restart, [scripts.md](scripts.md#partial-installs-soft_fail)) | 41 |
 
 Not degrading: a dependency that is `unknown` (an external stem stems cannot
 reach — it cannot tell the service is down), or `stopped`/`starting`/
 `seeding` (deliberate or transient). A plain healthy stem has an empty
 `reason`.
 
+## Glyphs
+
+| Glyph (ASCII) | Colour | States |
+|---|---|---|
+| `✓` (`OK`) | green | `healthy` |
+| `!` (`WARN`) | yellow | `healthy` and degraded |
+| `✗` (`FAIL`) | red | `failed`, `unhealthy` |
+| `·` (`-`) | grey | `stopped` |
+| `?` (`?`) | magenta | `unknown` |
+| `↻` (`..`) | cyan | `setup`, `starting`, `seeding`, `stopping` |
+| `-` (`OFF`) | grey | `disabled` (`enabled` is false; never probed, `summary.disabled`; [config.md](config.md#enabled)) |
+
+The legend (`stems graph`, the TUI) lists the first six: a disabled stem
+is not a running state.
+
 ## Status fields
 
 `status` (`StemStatus`, see [protocol.md](protocol.md)) adds:
 
 * `degraded: bool` and `reason` as above;
+* `warnings: [{script, exit, signal, timed_out, tail, at}]` — the failed
+  `soft_fail` scripts behind a `(soft_fail)` reason (omitted when empty);
 * `health: {type, last: {ts, ok, outcome, latency_ms, detail},
   consecutive_failures, transitions_60s, container?}` — `null` when the stem
   has no health check; `container` is Docker's own health status for
@@ -144,3 +162,5 @@ last?}`).
 Twenty process stems probed over tcp every 200 ms keep the daemon under 10 %
 of one CPU (measured ~3 %; `tests/features/health/overhead.feature`, `@slow`); at the
 default 2 s interval the probe overhead is well under 1 %.
+
+See also: [Lifecycle](lifecycle.md) · [Restart policies](restart.md) · [Watchdogs](watchdogs.md) · [What stems can do](features.md)

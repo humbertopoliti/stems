@@ -32,6 +32,9 @@ pub enum Glyph {
     Unknown,
     /// `↻` cyan: setup, starting, seeding, stopping.
     Transitioning,
+    /// `-` gray: `enabled: false` (46). Not in [`Glyph::ALL`] (the legend
+    /// of running states).
+    Disabled,
 }
 
 impl Glyph {
@@ -54,6 +57,7 @@ impl Glyph {
             Glyph::Stopped => "·",
             Glyph::Unknown => "?",
             Glyph::Transitioning => "↻",
+            Glyph::Disabled => "-",
         }
     }
 
@@ -66,6 +70,7 @@ impl Glyph {
             Glyph::Stopped => "-",
             Glyph::Unknown => "?",
             Glyph::Transitioning => "..",
+            Glyph::Disabled => "OFF",
         }
     }
 
@@ -99,6 +104,7 @@ impl Glyph {
             Glyph::Stopped => "gray",
             Glyph::Unknown => "magenta",
             Glyph::Transitioning => "cyan",
+            Glyph::Disabled => "gray",
         }
     }
 
@@ -111,6 +117,7 @@ impl Glyph {
             Glyph::Stopped => "90",
             Glyph::Unknown => "35",
             Glyph::Transitioning => "36",
+            Glyph::Disabled => "90",
         }
     }
 
@@ -123,6 +130,7 @@ impl Glyph {
             Glyph::Stopped => "stopped",
             Glyph::Unknown => "unknown",
             Glyph::Transitioning => "transitioning",
+            Glyph::Disabled => "disabled",
         }
     }
 
@@ -186,11 +194,14 @@ pub enum StemState {
     Failed,
     /// State cannot be determined (external stem unreachable).
     Unknown,
+    /// `enabled: false` (46): never stored, derived from config when
+    /// `status` is built.
+    Disabled,
 }
 
 impl StemState {
     /// Every state, in lifecycle order.
-    pub const ALL: [StemState; 9] = [
+    pub const ALL: [StemState; 10] = [
         StemState::Stopped,
         StemState::Setup,
         StemState::Starting,
@@ -200,6 +211,7 @@ impl StemState {
         StemState::Stopping,
         StemState::Failed,
         StemState::Unknown,
+        StemState::Disabled,
     ];
 
     /// Lower-case name, as serialized.
@@ -214,6 +226,7 @@ impl StemState {
             StemState::Stopping => "stopping",
             StemState::Failed => "failed",
             StemState::Unknown => "unknown",
+            StemState::Disabled => "disabled",
         }
     }
 
@@ -226,6 +239,7 @@ impl StemState {
             StemState::Unhealthy | StemState::Failed => Glyph::Failed,
             StemState::Stopped => Glyph::Stopped,
             StemState::Unknown => Glyph::Unknown,
+            StemState::Disabled => Glyph::Disabled,
             StemState::Setup | StemState::Starting | StemState::Seeding | StemState::Stopping => {
                 Glyph::Transitioning
             }
@@ -236,7 +250,7 @@ impl StemState {
     pub fn is_running(self) -> bool {
         !matches!(
             self,
-            StemState::Stopped | StemState::Failed | StemState::Unknown
+            StemState::Stopped | StemState::Failed | StemState::Unknown | StemState::Disabled
         )
     }
 }
@@ -340,6 +354,10 @@ mod tests {
         assert_eq!(StemState::Failed.glyph(true), Glyph::Failed);
         assert_eq!(StemState::Stopped.glyph(false), Glyph::Stopped);
         assert_eq!(StemState::Unknown.glyph(false), Glyph::Unknown);
+        assert_eq!(StemState::Disabled.glyph(false), Glyph::Disabled);
+        assert_eq!(Glyph::Disabled.cell(false, false), "-");
+        assert_eq!(Glyph::Disabled.cell(true, false), "OFF");
+        assert!(!StemState::Disabled.is_running());
         for s in [
             StemState::Setup,
             StemState::Starting,

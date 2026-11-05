@@ -210,6 +210,10 @@ pub trait Host: Send + Sync {
     }
     /// Make `resolved` the applied workspace (33). Default: nothing.
     fn install(&self, _resolved: Arc<Resolved>, _actor: &str) {}
+    /// A request carries the environment of its `stems` command (49): the
+    /// config loads from now on substitute `${env.X}` with it (over the
+    /// daemon's own). Default: nothing.
+    fn note_caller_env(&self, _env: &BTreeMap<String, String>) {}
     /// Trigger the daemon's orderly shutdown.
     fn request_shutdown(&self, actor: &str, reason: &str);
     /// The daemon was auto-started by `up`.
@@ -280,6 +284,11 @@ impl Host for DaemonHost {
             d.install_workspace(resolved, actor);
         }
     }
+    fn note_caller_env(&self, env: &BTreeMap<String, String>) {
+        if let Some(d) = self.0.upgrade() {
+            d.set_caller_env(env);
+        }
+    }
     fn request_shutdown(&self, actor: &str, reason: &str) {
         if let Some(d) = self.0.upgrade() {
             d.request_shutdown(actor, reason);
@@ -348,6 +357,34 @@ pub struct Supervisor {
     runs: run::ScriptRuns,
     /// Config reload: pending plan, last error, last `up` selection (33).
     reload: reload::ReloadState,
+    /// Stems the last `up`/`start` skipped because a hard dependency is
+    /// disabled (46), with that dependency: `status` says so while they
+    /// are stopped.
+    disabled_skips: Mutex<BTreeMap<String, String>>,
+    /// Held while a request notes its caller env and loads the config with
+    /// it (49), so a concurrent request cannot swap the env in between.
+    env_load: Mutex<()>,
+}
+
+/// Why `stem` is disabled, for `status` (46): `enabled: ${env.X} → false`
+/// for a string `enabled:`, else the layer that set it (`enabled: false in
+/// stems.local.yaml`).
+pub(crate) fn disabled_reason(ws: &stems_config::Workspace, stem: &stems_config::Stem) -> String {
+    if let Some(t) = &stem.enabled_template {
+        return format!("enabled: {} → false", t.text);
+    }
+    match stem.inherited_from.get("enabled").map(String::as_str) {
+        Some("local") => "enabled: false in stems.local.yaml".to_string(),
+        Some("configuration") => match &ws.configuration {
+            Some(c) => format!("enabled: false in configuration {c}"),
+            None => "enabled: false in a configuration".to_string(),
+        },
+        Some("variant") => match &stem.variant {
+            Some(v) => format!("enabled: false in variant {v}"),
+            None => "enabled: false in a variant".to_string(),
+        },
+        _ => "enabled: false in stems.yaml".to_string(),
+    }
 }
 
 /// A fresh run id (a ULID, unique per daemon run).
@@ -433,9 +470,11 @@ impl Supervisor {
             host,
             cells: Mutex::new(IndexMap::new()),
             ops: tokio::sync::Mutex::new(()),
+            env_load: Mutex::new(()),
             cancel: Mutex::new(CancellationToken::new()),
             runs: run::ScriptRuns::default(),
             reload: reload::ReloadState::default(),
+            disabled_skips: Mutex::new(BTreeMap::new()),
         });
         // Watchdog actions run through the supervisor (24).
         sup.core.watch.bind(&sup);
@@ -501,6 +540,25 @@ impl Supervisor {
         names.iter().map(|n| (n.clone(), self.cell(n))).collect()
     }
 
+    /// `workspace(true)` for a request carrying `caller_env` (49): `${env.X}`
+    /// in the config is substituted with the caller's environment (over the
+    /// daemon's own; it stays the load environment until the next caller's).
+    /// A pending change that restarts only `restarting` is applied.
+    fn workspace_for(
+        &self,
+        actor: &str,
+        caller_env: Option<&BTreeMap<String, String>>,
+        restarting: &[String],
+    ) -> Result<Arc<Resolved>, Error> {
+        // Note the env and load with it under one lock: a request always
+        // loads with its own caller's env.
+        let _guard = self.env_load.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(env) = caller_env {
+            self.host.note_caller_env(env);
+        }
+        reload::refresh_for(self, actor, restarting)
+    }
+
     fn workspace(&self, reload: bool, actor: &str) -> Result<Arc<Resolved>, Error> {
         if reload {
             // The latest *applied* config; a disk change that would restart
@@ -536,7 +594,7 @@ impl Supervisor {
         if p.daemon_auto_started {
             self.host.set_started_by_up();
         }
-        let ws = self.workspace(true, actor)?;
+        let ws = self.workspace_for(actor, p.caller_env.as_ref(), &[])?;
         // Stems, else the profile, else everything; plus hard deps (26).
         let (plan, selection) = schedule::plan_up(&ws, p.profile.as_deref(), &p.stems)?;
         let _ops = self.ops.lock().await;
@@ -563,26 +621,31 @@ impl Supervisor {
         })));
         // Workspace `bootstrap`, then (`--fresh`) reset + clear stamps (16).
         let pre = async {
-            self.bootstrap(&ws.workspace, actor, &p.pass_env).await?;
+            let call = env::CallEnv::new(p.caller_env.clone(), p.pass_env.clone());
+            // A `soft_fail` bootstrap that failed lets `up` go on (41).
+            let soft = self.bootstrap(&ws.workspace, actor, &call).await?;
             if p.fresh {
                 let r = self.reset_stems(&ws, &plan.order, actor).await;
                 if let Some(f) = r.failed.into_iter().next() {
                     return Err(f.error);
                 }
             }
-            Ok::<(), Error>(())
+            Ok::<_, Error>(soft)
         };
-        if let Err(e) = pre.await {
-            self.emit(EventDraft::new(EventKind::UP_FINISHED, actor).data(json!({
-                "requested": p.stems,
-                "started": [],
-                "failed": [],
-                "skipped": plan.order,
-                "ok": false,
-                "error": e,
-            })));
-            return Err(e);
-        }
+        let bootstrap_degraded = match pre.await {
+            Ok(soft) => soft,
+            Err(e) => {
+                self.emit(EventDraft::new(EventKind::UP_FINISHED, actor).data(json!({
+                    "requested": p.stems,
+                    "started": [],
+                    "failed": [],
+                    "skipped": plan.order,
+                    "ok": false,
+                    "error": e,
+                })));
+                return Err(e);
+            }
+        };
         if p.sync {
             self.sync_existing_repos(&ws, &plan.order, actor).await;
         }
@@ -597,6 +660,7 @@ impl Supervisor {
             .force_overlays
             .store(false, std::sync::atomic::Ordering::SeqCst);
         res.warnings = self.end_build();
+        res.degraded.splice(0..0, bootstrap_degraded);
         res.requested = p.stems.clone();
         self.emit(EventDraft::new(EventKind::UP_FINISHED, actor).data(json!({
             "requested": res.requested,
@@ -661,7 +725,7 @@ impl Supervisor {
         }
     }
 
-    /// `repos_sync` / `repos_status` (20).
+    /// `repos_sync` / `repos_status` (20), `repos_checkout` (49).
     async fn repos(&self, method: &str, p: &Value, actor: &str) -> Result<Value, Error> {
         let ws = self.workspace(true, actor)?;
         let ctx = crate::repos::RepoCtx::for_core(&self.core, actor);
@@ -670,9 +734,16 @@ impl Supervisor {
             let opts = crate::repos::SyncOptions {
                 force_fetch: p.force_fetch,
                 recurse_submodules: p.recurse_submodules,
+                reset: p.reset,
             };
             let _ops = self.ops.lock().await;
             to_value(crate::repos::sync(&ws.workspace, &p.stems, &opts, &ctx).await?)
+        } else if method == Method::REPOS_CHECKOUT {
+            let p: stems_api::ReposCheckoutParams = params(method, p)?;
+            let _ops = self.ops.lock().await;
+            to_value(
+                crate::repos::checkout(&ws.workspace, &p.stem, &p.git_ref, p.force, &ctx).await?,
+            )
         } else {
             let p: stems_api::ReposStatusParams = params(method, p)?;
             to_value(crate::repos::status(&ws.workspace, &p.stems, &ctx).await?)
@@ -687,6 +758,26 @@ impl Supervisor {
         actor: &str,
         reason: &str,
     ) -> UpResult {
+        let call = env::CallEnv::new(p.caller_env.clone(), p.pass_env.clone());
+        self.run_plan_with(plan, ws, p, actor, reason, Some(call), false)
+            .await
+    }
+
+    /// [`Self::run_plan`] with an explicit environment; `None`: each stem
+    /// reuses the one of its last user start (a start stems makes on its
+    /// own, 37). `keep_pass` (`restart` without `--pass-env`, 51): each
+    /// stem keeps the `--pass-env` set of its last user start.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn run_plan_with(
+        &self,
+        plan: &Plan,
+        ws: &Arc<Resolved>,
+        p: &UpParams,
+        actor: &str,
+        reason: &str,
+        call_env: Option<env::CallEnv>,
+        keep_pass: bool,
+    ) -> UpResult {
         let cells = self.cells_for(&plan.order);
         let opts = schedule::RunOptions {
             ws: ws.clone(),
@@ -695,10 +786,30 @@ impl Supervisor {
             fail_fast: p.fail_fast,
             max_parallel: p.max_parallel.unwrap_or(DEFAULT_MAX_PARALLEL),
             deadline: ms(p.timeout_ms).map(|d| tokio::time::Instant::now() + d),
-            pass_env: p.pass_env.clone(),
+            call_env,
+            keep_pass,
             cancel: self.token(),
         };
-        schedule::run(plan, &cells, &opts).await
+        let mut res = schedule::run(plan, &cells, &opts).await;
+        self.note_disabled_skips(plan);
+        // Ready, but a `soft_fail` script failed (41).
+        res.degraded = hooks::degraded_of(self, &res.ready);
+        res
+    }
+
+    /// Remember which stems `plan` skipped for a disabled dependency (46),
+    /// forgetting those it started.
+    fn note_disabled_skips(&self, plan: &Plan) {
+        let mut m = self
+            .disabled_skips
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for n in &plan.order {
+            m.remove(n);
+        }
+        for (n, dep) in &plan.disabled_skips {
+            m.insert(n.clone(), dep.clone());
+        }
     }
 
     fn not_managed(ws: &Resolved, stems: &[String], op: &str) -> Result<(), Error> {
@@ -721,7 +832,7 @@ impl Supervisor {
 
     /// `start`.
     pub async fn start(&self, p: StartParams, actor: &str) -> Result<UpResult, Error> {
-        let ws = self.workspace(true, actor)?;
+        let ws = self.workspace_for(actor, p.caller_env.as_ref(), &[])?;
         schedule::plan(&ws, &p.stems, p.no_deps)?;
         Self::not_managed(&ws, &p.stems, "start")?;
         let plan = schedule::plan(&ws, &p.stems, p.no_deps)?;
@@ -730,6 +841,7 @@ impl Supervisor {
             stems: p.stems.clone(),
             timeout_ms: p.timeout_ms,
             build: p.build,
+            caller_env: p.caller_env.clone(),
             ..UpParams::default()
         };
         self.begin_build(p.build);
@@ -743,7 +855,7 @@ impl Supervisor {
     /// ports; with a cascade their running hard dependants follow (FR-LC-9,
     /// [`cascade::restart`]).
     pub async fn restart(&self, p: RestartParams, actor: &str) -> Result<UpResult, Error> {
-        let ws = self.workspace(true, actor)?;
+        let ws = self.workspace_for(actor, p.caller_env.as_ref(), &p.stems)?;
         schedule::plan(&ws, &p.stems, p.no_deps)?;
         Self::not_managed(&ws, &p.stems, "restart")?;
         let plan = schedule::plan(&ws, &p.stems, p.no_deps)?;
@@ -764,19 +876,46 @@ impl Supervisor {
             return Err(f.error);
         }
         if p.build == Some(true) {
-            let b = self.build_stems(&ws, &p.stems, actor).await;
-            if let Some(f) = b.failed.into_iter().next() {
-                return Err(f.error);
+            let pass = p.pass_env.clone().unwrap_or_default();
+            let call = env::CallEnv::new(p.caller_env.clone(), pass);
+            let b = self.build_stems(&ws, &p.stems, &call, actor).await;
+            // A failed `soft_fail` build does not stop the start (41).
+            let soft = |n: &str| {
+                ws.workspace
+                    .stem(n)
+                    .and_then(|s| s.scripts.get("build"))
+                    .is_some_and(|s| s.soft_fail)
+            };
+            if let Some(f) = b.failed.iter().find(|f| !soft(&f.stem)) {
+                return Err(f.error.clone());
+            }
+            // Their `build` warnings belong to the start that follows.
+            for f in &b.failed {
+                self.cell(&f.stem).info().keep_build_warning = true;
+            }
+            // The start that follows does not run `build` again (45).
+            for n in p.stems.iter().filter(|n| !b.skipped.contains(n)) {
+                self.cell(n).info().built_in_request = true;
             }
         }
         let up = UpParams {
             stems: p.stems.clone(),
             timeout_ms: p.timeout_ms,
             build: p.build,
+            pass_env: p.pass_env.clone().unwrap_or_default(),
+            caller_env: p.caller_env.clone(),
             ..UpParams::default()
         };
         self.begin_build(p.build);
-        let mut res = self.run_plan(plan, &ws, &up, actor, "restart").await;
+        // Without `--pass-env`, each stem keeps the set of its last start (51).
+        let call = env::CallEnv::new(up.caller_env.clone(), up.pass_env.clone());
+        let keep_pass = p.pass_env.is_none();
+        let mut res = self
+            .run_plan_with(plan, &ws, &up, actor, "restart", Some(call), keep_pass)
+            .await;
+        for n in &p.stems {
+            self.cell(n).info().built_in_request = false;
+        }
         res.warnings = self.end_build();
         res.requested = p.stems.clone();
         Ok(res)
@@ -1000,15 +1139,25 @@ impl Supervisor {
     /// `status` (never waits for a lifecycle operation).
     pub fn status(&self, p: &StatusParams, actor: &str) -> Result<StatusResult, Error> {
         let ws = self.workspace(false, actor)?;
-        if !p.stems.is_empty() {
-            schedule::plan(&ws, &p.stems, true)?;
+        // Disabled stems may be named (46); the rest must be enabled stems.
+        let named_enabled: Vec<String> = p
+            .stems
+            .iter()
+            .filter(|n| ws.workspace.stem(n).is_none_or(|s| s.enabled))
+            .cloned()
+            .collect();
+        if !named_enabled.is_empty() {
+            schedule::plan(&ws, &named_enabled, true)?;
         }
+        let names = p
+            .verbose
+            .then(|| stems_core::redact::Redactor::new(&ws.workspace));
         let mut stems: Vec<_> = ws
             .workspace
             .stems()
             .filter(|s| p.stems.is_empty() || p.stems.contains(&s.name))
             .map(|s| {
-                let mut st = self.cell(&s.name).status(s, &self.core, p.verbose);
+                let mut st = self.cell(&s.name).status(s, &self.core, names.as_ref());
                 containers::decorate_status(
                     self.core.runtimes.containers().map(|c| &**c),
                     s.kind(),
@@ -1025,6 +1174,33 @@ impl Supervisor {
             &mut stems,
             |n| self.cell(n).state(),
             |n| self.core.metrics.crossed(n),
+        );
+        // A stem the last `up` skipped for a disabled dependency (46).
+        {
+            let skips = self
+                .disabled_skips
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            for st in &mut stems {
+                if st.state == stems_core::StemState::Stopped
+                    && let Some(dep) = skips.get(&st.name)
+                {
+                    st.reason = Some(format!("skipped: dependency {dep} is disabled"));
+                }
+            }
+        }
+        // Disabled stems, last (46): derived from config, never stored.
+        stems.extend(
+            ws.workspace
+                .disabled_stems()
+                .filter(|s| p.stems.is_empty() || p.stems.contains(&s.name))
+                .map(|s| {
+                    stems_api::StemStatus::disabled(
+                        &s.name,
+                        &s.kind().to_string(),
+                        Some(disabled_reason(&ws.workspace, s)),
+                    )
+                }),
         );
         let summary = StatusSummary::of(&stems);
         Ok(StatusResult { stems, summary })
@@ -1639,7 +1815,14 @@ impl SupervisorHooks for Supervisor {
                 Ok(p) => self.overlays(&p, actor).and_then(to_value),
                 Err(e) => Err(e),
             },
-            m if m == Method::REPOS_SYNC || m == Method::REPOS_STATUS => {
+            m if m == Method::OVERLAYS_RENDER => match params(m, p) {
+                Ok(p) => self.overlays_render(&p, actor).and_then(to_value),
+                Err(e) => Err(e),
+            },
+            m if m == Method::REPOS_SYNC
+                || m == Method::REPOS_STATUS
+                || m == Method::REPOS_CHECKOUT =>
+            {
                 self.repos(m, p, actor).await
             }
             m if m == Method::STAMPS => match params(m, p) {
@@ -1671,6 +1854,10 @@ impl SupervisorHooks for Supervisor {
             },
             m if m == Method::WATCH_STATUS => match params(m, p) {
                 Ok(p) => self.watch_status(p, actor).and_then(to_value),
+                Err(e) => Err(e),
+            },
+            m if m == Method::STEM_ENV => match params(m, p) {
+                Ok(p) => self.stem_env(&p, actor).and_then(to_value),
                 Err(e) => Err(e),
             },
             m if m == Method::OUTPUTS => match params(m, p) {

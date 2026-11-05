@@ -43,3 +43,6 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems init`, `stems doctor`; docs/getting-started.md#1-create-an-integration-repo,
+docs/doctor.md#requires; `stems features config`.

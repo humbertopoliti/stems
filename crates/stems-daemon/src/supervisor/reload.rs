@@ -65,14 +65,16 @@ use ReloadAction as A;
 /// `scripts.start` (the start command) restarts, other scripts swap.
 pub fn field_action(field: &str) -> ReloadAction {
     match field {
-        "name" | "enabled" => A::Unchanged,
+        // `inherited_from` (FR-ST-8) only says where the other fields come from.
+        "name" | "enabled" | "inherited_from" => A::Unchanged,
         "health" => A::HealthChanged,
         "watch" => A::WatchChanged,
         "scripts" => A::ScriptsChanged,
         "limits" => A::LimitsChanged,
         "restart" => A::RestartPolicyChanged,
         "outputs" => A::OutputsChanged,
-        "description" | "tags" | "depends_on" | "stop_grace" => A::MetadataChanged,
+        // `requires` (40) is checked by validate/doctor, never by a start.
+        "description" | "tags" | "depends_on" | "stop_grace" | "requires" => A::MetadataChanged,
         // The variant's name (FR-ST-8): what it changes (`type`, `env`, ...)
         // is diffed field by field; a `type` change is `restart_required`.
         "variant" | "variants" => A::MetadataChanged,
@@ -492,6 +494,18 @@ async fn watch_loop(weak: Weak<Supervisor>, mut events: broadcast::Receiver<Even
 /// applied in place first; one that would is left pending
 /// (`config.pending`) and the applied config is used.
 pub(crate) fn refresh(sup: &Supervisor, actor: &str) -> Result<Arc<Resolved>, Error> {
+    refresh_for(sup, actor, &[])
+}
+
+/// [`refresh`] for a request that restarts `restarting` anyway (`restart`,
+/// 49): a change that restarts only those running stems is applied too
+/// (they restart with the new config), e.g. a new `${env.X}` value of the
+/// `stems restart` command's environment.
+pub(crate) fn refresh_for(
+    sup: &Supervisor,
+    actor: &str,
+    restarting: &[String],
+) -> Result<Arc<Resolved>, Error> {
     let Some(applied) = sup.host.resolved() else {
         return sup.host.reload(actor);
     };
@@ -512,21 +526,33 @@ pub(crate) fn refresh(sup: &Supervisor, actor: &str) -> Result<Arc<Resolved>, Er
         sup.install_new(&applied, new.clone(), actor);
         return Ok(new);
     }
-    if !plan.affected().any(|e| e.running && !e.hot) {
-        // Nothing running restarts: apply it now.
+    let restarts = |e: &StemChange| restarting.contains(&e.name);
+    if !plan.affected().any(|e| e.running && !e.hot && !restarts(e)) {
+        // Nothing running restarts (but what the request restarts anyway):
+        // apply it now.
         sup.install_new(&applied, new.clone(), actor);
         let mut applied_changes = Vec::new();
         for e in plan.affected() {
-            if e.running {
+            let result = if e.running && !e.hot {
+                "restarted"
+            } else if e.running {
                 sup.hot(&new, e, actor);
-            }
+                "reconfigured"
+            } else {
+                "swapped"
+            };
             applied_changes.push(AppliedChange {
                 stem: e.name.clone(),
                 action: e.action,
-                result: if e.running { "reconfigured" } else { "swapped" }.into(),
+                result: result.into(),
             });
         }
-        sup.rebase_running(&new, &HashSet::new());
+        let stale: HashSet<String> = plan
+            .affected()
+            .filter(|e| e.running && !e.hot)
+            .map(|e| e.name.clone())
+            .collect();
+        sup.rebase_running(&new, &stale);
         sup.clear_pending();
         sup.emit(
             EventDraft::new(EventKind::CONFIG_APPLIED, actor).data(json!({
@@ -769,7 +795,7 @@ impl Supervisor {
                     probes::unmonitor(&self.core, &cell, actor, APPLY_REASON);
                     let (cell, ws, actor) = (cell.clone(), new.clone(), actor.to_string());
                     tokio::spawn(async move {
-                        let _ = cell.start(ws, &actor, APPLY_REASON, BTreeMap::new()).await;
+                        let _ = cell.start(ws, &actor, APPLY_REASON).await;
                     });
                 }
                 A::HealthChanged => {
@@ -954,7 +980,8 @@ impl Supervisor {
                 }
                 Ok(p) => {
                     let up = self
-                        .run_plan(&p, &new, &UpParams::default(), actor, APPLY_REASON)
+                        // Restarts keep the environment of the last user start.
+                        .run_plan_with(&p, &new, &UpParams::default(), actor, APPLY_REASON, None, false)
                         .await;
                     for n in up.ready {
                         let action = action_of(&n);
@@ -1201,6 +1228,12 @@ stems:
                 true,
             ),
             (
+                "    command: run api\n    requires: { node: \">=20\" }\n",
+                A::MetadataChanged,
+                "requires",
+                true,
+            ),
+            (
                 "    command: run api\n    restart: { max: 9 }\n",
                 A::RestartPolicyChanged,
                 "restart",
@@ -1220,6 +1253,12 @@ stems:
             ),
             (
                 "    command: run api\n    env_files: [.env]\n",
+                A::RestartRequired,
+                "env_files",
+                false,
+            ),
+            (
+                "    command: run api\n    env_files: [{ path: .env, required: false }]\n",
                 A::RestartRequired,
                 "env_files",
                 false,

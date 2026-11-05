@@ -1,0 +1,5 @@
+---
+source: crates/stems-runtime/src/compose/tests.rs
+expression: "show(ComposeCommand::bake(&t, &images, &allow))"
+---
+docker buildx bake --load --progress plain -f /work/shop/compose.yml -f /home/dev/.stems/hello-shop/compose/api.override.yaml --allow fs.read=/home/me/.config/gcloud/adc.json --allow fs.read=/work/infra --allow fs.read=/work/shop/api --set api.tags=stems-shop-api --set migrate.tags=shop/migrate:dev api migrate

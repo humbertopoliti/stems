@@ -1,0 +1,51 @@
+# checks-demo — user-defined `checks:` (deliverable 48;
+# tests/features/doctor/checks.feature).
+#
+# Workspace checks run in the workspace root, stem checks in the codebase
+# (app/, which holds MARKER) with the stem's env. `marker.txt` does not exist
+# until the `needs-marker` fix creates it.
+schema_version: 1
+name: checks-demo
+
+checks:
+  fine:
+    command: "true"
+  needs-marker:
+    command: test -f marker.txt
+    message: marker.txt is missing
+    hint: create marker.txt
+    fix: touch marker.txt
+  soft:
+    command: echo noisy-output; exit 3
+    message: soft check is unhappy
+    severity: warn
+  slow:
+    command: sleep 5
+    timeout: 1s
+    message: slow check
+    when: [doctor]
+  doctor-only:
+    command: "false"
+    when: [doctor]
+
+stems:
+  web:
+    type: process
+    codebase: ./app
+    env: { DEMO_ENV: demo }
+    ports: [{ name: http, port: auto }]
+    stop_grace: 1s
+    scripts: { start: python3 -m http.server }
+    checks:
+      in-codebase:
+        command: test "$DEMO_ENV" = demo && test -f MARKER
+  off:
+    type: process
+    enabled: false
+    codebase: ./app
+    ports: [{ name: http, port: auto }]
+    stop_grace: 1s
+    scripts: { start: python3 -m http.server }
+    checks:
+      never:
+        command: "false"

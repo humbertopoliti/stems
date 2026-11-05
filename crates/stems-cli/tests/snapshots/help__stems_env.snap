@@ -1,0 +1,68 @@
+---
+source: crates/stems-cli/tests/help.rs
+expression: help
+---
+Print the environment stems gives a stem.
+
+What stems sets (`PORT`, `env`, `env_files`, local env, `STEMS_*`, dependencies' ports and outputs)
+as dotenv `KEY=value` lines; `--format shell` prints `export KEY='value'` (`eval "$(stems env api
+--format shell)"`), `--format json` / `--json` gives `data: {stem, env, cwd, container,
+unresolved}`. `--all` adds your own environment underneath. Secret outputs are redacted. Works
+without a daemon (never starts one). See docs/exec.md.
+
+Usage: stems env [OPTIONS] <STEM>
+
+Arguments:
+  <STEM>
+          The stem
+
+Options:
+      --format <FORMAT>
+          Output format
+
+          Possible values:
+          - dotenv: `KEY=value` lines (quoted when needed)
+          - shell:  `export KEY='value'` lines, for `eval`
+          - json:   The JSON envelope
+          
+          [default: dotenv]
+
+      --all
+          Also print the inherited environment (yours) under the stem's
+
+      --reveal
+          Show secret values (human output on a terminal only)
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Global options:
+      --workspace <PATH>
+          Workspace directory or stems.yaml path (default: $STEMS_WORKSPACE, else walk up from the
+          current directory)
+
+      --json
+          Emit the JSON envelope (the default when stdout is not a terminal)
+
+      --human
+          Emit human text even when stdout is not a terminal
+
+      --no-color
+          Disable colours in human output
+          
+          [env: STEMS_NO_COLOR]
+
+  -q, --quiet
+          Print only errors in human mode
+
+  -v, --verbose...
+          More detail (repeat for more: -vv)
+
+      --home <PATH>
+          Root for daemon state, sockets, locks and logs (default: ~/Library/Application
+          Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
+          
+          [env: STEMS_HOME]
+
+See also: `stems show`, `stems logs`, `stems exec`, `stems shell`;
+docs/config.md#environment-fr-st-4, docs/config.md#secrets, docs/exec.md; `stems features env`.

@@ -105,9 +105,12 @@ error_codes! {
     /// `depends_on` names an undefined stem.
     UnknownDependency = "UNKNOWN_DEPENDENCY", CONFIG,
         "a `depends_on` edge names a stem that is not defined";
-    /// Hard dependency on a disabled stem.
+    /// Hard dependency on a disabled stem (a `validate` warning, 46).
     DependencyDisabled = "DEPENDENCY_DISABLED", CONFIG,
-        "an enabled stem has a hard `depends_on` edge to a stem with `enabled: false`";
+        "an enabled stem has a hard `depends_on` edge to a disabled stem: it starts without it, or is skipped by `up`/`start` if the edge says `if_disabled: skip` (a warning)";
+    /// `enabled: "${env.X}"` with `X` unset (a `validate` note, 46).
+    EnabledVarUnset = "ENABLED_VAR_UNSET", CONFIG,
+        "a stem's `enabled:` names an environment variable that is unset, so the stem is disabled (an info note)";
     /// Hard-edge cycle.
     Cycle = "CYCLE", CONFIG,
         "hard `depends_on` edges form a cycle (mark one edge `soft: true` to break it)";
@@ -187,6 +190,21 @@ error_codes! {
     /// The process could not be spawned or exited before it was ready.
     StartFailed = "START_FAILED", RUNTIME,
         "a stem's process could not be spawned, or exited before it became ready (exit code in details)";
+    /// `stems exec`/`shell` into a container stem that is not running.
+    StemNotRunning = "STEM_NOT_RUNNING", RUNTIME,
+        "`stems exec`/`stems shell` needs the stem's container running (or `--host` to run on the host)";
+    /// A required `env_files` entry does not exist.
+    EnvFileNotFound = "ENV_FILE_NOT_FOUND", CONFIG,
+        "a required `env_files` entry does not exist (mark it `{path, required: false}` if it is optional)";
+    /// An env file overrides a value set by `env:` or an earlier env file (a warning).
+    EnvShadowed = "ENV_SHADOWED", CONFIG,
+        "an `env_files` entry sets a key that the stem's `env:` or an earlier env file sets to a different value; the file wins (a warning)";
+    /// A `requires: {from}` entry of a git codebase not cloned yet (a warning).
+    RequiresNotChecked = "REQUIRES_NOT_CHECKED", CONFIG,
+        "a stem's `requires:` entry reads its range `from:` a file of a git codebase that is not cloned yet, so it is checked after `up` clones it (a warning)";
+    /// Compose stems of one project disagree on `inject_env` (a warning).
+    ComposeInjectEnvMixed = "COMPOSE_INJECT_ENV_MIXED", CONFIG,
+        "stems sharing a compose project disagree on `inject_env`, so compose may recreate one service without the injected environment (a warning)";
     /// Stop needed SIGKILL.
     StopTimeoutKilled = "STOP_TIMEOUT_KILLED", RUNTIME,
         "a stem ignored SIGTERM for `stop_grace` and was killed";
@@ -220,12 +238,21 @@ error_codes! {
     /// `git clone`/`fetch` failed.
     GitCloneFailed = "GIT_CLONE_FAILED", RUNTIME,
         "cloning or fetching a git codebase failed";
+    /// `repos checkout` refused a codebase with uncommitted changes.
+    RepoDirty = "REPO_DIRTY", RUNTIME,
+        "`stems repos checkout` refused a git codebase with uncommitted changes (`--force` checks out anyway, carrying them over)";
+    /// `status --expect`: some stems are not in the expected state.
+    StatusMismatch = "STATUS_MISMATCH", RUNTIME,
+        "`stems status --expect <state>`: some stems are not in that state (`data.mismatch`)";
     /// Another daemon holds the workspace lock.
     LockHeld = "LOCK_HELD", RUNTIME,
         "another stems daemon holds this workspace's lock";
     /// `stems upgrade` could not run the package manager, or it failed.
     UpgradeFailed = "UPGRADE_FAILED", RUNTIME,
         "`stems upgrade` could not run the upgrade command, or it failed";
+    /// A user-defined `checks:` entry with `severity: fail` failed (`stems up`).
+    CheckFailed = "CHECK_FAILED", RUNTIME,
+        "a user-defined `checks:` entry (severity `fail`) failed, so `stems up` started nothing";
     /// Command exists but its deliverable has not landed.
     NotImplemented = "NOT_IMPLEMENTED", RUNTIME,
         "the command is not implemented yet in this build";

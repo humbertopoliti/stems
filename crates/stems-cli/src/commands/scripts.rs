@@ -67,6 +67,7 @@ pub fn build(ctx: &Ctx, args: &BuildArgs) -> CommandOutput {
     block_on(async {
         let p = BuildParams {
             stems: args.stems.clone(),
+            caller_env: Some(super::exec::caller_env(&ctx.env)),
         };
         let r: BuildResult = call(ctx, Method::BUILD, &p).await?;
         let mut human = String::new();
