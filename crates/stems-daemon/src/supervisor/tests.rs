@@ -435,13 +435,15 @@ async fn without_fail_fast_only_dependants_are_skipped() {
 }
 
 #[tokio::test]
-async fn hard_dependants_of_a_disabled_stem_are_skipped_transitively() {
+async fn dependants_of_a_disabled_stem_start_unless_the_edge_says_skip() {
+    // `worker`'s plain edge (51: `if_disabled: start` by default) is dropped;
+    // `api` opts into 46's skip, which is transitive over hard edges (`web`).
     let yaml = format!(
         "  off: {{ type: process, command: run, enabled: false }}\n{}{}{}{}",
         proc("db", ""),
-        proc("api", "off, db"),
+        proc("api", "{ stem: off, if_disabled: skip }, db"),
         proc("web", "api"),
-        "  worker: { type: process, command: run, depends_on: [{ stem: off, if_disabled: start }] }\n",
+        proc("worker", "off"),
     );
     let r = rig(&yaml, FakeRuntime::default(), FakeWaiter::default());
     let res = r.sup.up(UpParams::default(), "cli:test").await.unwrap();
@@ -615,6 +617,59 @@ async fn restart_keeps_auto_ports_and_changes_pid() {
     assert_ne!(st.stems[0].pid.unwrap(), pid);
     assert_eq!(st.stems[0].ports[0].port, Some(port));
     assert!(st.stems[0].env.is_none(), "env only with verbose");
+}
+
+#[tokio::test]
+async fn restart_keeps_the_pass_env_of_the_last_start_unless_given() {
+    let r = rig(
+        &proc("web", ""),
+        FakeRuntime::default(),
+        FakeWaiter::default(),
+    );
+    let pass = |kv: &[(&str, &str)]| -> BTreeMap<String, String> {
+        kv.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    };
+    let up = UpParams {
+        pass_env: pass(&[("BAR", "up")]),
+        ..UpParams::default()
+    };
+    assert!(r.sup.up(up, "cli:t").await.unwrap().ok);
+    let bar = |r: &Rig| {
+        let st = r
+            .sup
+            .status(
+                &StatusParams {
+                    verbose: true,
+                    ..StatusParams::default()
+                },
+                "t",
+            )
+            .unwrap();
+        st.stems[0].env.as_ref().unwrap().get("BAR").cloned()
+    };
+    assert_eq!(bar(&r).as_deref(), Some("up"));
+    let restart = |pass_env| stems_api::RestartParams {
+        stems: vec!["web".into()],
+        pass_env,
+        ..Default::default()
+    };
+    // No `--pass-env`: the set of the last start is kept (51).
+    assert!(r.sup.restart(restart(None), "cli:t").await.unwrap().ok);
+    assert_eq!(bar(&r).as_deref(), Some("up"));
+    // `--pass-env` replaces it.
+    let given = Some(pass(&[("BAR", "restarted")]));
+    assert!(r.sup.restart(restart(given), "cli:t").await.unwrap().ok);
+    assert_eq!(bar(&r).as_deref(), Some("restarted"));
+    assert!(
+        r.sup
+            .restart(restart(Some(pass(&[]))), "cli:t")
+            .await
+            .unwrap()
+            .ok
+    );
+    assert_eq!(bar(&r), None);
 }
 
 #[tokio::test]

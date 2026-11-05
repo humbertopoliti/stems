@@ -141,17 +141,20 @@ a failing one aborts with `CHECK_FAILED` ([doctor.md](doctor.md#custom-checks)).
    stops the planned stems that run, runs their `reset` scripts and clears
    their stamps, so `setup` and `seed` run again ([scripts.md](scripts.md)).
 4. Starts the closure layer by layer (`start_order`). Each stem waits for
-   each hard dependency's edge condition (`started`, `healthy`, `seeded`),
+   each hard dependency's edge condition (`started`, `healthy`, `seeded`) —
+   except a disabled dependency: that edge is dropped and the stem starts
+   without it (`if_disabled: start`, the default; [config.md](config.md#enabled)) —
    then takes one of `--max-parallel` (default 4) slots, starts, and holds
    the slot until it is ready or failed. Independent stems start in parallel.
    A stem's start is its whole script sequence: `setup` (stamped),
    `build` (only with `when: changed|always`), `pre_start`, the process, readiness, `post_start`, `seed` (stamped).
 5. A stem whose dependency failed is **skipped**; so is a `condition:
    seeded` dependant of a stem whose `soft_fail` seed failed (reason
-   `seed_degraded`), and a stem with a hard edge, direct or not, to a
-   disabled stem (reason `dependency_disabled:<dep>`; such skips keep `ok`
-   true and the exit code 0, and `data.disabled` lists the disabled stems
-   the selection covered; [config.md](config.md#enabled)). With fail-fast (the
+   `seed_degraded`), and a stem with an `if_disabled: skip` edge to a
+   disabled stem, or a hard edge to a stem skipped that way (reason
+   `dependency_disabled:<dep>`; such skips keep `ok` true and the exit code
+   0). `data.disabled` lists the disabled stems the selection covered
+   ([config.md](config.md#enabled)). With fail-fast (the
    default) the first failure also skips every stem that has not started
    yet; stems already running stay up. `--no-fail-fast` only skips the failed
    stem's dependants.
@@ -226,7 +229,7 @@ the command refuses with `HAS_DEPENDANTS` (exit 1, `details.dependants`)
 unless `--cascade`, which stops those dependants first. External stems:
 `NOT_MANAGED`.
 
-### `stems restart <stems…> [--no-deps] [--build] [--cascade | --no-cascade]`
+### `stems restart <stems…> [--no-deps] [--build] [--cascade | --no-cascade] [--pass-env VAR]…`
 
 Stop, then start (starting missing dependencies unless `--no-deps`); the
 stem gets a new process on the same ports. A user restart also resets the
@@ -238,6 +241,10 @@ started); stems without one just restart. See [scripts.md](scripts.md).
 `--no-cascade`) then restarts the stems' running hard dependants, layer by
 layer, once the stems are healthy again; `data.cascade` lists them per
 layer (FR-LC-9, [restart.md](restart.md#cascading-restarts-fr-lc-9)).
+The restarted stems get the environment of the `restart` command (layer 1
+of [A stem's environment](#a-stems-environment-fr-st-4)); each keeps the
+`--pass-env` values it was last started with, unless `--pass-env VAR,…` is
+given: then those values (from the `restart` command's shell) replace them.
 
 ### `stems status [stems…] [--enabled] [--watch [INTERVAL]] [--expect STATE [--timeout D]] [-v]`
 
@@ -346,14 +353,18 @@ Layers, later wins (the same table, with `env_files` details, is in
 5. `stems.local.yaml` env (workspace-level and the stem's);
 6. the shell environment of `stems up --pass-env VAR,…` (captured by the CLI;
    since layer 1 is the caller's environment it only matters for variables
-   that must beat `env_files` and local env);
+   that must beat `env_files` and local env). A restart keeps the values of
+   the stem's last start; `stems restart --pass-env VAR,…` replaces them;
 7. `STEMS_STEM`, `STEMS_WORKSPACE` (integration repo root), `STEMS_CODEBASE`
    (when the stem has a codebase), `STEMS_RUN_ID` (per daemon run) and
    `STEMS_<DEP>_PORT` (first port of each dependency, name upper-cased with
    `-` → `_`, e.g. `STEMS_SHOP_API_PORT`), plus `PORT_<NAME>` for the stem's
    own and `STEMS_<DEP>_PORT_<NAME>` for each dependency's explicitly named
    ports (see [ports.md](ports.md)), and `STEMS_<DEP>_CODEBASE` (the
-   absolute codebase directory of each dependency that has one).
+   absolute codebase directory of each dependency that has one). A
+   disabled dependency sets none of these (a `${stem.<dep>.port}`
+   reference still resolves to its configured port, where nothing
+   listens).
 
 Finally every value is re-rendered: `${stem.<n>.port}`,
 `${stem.<n>.ports.<p>}` and `${stem.self.…}` references to `port: auto`

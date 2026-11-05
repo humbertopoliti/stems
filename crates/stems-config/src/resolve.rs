@@ -383,13 +383,22 @@ fn resolve_stem(
     for (field, set, allowed) in type_specific_fields(rs) {
         if set && !allowed.contains(&kind) {
             let list: Vec<String> = allowed.iter().map(ToString::to_string).collect();
-            ctx.schema(
-                p.key(field),
+            let mut diag = Diagnostic::new(
+                codes::SCHEMA_INVALID,
                 format!(
                     "field `{field}` is not valid for a {kind} stem (only {})",
                     list.join(", ")
                 ),
-            );
+            )
+            .with_path(p.key(field));
+            if field == "build" && kind == StemType::Process {
+                // `build.before_setup` and friends (44, 51) are for images;
+                // a process stem builds with its `build` script.
+                diag = diag.with_hint(
+                    "use build.when: a `scripts.build` with `when: changed` or `when: always` runs in every start, after `setup` (docs/scripts.md)",
+                );
+            }
+            ctx.diagnostics.push(diag);
         }
     }
 
@@ -559,6 +568,7 @@ fn resolve_stem(
                     dockerfile,
                     secrets: build_secrets(b, &p.key("build"), ctx),
                     allow_read: allow_read(b, ctx),
+                    before_setup: b.before_setup.unwrap_or(false),
                 }
             }),
             volumes: rs.volumes.clone().unwrap_or_default(),
@@ -653,16 +663,11 @@ fn docker_build<'a>(
 ) -> Option<&'a RawDockerBuild> {
     match rs.build.as_ref()? {
         RawBuild::Spec(b) => {
-            for (key, set) in [
-                ("services", b.services.is_some()),
-                ("before_setup", b.before_setup.is_some()),
-            ] {
-                if set {
-                    ctx.schema(
-                        p.key("build").key(key),
-                        format!("`build.{key}` is for compose stems; a docker stem's `build` takes `context`, `dockerfile`, `secrets` and `allow_read`"),
-                    );
-                }
+            if b.services.is_some() {
+                ctx.schema(
+                    p.key("build").key("services"),
+                    "`build.services` is for compose stems; a docker stem's `build` takes `context`, `dockerfile`, `before_setup`, `secrets` and `allow_read`",
+                );
             }
             Some(b)
         }

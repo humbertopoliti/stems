@@ -107,7 +107,7 @@ error_codes! {
         "a `depends_on` edge names a stem that is not defined";
     /// Hard dependency on a disabled stem (a `validate` warning, 46).
     DependencyDisabled = "DEPENDENCY_DISABLED", CONFIG,
-        "an enabled stem has a hard `depends_on` edge to a disabled stem, so `up`/`start` skip it (unless the edge says `if_disabled: start`; a warning)";
+        "an enabled stem has a hard `depends_on` edge to a disabled stem: it starts without it, or is skipped by `up`/`start` if the edge says `if_disabled: skip` (a warning)";
     /// `enabled: "${env.X}"` with `X` unset (a `validate` note, 46).
     EnabledVarUnset = "ENABLED_VAR_UNSET", CONFIG,
         "a stem's `enabled:` names an environment variable that is unset, so the stem is disabled (an info note)";

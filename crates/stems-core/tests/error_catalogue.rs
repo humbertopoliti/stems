@@ -101,8 +101,8 @@ fn sample(code: ErrorCode) -> Error {
             code,
             "stems.shop-web.depends_on",
             40,
-            "stem `shop-web` needs `shop-api`, which is disabled: `up` skips `shop-web`",
-            "enable `shop-api` (usually in stems.local.yaml), or mark the edge `if_disabled: start` (start `shop-web` anyway) or `soft: true`",
+            "stem `shop-web` depends on `shop-api`, which is disabled; `shop-web` starts without it",
+            "enable `shop-api` if `shop-web` needs it (usually in stems.local.yaml), or mark the edge `if_disabled: skip` to leave `shop-web` out too",
         ),
         EnabledVarUnset => cfg(
             code,

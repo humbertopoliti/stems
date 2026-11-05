@@ -140,7 +140,7 @@ pub const FEATURES: &[Feature] = &[
     Feature {
         area: "lifecycle",
         name: "Disabled stems",
-        one_liner: "`enabled: false` or `enabled: \"${env.X}\"` keeps a stem out of `up`; it shows as disabled, and `if_disabled` says what its dependants do.",
+        one_liner: "`enabled: false` or `enabled: \"${env.X}\"` keeps a stem out of `up`; it shows as disabled and its dependants start without it (`if_disabled: skip` skips them).",
         commands: &["stems status", "stems show"],
         config_keys: &["stems.*.enabled", "stems.*.depends_on.*.if_disabled"],
         doc: "docs/config.md#enabled",

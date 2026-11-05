@@ -544,21 +544,22 @@ pub enum Condition {
     Seeded,
 }
 
-/// What a hard `depends_on` edge does when its target is disabled (46).
+/// What a hard `depends_on` edge does when its target is disabled (46, 51).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum IfDisabled {
-    /// The dependant is skipped by `up`/`start` (`dependency_disabled:<dep>`).
-    #[default]
+    /// The dependant is skipped by `up`/`start` (`dependency_disabled:<dep>`),
+    /// and so are its own hard dependants.
     Skip,
-    /// The dependant starts anyway; the edge is dropped.
+    /// The dependant starts without it (the default): the edge is dropped.
+    #[default]
     Start,
 }
 
 impl IfDisabled {
-    /// `true` for the default (`skip`), which is not serialized.
-    pub fn is_skip(&self) -> bool {
-        *self == IfDisabled::Skip
+    /// `true` for the default (`start`), which is not serialized.
+    pub fn is_start(&self) -> bool {
+        *self == IfDisabled::Start
     }
 }
 

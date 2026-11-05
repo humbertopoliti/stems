@@ -381,6 +381,10 @@ pub struct ContainerSpec {
     /// `env` build secrets' values from the request (build process only).
     #[serde(skip)]
     pub secret_env: SecretEnv,
+    /// The build tag was built before `setup` in this start sequence
+    /// (`build.before_setup`, 51): the start does not build it again.
+    #[serde(skip)]
+    pub prebuilt: bool,
 }
 
 impl ContainerSpec {
@@ -408,6 +412,7 @@ impl ContainerSpec {
             stop_grace: Duration::from_secs(10),
             progress: ProgressSink::default(),
             secret_env: SecretEnv::default(),
+            prebuilt: false,
         }
     }
 

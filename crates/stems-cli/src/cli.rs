@@ -718,6 +718,11 @@ pub struct RestartArgs {
     /// Restart only these stems, even if `restart.cascade` is set.
     #[arg(long)]
     pub no_cascade: bool,
+    /// Pass these variables of the current shell to the stems (applied
+    /// last; repeat or comma-separate). Replaces the set they were started
+    /// with; without it they keep that set.
+    #[arg(long, value_name = "VAR", value_delimiter = ',')]
+    pub pass_env: Option<Vec<String>>,
 }
 
 impl RestartArgs {

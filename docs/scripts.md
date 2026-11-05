@@ -48,8 +48,9 @@ stems up
 │
 └─ per stem, in dependency order (layers in parallel):
    │
-   ├─ [build images] (build.before_setup) compose images built first;
-   │               `setup` gets STEMS_IMAGES / STEMS_IMAGE (docs/compose.md)
+   ├─ [build images] (build.before_setup) docker/compose images built
+   │               first; `setup` gets STEMS_IMAGE (compose: STEMS_IMAGES
+   │               too; docs/docker.md, docs/compose.md)
    ├─ setup        state `setup`    only if its stamp is missing or changed
    ├─ build        only with `when: changed` (stamp missing or changed)
    │               or `when: always`; setup installs what build needs

@@ -626,8 +626,9 @@ pub struct RawDependencySpec {
     pub protocol: Option<Protocol>,
     /// Address metadata, e.g. `${stem.api.port}`.
     pub via: Option<String>,
-    /// When the target is disabled (hard edges only, 46): `skip` (default)
-    /// skips this stem on `up`/`start`; `start` starts it anyway.
+    /// When the target is disabled (hard edges only, 46, 51): `start`
+    /// (default) starts this stem without it; `skip` skips this stem on
+    /// `up`/`start`.
     pub if_disabled: Option<crate::types::IfDisabled>,
 }
 
@@ -916,13 +917,13 @@ pub enum RawBuild {
     /// (`false`).
     Flag(bool),
     /// Build settings (docker: `context`, `dockerfile`; compose:
-    /// `services`, `before_setup`; both: `secrets`, `allow_read`).
+    /// `services`; both: `before_setup`, `secrets`, `allow_read`).
     Spec(RawDockerBuild),
 }
 
 /// Build settings of a docker stem (`context`, `dockerfile`) or a compose
-/// stem (`services`, `before_setup`); `secrets` and `allow_read` apply to
-/// both (44).
+/// stem (`services`); `before_setup`, `secrets` and `allow_read` apply to
+/// both (44, 51).
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(rename = "BuildSpec")]
@@ -935,8 +936,9 @@ pub struct RawDockerBuild {
     /// (compose) Services whose images are built (default: the stem's
     /// `service`); list extra one-shot services (e.g. `migrate`) here.
     pub services: Option<Vec<String>>,
-    /// (compose) Build the images before `setup` (default `false`: at
-    /// start); `setup` then gets `STEMS_IMAGE` and `STEMS_IMAGES`.
+    /// Build the image(s) before `setup` (default `false`: at start);
+    /// `setup` and `pre_start` then get `STEMS_IMAGE` (compose: also
+    /// `STEMS_IMAGES`). Docker and compose stems only.
     pub before_setup: Option<bool>,
     /// BuildKit secrets (`RUN --mount=type=secret,id=…`): `{id, file}` or
     /// `{id, env}`. Never a build arg, never in a layer.

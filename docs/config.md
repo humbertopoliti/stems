@@ -44,8 +44,8 @@ stems:
     enabled: "${env.WITH_SEARCH}"   # on with WITH_SEARCH=1, off when unset
   api:
     depends_on:
-      - search                       # api is skipped while search is disabled
-      - { stem: search, if_disabled: start }   # ... or: start api anyway
+      - search                       # api starts without search while it is disabled
+      - { stem: search, if_disabled: skip }    # ... or: skip api too
 ```
 
 * Truthy: `true|1|yes|on`; falsy: `false|0|no|off|""` (case-insensitive).
@@ -65,19 +65,25 @@ stems:
   false`); `summary.disabled` counts them and `status --enabled` hides
   them. `up`'s result lists the disabled stems it left out in
   `data.disabled` (omitted when empty).
-* **Dependants are skipped.** A stem with a hard edge to a disabled stem is
-  not started by `up`/`start`: it is in `skipped` with
-  `skipped_reasons.<stem> == "dependency_disabled:<dep>"`, and so are its
-  own hard dependants (same reason, naming the disabled stem). These skips
-  do not make `up` fail (`ok` stays true, exit 0): they are the
-  configuration's intent. Afterwards `status` shows such a stem `stopped`
-  with `reason: "skipped: dependency <dep> is disabled"`. `stems validate`
-  warns `DEPENDENCY_DISABLED` (`details {stem, dependency}`) for each such
-  edge.
-* `if_disabled: start` on an edge (`skip` is the default) starts the
-  dependant anyway: the edge is dropped, and `STEMS_<DEP>_PORT` (and the
-  dependency's named-port variables) are not set. A soft edge never blocks
-  either way.
+* **Dependants start without it.** A disabled dependency never blocks a
+  start: a hard edge to one is dropped (`if_disabled: start`, the
+  default), so the dependant does not wait for it and nothing cascades
+  from it. `STEMS_<DEP>_PORT`, the dependency's named-port variables and
+  `STEMS_<DEP>_CODEBASE` are not set. A `${stem.<dep>.port}` (or
+  `.ports.<p>`) reference still resolves to the configured value, but
+  nothing listens there while the stem is disabled. `status` shows the disabled stem as `disabled` and the
+  dependant as whatever it is (`healthy`, …). Disabling the stems that
+  cannot work without it is up to you: `stems validate` warns
+  `DEPENDENCY_DISABLED` ("api depends on search, which is disabled; api
+  starts without it", `details {stem, dependency, if_disabled}`) for every
+  hard edge to a disabled stem.
+* `if_disabled: skip` on an edge skips the dependant instead: `up`/`start`
+  leave it out, in `skipped` with `skipped_reasons.<stem> ==
+  "dependency_disabled:<dep>"`, and so are its own hard dependants (same
+  reason, naming the disabled stem). These skips do not make `up` fail
+  (`ok` stays true, exit 0): they are the configuration's intent.
+  Afterwards `status` shows such a stem `stopped` with `reason: "skipped:
+  dependency <dep> is disabled"`. A soft edge never blocks either way.
 * A config reload that flips the outcome is an `added`/`removed` stem (see
   *Config reload*).
 
@@ -101,10 +107,10 @@ their stem set the same way:
    silently (`stems profiles` lists them under `disabled`). Listing a stem
    that does not exist is `UNKNOWN_STEM` (validation).
 5. The **closure** adds hard `depends_on` targets transitively. Soft edges
-   never pull a stem in. A hard edge to a disabled stem skips the dependant
-   (`dependency_disabled:<dep>`, a `DEPENDENCY_DISABLED` validation warning)
-   unless the edge says `if_disabled: start` (see *`enabled`*); a soft edge
-   to one is fine.
+   never pull a stem in. A disabled target is never pulled in: the
+   dependant starts without it (a `DEPENDENCY_DISABLED` validation
+   warning), or is skipped (`dependency_disabled:<dep>`) when the edge says
+   `if_disabled: skip` (see *`enabled`*).
 6. The stems the closure added to a profile's own list are `expanded`: `up`
    emits `profile.expanded {profile, added, requested}` before `up.started`
    (whose data now carries `profile`) so the addition is visible.

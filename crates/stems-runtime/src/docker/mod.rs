@@ -972,6 +972,17 @@ impl DockerRuntime {
         run_build_command(&docker_program(), &args, &env, &build.context, &on_line).await
     }
 
+    /// Build `spec`'s image (tag [`ContainerSpec::build_tag`]) now, without
+    /// starting anything: `build.before_setup` (51). Buildx when the build
+    /// needs it, else the Docker API, as at start.
+    pub async fn build(&self, spec: &ContainerSpec) -> Result<(), RuntimeError> {
+        match &spec.build {
+            Some(b) if b.needs_buildx() => self.build_image_cli(spec, b).await,
+            Some(b) => self.build_image(spec, b).await,
+            None => Ok(()),
+        }
+    }
+
     /// A leftover container with our name: removed if it is ours and not
     /// running; a running one is an error (adopt it or clean orphans).
     async fn clear_name(&self, spec: &ContainerSpec) -> Result<(), RuntimeError> {
@@ -1043,6 +1054,8 @@ impl DockerRuntime {
         image_ready: bool,
     ) -> Result<Handle, RuntimeError> {
         match &spec.build {
+            // Built before `setup` in this sequence (51).
+            Some(_) if spec.prebuilt => {}
             Some(b) if b.needs_buildx() => self.build_image_cli(spec, b).await?,
             Some(b) => self.build_image(spec, b).await?,
             None if image_ready => {}
@@ -1291,6 +1304,14 @@ impl DockerRuntime {
         if let (true, Some(image)) = (image_ready, spec.image.as_deref()) {
             self.ensure_image(image, spec.pull, &spec.progress).await?;
             let local = self.image_id(image).await?;
+            image_changed = inspect
+                .as_ref()
+                .is_some_and(|i| image_differs(i.image.as_deref(), local.as_deref()));
+        }
+        // Rebuilt before `setup` (51): a changed image is recreated, as a
+        // pulled one is (the tag stays the same within a run).
+        if let (true, Some(tag)) = (spec.prebuilt, spec.build_tag()) {
+            let local = self.image_id(&tag).await?;
             image_changed = inspect
                 .as_ref()
                 .is_some_and(|i| image_differs(i.image.as_deref(), local.as_deref()));

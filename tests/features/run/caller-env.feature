@@ -68,3 +68,20 @@ Feature: what a request starts gets the environment of the `stems` command
     Then the JSON at "$..text" contains "started FOO=up BAR=passed MARK=applied"
     When I run "stems down --all --json"
     Then the command succeeds
+
+  Scenario: restart keeps the --pass-env set of the last start unless --pass-env is given
+    Given the fixture workspace "caller-env"
+    When I run "stems daemon start --json" with env FOO=stale
+    Then the command succeeds
+    When I run "stems up api --detach --pass-env BAR --json" with env FOO=up BAR=passed
+    Then the command succeeds
+    When I run "stems restart api --json" with env FOO=again BAR=shell
+    Then the command succeeds
+    When I run "stems logs api --json"
+    Then the JSON at "$..text" contains "started FOO=again BAR=passed MARK=unset"
+    When I run "stems restart api --pass-env BAR --json" with env FOO=third BAR=fresh
+    Then the command succeeds
+    When I run "stems logs api --json"
+    Then the JSON at "$..text" contains "started FOO=third BAR=fresh MARK=unset"
+    When I run "stems down --all --json"
+    Then the command succeeds

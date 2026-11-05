@@ -362,12 +362,7 @@ pub fn container_spec(
         PullPolicy::Always => ImagePull::Always,
         PullPolicy::Never => ImagePull::Never,
     };
-    spec.build = d.build.as_ref().map(|b| BuildSpec {
-        context: b.context.clone(),
-        dockerfile: b.dockerfile.clone(),
-        secrets: b.secrets.iter().map(runtime_secret).collect(),
-        allow_read: b.allow_read.clone(),
-    });
+    spec.build = d.build.as_ref().map(build_spec);
     for p in &stem.ports {
         let host = host_ports
             .iter()
@@ -434,6 +429,16 @@ pub fn container_spec(
     });
     spec.stop_grace = stem.stop_grace.as_duration();
     Ok(spec)
+}
+
+/// The runtime build spec of a docker stem's `build:`.
+fn build_spec(b: &stems_config::DockerBuild) -> BuildSpec {
+    BuildSpec {
+        context: b.context.clone(),
+        dockerfile: b.dockerfile.clone(),
+        secrets: b.secrets.iter().map(runtime_secret).collect(),
+        allow_read: b.allow_read.clone(),
+    }
 }
 
 /// The Docker names of `stem`'s named volumes (`<ws>_<name>`), for
@@ -574,13 +579,14 @@ fn daemon_has_env(v: &str) -> bool {
     std::env::var_os(v).is_some()
 }
 
-/// `build.before_setup` of a compose stem (44): build the images now, so
-/// `setup` can use them, and mark the stem so its start does not build them
-/// again. Returns `STEMS_IMAGES` (`svc=image[,svc=image]`) and
-/// `STEMS_IMAGE` (the stem's own service) for `setup`; `None` when the stem
-/// does not build before `setup`. With the build off for this run
-/// (`--no-build`, `build: false`), nothing is built but the image names are
-/// still given.
+/// `build.before_setup` of a docker or compose stem (44, 51): build the
+/// image(s) now, so `setup` can use them, and mark the stem so its start
+/// does not build them again. Returns `STEMS_IMAGE` (a docker stem's run
+/// tag `stems/<ws>/<stem>:<run_id>`, a compose stem's own service) and, for
+/// a compose stem, `STEMS_IMAGES` (`svc=image[,svc=image]`); `None` when
+/// the stem does not build before `setup`. A compose stem with the build
+/// off for this run (`--no-build`, `build: false`) builds nothing but still
+/// gets the image names; a docker stem always builds (as at start).
 pub(crate) async fn build_before_setup(
     core: &Core,
     ws: &Workspace,
@@ -588,11 +594,17 @@ pub(crate) async fn build_before_setup(
     env: &BTreeMap<String, String>,
     request_env: &BTreeMap<String, String>,
 ) -> Result<Option<BTreeMap<String, String>>, Error> {
-    let StemRuntime::Compose(cfg) = &stem.runtime else {
-        return Ok(None);
-    };
-    if !cfg.build_options.before_setup {
-        return Ok(None);
+    match &stem.runtime {
+        StemRuntime::Docker(d) => {
+            return match d.build.as_ref().filter(|b| b.before_setup) {
+                Some(b) => build_docker_before_setup(core, ws, stem, b, env, request_env)
+                    .await
+                    .map(Some),
+                None => Ok(None),
+            };
+        }
+        StemRuntime::Compose(cfg) if cfg.build_options.before_setup => {}
+        _ => return Ok(None),
     }
     let c = containers(core)?;
     let mut spec = compose_spec(ws, stem, &core.run_id, env)?;
@@ -624,6 +636,38 @@ pub(crate) async fn build_before_setup(
             .map_err(|e| runtime_error(&stem.name, e))?
     };
     Ok(Some(image_vars(&spec.service, &images)))
+}
+
+/// A docker stem's `build.before_setup` (51): its image, tagged for this
+/// run as at start, with the same buildx checks and `docker.build` events.
+async fn build_docker_before_setup(
+    core: &Core,
+    ws: &Workspace,
+    stem: &Stem,
+    build: &stems_config::DockerBuild,
+    env: &BTreeMap<String, String>,
+    request_env: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>, Error> {
+    let c = containers(core)?;
+    let mut spec = ContainerSpec::new(&ws.name, &stem.name, &core.run_id);
+    let b = build_spec(build);
+    spec.env = env.clone();
+    spec.secret_env = SecretEnv::select(&b.secrets, &spec.env, request_env);
+    if b.needs_buildx() {
+        check_build_inputs(&stem.name, &b.secrets, &b.allow_read, &spec.env, &|v| {
+            spec.secret_env.0.contains_key(v) || daemon_has_env(v)
+        })?;
+    }
+    spec.build = Some(b);
+    spec.progress = progress_sink(core, &stem.name, build_secrets(ws, stem, &spec.secret_env));
+    let docker = c.docker().await.map_err(|e| runtime_error(&stem.name, e))?;
+    docker
+        .build(&spec)
+        .await
+        .map_err(|e| runtime_error(&stem.name, e))?;
+    lock(&c.prebuilt).insert(stem.name.clone());
+    let tag = spec.build_tag().expect("a build spec has a tag");
+    Ok(BTreeMap::from([("STEMS_IMAGE".to_string(), tag)]))
 }
 
 /// `STEMS_IMAGES=svc=image[,svc=image]` and, when the stem's own service
@@ -863,10 +907,20 @@ pub(crate) fn start_spec(
         }
         _ => {
             let mut spec = container_spec(ws, stem, &core.run_id, env, host_ports)?;
+            // Built before `setup` in this sequence (51): not again.
+            spec.prebuilt = spec.build.is_some()
+                && core
+                    .runtimes
+                    .containers()
+                    .is_some_and(|c| lock(&c.prebuilt).remove(&stem.name));
             if let Some(b) = spec.build.as_ref() {
                 spec.secret_env = SecretEnv::select(&b.secrets, &spec.env, request_env);
             }
-            if let Some(b) = spec.build.as_ref().filter(|b| b.needs_buildx()) {
+            if let Some(b) = spec
+                .build
+                .as_ref()
+                .filter(|b| b.needs_buildx() && !spec.prebuilt)
+            {
                 check_build_inputs(&stem.name, &b.secrets, &b.allow_read, &spec.env, &|v| {
                     spec.secret_env.0.contains_key(v) || daemon_has_env(v)
                 })?;

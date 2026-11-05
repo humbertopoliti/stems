@@ -32,6 +32,10 @@ Options:
       --no-cascade
           Restart only these stems, even if `restart.cascade` is set
 
+      --pass-env <VAR>
+          Pass these variables of the current shell to the stems (applied last; repeat or
+          comma-separate). Replaces the set they were started with; without it they keep that set
+
   -h, --help
           Print help (see a summary with '-h')
 

@@ -430,9 +430,9 @@ pub struct Dependency {
     pub condition: Condition,
     /// Soft edge.
     pub soft: bool,
-    /// What a hard edge does when `stem` is disabled (46); `skip` (the
+    /// What a hard edge does when `stem` is disabled (46, 51); `start` (the
     /// default) is not serialized.
-    #[serde(default, skip_serializing_if = "crate::types::IfDisabled::is_skip")]
+    #[serde(default, skip_serializing_if = "crate::types::IfDisabled::is_start")]
     pub if_disabled: crate::types::IfDisabled,
     /// Protocol metadata.
     pub protocol: Option<Protocol>,
@@ -776,6 +776,10 @@ pub struct DockerBuild {
     /// substitution (`validate` rejects anything else).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allow_read: Vec<PathBuf>,
+    /// Build before `setup` instead of at start (51); `setup` and
+    /// `pre_start` get the image as `STEMS_IMAGE`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub before_setup: bool,
 }
 
 /// One BuildKit secret (44): `RUN --mount=type=secret,id=<id>` reads it.

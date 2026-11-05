@@ -1565,15 +1565,16 @@ fn enabled_accepts_bools_and_substituted_strings() {
 fn enabled_maybe_is_schema_invalid_and_if_disabled_parses() {
     let ws = Ws::new(&[(
         "stems.yaml",
-        "stems:\n  s: { type: process, command: x, enabled: maybe }\n  a:\n    type: process\n    command: x\n    depends_on: [{ stem: s, if_disabled: start }, s]\n",
+        "stems:\n  s: { type: process, command: x, enabled: maybe }\n  a:\n    type: process\n    command: x\n    depends_on: [{ stem: s, if_disabled: skip }, s]\n",
     )]);
     let r = ws.load();
     assert_eq!(r.diagnostics.len(), 1);
     assert_eq!(r.diagnostics[0].code, codes::SCHEMA_INVALID);
     assert!(r.diagnostics[0].message.contains("got `maybe`"));
     let deps = &r.workspace.stem("a").unwrap().depends_on;
-    assert_eq!(deps[0].if_disabled, stems_config::IfDisabled::Start);
-    assert_eq!(deps[1].if_disabled, stems_config::IfDisabled::Skip);
+    assert_eq!(deps[0].if_disabled, stems_config::IfDisabled::Skip);
+    // `start` is the default (51).
+    assert_eq!(deps[1].if_disabled, stems_config::IfDisabled::Start);
 }
 
 // ---------------------------------------------------------------------------
@@ -1635,7 +1636,7 @@ fn build_secrets_allow_read_and_the_compose_object_form() {
 fn build_keys_of_the_wrong_stem_type_and_secret_shape_are_schema_invalid() {
     let ws = Ws::new(&[(
         "stems.yaml",
-        "stems:\n  d:\n    type: docker\n    build: { context: ., before_setup: true, secrets: [{ id: a, file: f, env: E }, { id: b }] }\n  c: { type: compose, file: compose.yml, build: { context: ., secrets: [{ id: x, file: f }] } }\n",
+        "stems:\n  d:\n    type: docker\n    build: { context: ., services: [d], secrets: [{ id: a, file: f, env: E }, { id: b }] }\n  c: { type: compose, file: compose.yml, build: { context: ., secrets: [{ id: x, file: f }] } }\n  p: { type: process, command: x, build: { before_setup: true } }\n",
     )]);
     let r = ws.load();
     let paths: Vec<String> = r
@@ -1646,10 +1647,37 @@ fn build_keys_of_the_wrong_stem_type_and_secret_shape_are_schema_invalid() {
     assert_eq!(
         paths,
         [
-            "SCHEMA_INVALID stems.d.build.before_setup",
+            "SCHEMA_INVALID stems.d.build.services",
             "SCHEMA_INVALID stems.d.build.secrets[0]",
             "SCHEMA_INVALID stems.d.build.secrets[1]",
             "SCHEMA_INVALID stems.c.build",
+            "SCHEMA_INVALID stems.p.build",
         ]
     );
+    // A process stem builds with its `build` script (`when:`), not `build:`.
+    let p = r.diagnostics.last().unwrap();
+    assert!(
+        p.hint.as_deref().is_some_and(|h| h.contains("build.when")),
+        "{p:?}"
+    );
+}
+
+#[test]
+fn before_setup_on_a_docker_stem_resolves() {
+    // 51: a docker stem may build its image before `setup` too.
+    let ws = Ws::new(&[(
+        "stems.yaml",
+        "stems:\n  d: { type: docker, build: { context: ., before_setup: true } }\n  e: { type: docker, build: { context: . } }\n",
+    )]);
+    let r = ws.load();
+    assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+    let build = |n: &str| match &r.workspace.stem(n).unwrap().runtime {
+        StemRuntime::Docker(d) => d.build.clone().unwrap(),
+        _ => panic!(),
+    };
+    assert!(build("d").before_setup);
+    assert!(!build("e").before_setup);
+    let v = serde_json::to_value(&r.workspace).unwrap();
+    assert_eq!(v["stems"]["d"]["build"]["before_setup"], true);
+    assert!(v["stems"]["e"]["build"].get("before_setup").is_none());
 }

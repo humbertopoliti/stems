@@ -36,7 +36,7 @@ stems.<n>.build (compose)                     true
 stems.<n>.inject_env (compose)                false
 stems.<n>.depends_on[].condition              healthy
 stems.<n>.depends_on[].soft                   false
-stems.<n>.depends_on[].if_disabled            skip
+stems.<n>.depends_on[].if_disabled            start
 stems.<n>.health (absent)                     process: process, docker: docker, compose: docker, external: none
 stems.<n>.health.type                         http if url, command if command, tcp if port, else as for an absent health
 stems.<n>.health.host                         localhost

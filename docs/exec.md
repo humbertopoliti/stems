@@ -42,7 +42,9 @@ environment. A stopped stem is `STEM_NOT_RUNNING` (exit 1): start it with
 `stems start <stem>`, or run on the host with `--host`.
 
 **Where the values come from.** With a daemon running, from the daemon:
-the environment a running stem was started with, its allocated
+the environment a running stem was started with (including the
+`--pass-env` values of its last `up`, which `stems restart` keeps unless
+given `--pass-env` again), its allocated
 `port: auto` ports and its dependencies' evaluated outputs. Without one,
 from the config: fixed ports are known, but an auto port that is not
 allocated (and an output that is not evaluated) stays unresolved — a

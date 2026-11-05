@@ -14,10 +14,12 @@
 //! start yet (already started stems keep running). Cancellation (a `down`
 //! arriving mid-`up`) skips everything not yet started and stops waiting.
 //!
-//! A stem with a hard edge (`if_disabled: skip`, the default) to a disabled
-//! stem is left out of the plan and reported as skipped with reason
-//! `dependency_disabled:<dep>`, and so are its own hard dependants (46).
-//! Those skips are the configuration's intent: they do not make `ok` false.
+//! A hard edge to a disabled stem is dropped: the dependant starts without
+//! it (`if_disabled: start`, the default since 51). With `if_disabled:
+//! skip` the dependant is left out of the plan and reported as skipped with
+//! reason `dependency_disabled:<dep>`, and so are its own hard dependants
+//! (46). Those skips are the configuration's intent: they do not make `ok`
+//! false.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -193,6 +195,9 @@ pub struct RunOptions {
     /// start stems makes on its own (config apply), so each stem reuses
     /// the environment of its last user start.
     pub call_env: Option<super::env::CallEnv>,
+    /// `restart` without `--pass-env` (51): each stem keeps the `--pass-env`
+    /// set of its last user start under `call_env`'s caller environment.
+    pub keep_pass: bool,
     /// Cancels the run.
     pub cancel: CancellationToken,
 }
@@ -392,10 +397,15 @@ async fn one(
             opts.ws.clone(),
             &opts.actor,
             &opts.reason,
-            opts
-                .call_env
-                .clone()
-                .unwrap_or_else(|| cell.info().restart.call_env()),
+            match opts.call_env.clone() {
+                Some(mut call) => {
+                    if opts.keep_pass {
+                        call.pass = cell.info().restart.call_env().pass;
+                    }
+                    call
+                }
+                None => cell.info().restart.call_env(),
+            },
         ) => r,
         () = opts.cancel.cancelled() => return Outcome::Skipped,
     };

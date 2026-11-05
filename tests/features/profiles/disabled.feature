@@ -2,8 +2,9 @@
 Feature: enabled: false removes a stem from profiles and the graph
   A stem disabled in stems.local.yaml is left out of every profile and
   listed last in `status` as `disabled` (46); a soft edge to it is fine, a
-  hard edge to it is a validation warning (DEPENDENCY_DISABLED, 46: `up`
-  skips the dependant). Fixture: tests/fixtures/workspaces/profiles-demo.
+  hard edge to it is a validation warning (DEPENDENCY_DISABLED, 51: `up`
+  starts the dependant without it). Fixture:
+  tests/fixtures/workspaces/profiles-demo.
 
   Scenario: a disabled stem is absent from its profile and disabled in status
     Given the fixture workspace "profiles-demo"

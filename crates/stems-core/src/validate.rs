@@ -185,10 +185,11 @@ pub fn warnings(resolved: &Resolved) -> Vec<Error> {
 }
 
 /// The disabled-stem notes of `validate` (46), with the precise path to
-/// locate each: `DEPENDENCY_DISABLED` for a hard edge (`if_disabled: skip`,
-/// the default) of an enabled stem to a disabled one, which `up`/`start`
-/// skip; `ENABLED_VAR_UNSET` (info) for a stem disabled because its
-/// `enabled:` names an unset environment variable.
+/// locate each: `DEPENDENCY_DISABLED` for a hard edge of an enabled stem to
+/// a disabled one (51: with `if_disabled: start`, the default, the stem
+/// starts without it; with `skip`, `up`/`start` skip it);
+/// `ENABLED_VAR_UNSET` (info) for a stem disabled because its `enabled:`
+/// names an unset environment variable.
 pub fn disabled_warnings(ws: &Workspace) -> Vec<(Error, ConfigPath)> {
     let mut out = Vec::new();
     for stem in ws.stems.values() {
@@ -217,26 +218,34 @@ pub fn disabled_warnings(ws: &Workspace) -> Vec<(Error, ConfigPath)> {
         }
         let deps_path = stem_path(&stem.name).key("depends_on");
         for (i, dep) in stem.depends_on.iter().enumerate() {
-            if dep.soft || dep.if_disabled == IfDisabled::Start {
+            if dep.soft || ws.stem(&dep.stem).is_none_or(|t| t.enabled) {
                 continue;
             }
-            if ws.stem(&dep.stem).is_none_or(|t| t.enabled) {
-                continue;
-            }
-            let e = Error::new(
-                ErrorCode::DependencyDisabled,
-                format!(
-                    "stem `{}` needs `{}`, which is disabled: `up` skips `{}`",
-                    stem.name, dep.stem, stem.name
+            let (s, t) = (&stem.name, &dep.stem);
+            let (message, hint) = match dep.if_disabled {
+                IfDisabled::Start => (
+                    format!(
+                        "stem `{s}` depends on `{t}`, which is disabled; `{s}` starts without it"
+                    ),
+                    format!(
+                        "enable `{t}` if `{s}` needs it (usually in stems.local.yaml), or mark the edge `if_disabled: skip` to leave `{s}` out too"
+                    ),
                 ),
-            )
-            .with_path(deps_path.clone())
-            .with_hint(format!(
-                "enable `{t}` (usually in stems.local.yaml), or mark the edge `if_disabled: start` (start `{s}` anyway) or `soft: true`",
-                t = dep.stem,
-                s = stem.name
-            ))
-            .with_details(json!({ "stem": stem.name, "dependency": dep.stem }));
+                IfDisabled::Skip => (
+                    format!(
+                        "stem `{s}` needs `{t}`, which is disabled: `up` skips `{s}` (`if_disabled: skip`)"
+                    ),
+                    format!(
+                        "enable `{t}` (usually in stems.local.yaml), or drop `if_disabled: skip` from the edge to start `{s}` without it"
+                    ),
+                ),
+            };
+            let e = Error::new(ErrorCode::DependencyDisabled, message)
+                .with_path(deps_path.clone())
+                .with_hint(hint)
+                .with_details(
+                    json!({ "stem": s, "dependency": t, "if_disabled": dep.if_disabled }),
+                );
             out.push((e, deps_path.index(i)));
         }
     }
@@ -327,8 +336,8 @@ impl Validator<'_> {
                     self.push(e, Some(&at));
                     continue;
                 };
-                // A hard edge to a disabled stem is a warning (46, in
-                // [`warnings`]): `up` skips the dependant.
+                // A hard edge to a disabled stem is a warning (46, 51, in
+                // [`warnings`]): the dependant starts without it.
                 if dep.condition == Condition::Seeded && !target.scripts.contains_key("seed") {
                     let e = Error::new(
                         ErrorCode::SeededWithoutSeed,

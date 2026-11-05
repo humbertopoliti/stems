@@ -59,8 +59,8 @@ pub fn port_name(i: usize) -> String {
 pub const DEP_CONDITION: Condition = Condition::Healthy;
 /// `depends_on[].soft`.
 pub const DEP_SOFT: bool = false;
-/// `depends_on[].if_disabled` (46).
-pub const DEP_IF_DISABLED: crate::types::IfDisabled = crate::types::IfDisabled::Skip;
+/// `depends_on[].if_disabled` (46; `start` since 51).
+pub const DEP_IF_DISABLED: crate::types::IfDisabled = crate::types::IfDisabled::Start;
 
 /// Health `type` when a stem declares no `health:` at all (`None`: no check).
 pub fn health_type_for(kind: StemType) -> Option<HealthType> {

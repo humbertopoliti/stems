@@ -759,13 +759,15 @@ impl Supervisor {
         reason: &str,
     ) -> UpResult {
         let call = env::CallEnv::new(p.caller_env.clone(), p.pass_env.clone());
-        self.run_plan_with(plan, ws, p, actor, reason, Some(call))
+        self.run_plan_with(plan, ws, p, actor, reason, Some(call), false)
             .await
     }
 
     /// [`Self::run_plan`] with an explicit environment; `None`: each stem
     /// reuses the one of its last user start (a start stems makes on its
-    /// own, 37).
+    /// own, 37). `keep_pass` (`restart` without `--pass-env`, 51): each
+    /// stem keeps the `--pass-env` set of its last user start.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn run_plan_with(
         &self,
         plan: &Plan,
@@ -774,6 +776,7 @@ impl Supervisor {
         actor: &str,
         reason: &str,
         call_env: Option<env::CallEnv>,
+        keep_pass: bool,
     ) -> UpResult {
         let cells = self.cells_for(&plan.order);
         let opts = schedule::RunOptions {
@@ -784,6 +787,7 @@ impl Supervisor {
             max_parallel: p.max_parallel.unwrap_or(DEFAULT_MAX_PARALLEL),
             deadline: ms(p.timeout_ms).map(|d| tokio::time::Instant::now() + d),
             call_env,
+            keep_pass,
             cancel: self.token(),
         };
         let mut res = schedule::run(plan, &cells, &opts).await;
@@ -872,7 +876,8 @@ impl Supervisor {
             return Err(f.error);
         }
         if p.build == Some(true) {
-            let call = env::CallEnv::new(p.caller_env.clone(), BTreeMap::new());
+            let pass = p.pass_env.clone().unwrap_or_default();
+            let call = env::CallEnv::new(p.caller_env.clone(), pass);
             let b = self.build_stems(&ws, &p.stems, &call, actor).await;
             // A failed `soft_fail` build does not stop the start (41).
             let soft = |n: &str| {
@@ -897,11 +902,17 @@ impl Supervisor {
             stems: p.stems.clone(),
             timeout_ms: p.timeout_ms,
             build: p.build,
+            pass_env: p.pass_env.clone().unwrap_or_default(),
             caller_env: p.caller_env.clone(),
             ..UpParams::default()
         };
         self.begin_build(p.build);
-        let mut res = self.run_plan(plan, &ws, &up, actor, "restart").await;
+        // Without `--pass-env`, each stem keeps the set of its last start (51).
+        let call = env::CallEnv::new(up.caller_env.clone(), up.pass_env.clone());
+        let keep_pass = p.pass_env.is_none();
+        let mut res = self
+            .run_plan_with(plan, &ws, &up, actor, "restart", Some(call), keep_pass)
+            .await;
         for n in &p.stems {
             self.cell(n).info().built_in_request = false;
         }

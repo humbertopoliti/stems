@@ -321,6 +321,13 @@ pub struct RestartParams {
     /// `restart.cascade`; `true`/`false` overrides it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cascade: Option<bool>,
+    /// Shell environment passed through (`--pass-env`), applied last
+    /// (FR-ST-4, 51). Given (even empty), it replaces the set each stem was
+    /// last started with; absent, each stem keeps that set. CLI only (not
+    /// an MCP tool argument).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    pub pass_env: Option<BTreeMap<String, String>>,
     /// The environment of the `stems` command (37): the base layer of
     /// everything this request starts (scripts, processes, command probes),
     /// minus `STEMS_*`. Absent: the daemon's own environment.

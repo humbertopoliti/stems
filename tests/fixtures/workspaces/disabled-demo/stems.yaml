@@ -1,11 +1,11 @@
 # disabled-demo — fixture for tests/features/config/disabled.feature
-# (FR-WS-8, deliverable 46).
+# (FR-WS-8, deliverables 46 and 51).
 #
 # `search` is enabled only when WITH_SEARCH is truthy (unset = disabled).
-# `api` needs it (a hard edge, `if_disabled: skip` by default) and
-# `postgres`: with search disabled, `up` skips api. `worker` has an
-# `if_disabled: start` edge to search: it starts either way. Each stem is a
-# tiny Python HTTP server.
+# `api` depends on it and on `postgres` (plain hard edges, `if_disabled:
+# start` by default): with search disabled, api starts without it. `worker`
+# has an `if_disabled: skip` edge to search: `up` skips it while search is
+# disabled. Each stem is a tiny Python HTTP server.
 schema_version: 1
 name: disabled-demo
 
@@ -35,7 +35,7 @@ stems:
     stop_grace: 1s
   worker:
     type: process
-    depends_on: [{ stem: search, if_disabled: start }]
+    depends_on: [{ stem: search, if_disabled: skip }]
     ports: [{ name: http, port: 18474 }]
     scripts:
       start: python3 -m http.server ${stem.self.port} --bind 127.0.0.1

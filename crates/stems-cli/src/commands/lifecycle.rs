@@ -430,12 +430,7 @@ async fn up_async(
     stdout: &mut dyn Write,
 ) -> Result<CommandOutput, Errors> {
     let timeout = parse_timeout(args.timeout.as_deref())?;
-    let pass_env: BTreeMap<String, String> = args
-        .pass_env
-        .iter()
-        .filter(|k| !k.is_empty())
-        .filter_map(|k| ctx.env.get(k).map(|v| (k.clone(), v.clone())))
-        .collect();
+    let pass_env = pass_env(ctx, &args.pass_env);
     if args.profile.is_some() && !args.stems.is_empty() {
         return Err(Error::usage(
             "`--profile` cannot be combined with stem names",
@@ -875,6 +870,15 @@ pub fn stop(ctx: &Ctx, args: &StopArgs) -> CommandOutput {
     .unwrap_or_else(CommandOutput::failed)
 }
 
+/// The `--pass-env` variables set in the caller's shell, with their values.
+fn pass_env(ctx: &Ctx, names: &[String]) -> BTreeMap<String, String> {
+    names
+        .iter()
+        .filter(|k| !k.is_empty())
+        .filter_map(|k| ctx.env.get(k).map(|v| (k.clone(), v.clone())))
+        .collect()
+}
+
 /// `stems restart`.
 pub fn restart(ctx: &Ctx, args: &RestartArgs) -> CommandOutput {
     block_on(async {
@@ -886,6 +890,7 @@ pub fn restart(ctx: &Ctx, args: &RestartArgs) -> CommandOutput {
             build: args.build_flag(),
             timeout_ms: ms(timeout),
             cascade: args.cascade_flag(),
+            pass_env: args.pass_env.as_deref().map(|names| pass_env(ctx, names)),
             caller_env: Some(super::exec::caller_env(&ctx.env)),
         };
         let bound = grace_sum(ctx) + timeout.unwrap_or(LONG);

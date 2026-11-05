@@ -242,6 +242,35 @@ stems:
 Compose stems take the same `secrets`/`allow_read` in the object form of
 their `build:` and are built with Bake ([compose.md](compose.md#build-secrets-extra-services-and-before_setup-bake)).
 
+### Building before `setup` (`before_setup`)
+
+```yaml
+stems:
+  api:
+    type: docker
+    build: { context: "${codebase}", before_setup: true }   # default false: build at start
+    scripts:
+      setup: docker run --rm "$STEMS_IMAGE" python3 manage.py migrate
+```
+
+- **`before_setup: true`** moves the build to the front of the start
+  sequence: `[build image] → setup → pre_start → start` (the `docker.build`
+  events come before `stem.state setup`). The image is the run's tag
+  (`stems/<ws>/<stem>:<run_id>`), built the same way as at start (Engine
+  API, or `buildx` with `secrets`/`allow_read`, with the same input
+  checks); `setup` and `pre_start` get it as `STEMS_IMAGE` (the container
+  itself does not).
+- The container start that follows runs that image without building it
+  again: one build per start (the stem is marked as built for that one
+  start; a failed or cancelled `setup`/`pre_start` drops the mark). A
+  `restart` whose container is kept (spec unchanged) is recreated when the
+  rebuilt image differs from the one it runs. A policy respawn builds again
+  (before its `pre_start`), as every docker build start does.
+- A stem without any lifecycle script builds at start, as without
+  `before_setup`.
+- On a process stem `build:` is `SCHEMA_INVALID`; build there with a
+  `build` script and `when: changed|always` ([scripts.md](scripts.md#build-in-the-start-sequence-when)).
+
 ## Handles
 
 `Handle::Container { id, container_id, name }`: `pid()`/`pgid()` are `0` and

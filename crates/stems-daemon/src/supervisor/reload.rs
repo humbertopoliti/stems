@@ -981,7 +981,7 @@ impl Supervisor {
                 Ok(p) => {
                     let up = self
                         // Restarts keep the environment of the last user start.
-                        .run_plan_with(&p, &new, &UpParams::default(), actor, APPLY_REASON, None)
+                        .run_plan_with(&p, &new, &UpParams::default(), actor, APPLY_REASON, None, false)
                         .await;
                     for n in up.ready {
                         let action = action_of(&n);

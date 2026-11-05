@@ -176,27 +176,36 @@ fn seeded_without_seed_and_disabled_dependencies() {
     // A hard edge to a disabled stem is no longer an error (46) ...
     let es = ws.check();
     assert_eq!(codes(&es), ["SEEDED_WITHOUT_SEED"]);
-    // ... but a warning, located at the edge.
+    // ... but a warning, located at the edge: api starts without it (51).
     let w = stems_core::validate::warnings(&ws.load());
     assert_eq!(codes(&w), ["DEPENDENCY_DISABLED"]);
     assert_eq!(paths(&w), ["stems.api.depends_on"]);
     assert_eq!(
         w[0].details,
-        serde_json::json!({ "stem": "api", "dependency": "off" })
+        serde_json::json!({ "stem": "api", "dependency": "off", "if_disabled": "start" })
+    );
+    assert_eq!(
+        w[0].message,
+        "stem `api` depends on `off`, which is disabled; `api` starts without it"
     );
 }
 
 #[test]
-fn if_disabled_start_and_unset_enabled_variables() {
+fn if_disabled_skip_and_unset_enabled_variables() {
     let ws = Ws::new(
-        "stems:\n  search: { type: process, command: x, enabled: \"${env.WITH_SEARCH}\" }\n  api:\n    type: process\n    command: x\n    depends_on: [{ stem: search, if_disabled: start }]\n",
+        "stems:\n  search: { type: process, command: x, enabled: \"${env.WITH_SEARCH}\" }\n  api:\n    type: process\n    command: x\n    depends_on: [{ stem: search, if_disabled: skip }]\n",
         &[],
     );
     assert!(ws.check().is_empty());
     let r = ws.load();
     let w = stems_core::validate::warnings(&r);
-    assert_eq!(codes(&w), ["ENABLED_VAR_UNSET"]);
-    assert_eq!(paths(&w), ["stems.search.enabled"]);
+    assert_eq!(codes(&w), ["ENABLED_VAR_UNSET", "DEPENDENCY_DISABLED"]);
+    assert_eq!(
+        w[1].message,
+        "stem `api` needs `search`, which is disabled: `up` skips `api` (`if_disabled: skip`)"
+    );
+    assert_eq!(w[1].details["if_disabled"], "skip");
+    assert_eq!(paths(&w), ["stems.search.enabled", "stems.api.depends_on"]);
     assert_eq!(w[0].message, "search disabled: WITH_SEARCH is unset");
     assert_eq!(w[0].details["level"], "info");
 }

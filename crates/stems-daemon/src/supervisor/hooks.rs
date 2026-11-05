@@ -399,9 +399,9 @@ pub(crate) async fn before_start(
     r
 }
 
-/// `build.before_setup` of a compose stem (44): build its images before
-/// `setup` (`docker.build` events) and give the scripts that follow
-/// `STEMS_IMAGES`/`STEMS_IMAGE`. `None`: nothing to do (the env is as is).
+/// `build.before_setup` of a docker or compose stem (44, 51): build its
+/// image(s) before `setup` (`docker.build` events) and give the scripts that
+/// follow `STEMS_IMAGE` (compose: also `STEMS_IMAGES`). `None`: nothing to do (the env is as is).
 async fn build_images_before_setup(
     core: &Core,
     cell: &StemCell,

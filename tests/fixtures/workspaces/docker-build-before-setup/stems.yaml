@@ -1,0 +1,24 @@
+# docker-build-before-setup — the docker-build fixture with
+# `build.before_setup: true` (deliverable 51,
+# tests/features/docker/build-before-setup.feature; needs Docker:
+# `make e2e-docker`). The image `stems/docker-build-before-setup/api:<run_id>`
+# is built before `setup`, which gets it as STEMS_IMAGE; the start that
+# follows runs that image without building it again.
+schema_version: 1
+name: docker-build-before-setup
+
+stems:
+  api:
+    type: docker
+    build: { context: ../../../../examples/repos/shop-api, before_setup: true }
+    ports: [{ name: http, port: 18536, container_port: 8080 }]
+    scripts:
+      setup: echo "STEMS_IMAGE=$STEMS_IMAGE"
+    health:
+      type: http
+      url: "http://127.0.0.1:18536/healthz"
+      interval: 400ms
+      timeout: 300ms
+      retries: 5
+      start_timeout: 180s
+    stop_grace: 2s

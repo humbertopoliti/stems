@@ -915,3 +915,69 @@ async fn env_build_secrets_read_the_requesting_commands_env() {
         "never the container's"
     );
 }
+
+/// A one-stem workspace in a temp dir with a Dockerfile, its supervisor and
+/// containers (Docker unreachable).
+fn docker_ws(yaml: &str) -> (Arc<Supervisor>, Arc<Containers>, Arc<OneWs>) {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Dockerfile"), "FROM scratch\n").unwrap();
+    std::fs::write(dir.path().join("stems.yaml"), yaml).unwrap();
+    let ws = stems_config::load(stems_config::LoadOptions {
+        workspace: Some(dir.path().to_path_buf()),
+        cwd: dir.path().to_path_buf(),
+        env: Default::default(),
+        skip_local: true,
+    })
+    .unwrap();
+    let c = Arc::new(Containers::new(
+        unavailable(Arc::new(AtomicUsize::new(0))),
+        dir.path().join("compose"),
+    ));
+    let reg = RuntimeRegistry::default().with_containers(c.clone());
+    let host = Arc::new(OneWs {
+        ws: Arc::new(ws),
+        dir,
+    });
+    let sup = Supervisor::new(
+        Arc::new(EventBus::default()),
+        host.clone(),
+        reg,
+        Arc::new(Ready),
+    );
+    (sup, c, host)
+}
+
+#[tokio::test]
+async fn a_docker_before_setup_build_runs_before_setup() {
+    // 51: the image is built first; when that fails, `setup` never runs.
+    let (sup, c, host) = docker_ws(
+        "schema_version: 1\nname: bs\nstems:\n  d:\n    type: docker\n    build: { context: ., before_setup: true }\n    scripts: { setup: 'touch setup-ran' }\n",
+    );
+    let res = sup.up(up(&["d"]), "cli:t").await.unwrap();
+    assert!(!res.ok, "{res:?}");
+    assert_eq!(res.failed[0].error.code, ErrorCode::DockerUnavailable);
+    assert!(!host.dir.path().join("setup-ran").exists(), "setup ran");
+    assert!(!lock(&c.prebuilt).contains("d"));
+}
+
+#[tokio::test]
+async fn a_docker_start_after_a_before_setup_build_does_not_build_again() {
+    // 51: the marker makes the start skip the build (and its input checks:
+    // the build already had them); it is consumed by that one start.
+    let (sup, c, host) = docker_ws(
+        "schema_version: 1\nname: bs\nstems:\n  d:\n    type: docker\n    build: { context: ., before_setup: true, secrets: [{ id: tok, env: STEMS_TEST_NEVER_SET_TOK }] }\n",
+    );
+    let stem = host.ws.workspace.stem("d").unwrap();
+    let none = BTreeMap::new();
+    lock(&c.prebuilt).insert("d".into());
+    let StartSpec::Docker(spec) =
+        start_spec(&sup.core, &host.ws.workspace, stem, &none, &none, &[]).unwrap()
+    else {
+        panic!("docker spec");
+    };
+    assert!(spec.prebuilt);
+    assert!(!lock(&c.prebuilt).contains("d"), "consumed");
+    // The next start (e.g. a policy respawn without the step) builds again.
+    let e = start_spec(&sup.core, &host.ws.workspace, stem, &none, &none, &[]).unwrap_err();
+    assert_eq!(e.details["env"], "STEMS_TEST_NEVER_SET_TOK");
+}

@@ -50,10 +50,10 @@ UNKNOWN_DEPENDENCY: stem `shop-api` depends on `postgres`, which is not defined
   at stems.yaml:12:5 (stems.shop-api.depends_on)
   hint: define a stem named `postgres` under `stems:` or remove it from stems.shop-api.depends_on
 
-# exit 2 — an enabled stem has a hard `depends_on` edge to a disabled stem, so `up`/`start` skip it (unless the edge says `if_disabled: start`; a warning)
-DEPENDENCY_DISABLED: stem `shop-web` needs `shop-api`, which is disabled: `up` skips `shop-web`
+# exit 2 — an enabled stem has a hard `depends_on` edge to a disabled stem: it starts without it, or is skipped by `up`/`start` if the edge says `if_disabled: skip` (a warning)
+DEPENDENCY_DISABLED: stem `shop-web` depends on `shop-api`, which is disabled; `shop-web` starts without it
   at stems.yaml:40:5 (stems.shop-web.depends_on)
-  hint: enable `shop-api` (usually in stems.local.yaml), or mark the edge `if_disabled: start` (start `shop-web` anyway) or `soft: true`
+  hint: enable `shop-api` if `shop-web` needs it (usually in stems.local.yaml), or mark the edge `if_disabled: skip` to leave `shop-web` out too
 
 # exit 2 — a stem's `enabled:` names an environment variable that is unset, so the stem is disabled (an info note)
 ENABLED_VAR_UNSET: search disabled: WITH_SEARCH is unset

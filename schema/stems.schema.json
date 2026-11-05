@@ -1555,7 +1555,7 @@
           ]
         },
         "if_disabled": {
-          "description": "When the target is disabled (hard edges only, 46): `skip` (default)\nskips this stem on `up`/`start`; `start` starts it anyway.",
+          "description": "When the target is disabled (hard edges only, 46, 51): `start`\n(default) starts this stem without it; `skip` skips this stem on\n`up`/`start`.",
           "anyOf": [
             {
               "$ref": "#/$defs/IfDisabled"
@@ -1617,15 +1617,15 @@
       ]
     },
     "IfDisabled": {
-      "description": "What a hard `depends_on` edge does when its target is disabled (46).",
+      "description": "What a hard `depends_on` edge does when its target is disabled (46, 51).",
       "oneOf": [
         {
-          "description": "The dependant is skipped by `up`/`start` (`dependency_disabled:<dep>`).",
+          "description": "The dependant is skipped by `up`/`start` (`dependency_disabled:<dep>`),\nand so are its own hard dependants.",
           "type": "string",
           "const": "skip"
         },
         {
-          "description": "The dependant starts anyway; the edge is dropped.",
+          "description": "The dependant starts without it (the default): the edge is dropped.",
           "type": "string",
           "const": "start"
         }
@@ -2229,13 +2229,13 @@
           "type": "boolean"
         },
         {
-          "description": "Build settings (docker: `context`, `dockerfile`; compose:\n`services`, `before_setup`; both: `secrets`, `allow_read`).",
+          "description": "Build settings (docker: `context`, `dockerfile`; compose:\n`services`; both: `before_setup`, `secrets`, `allow_read`).",
           "$ref": "#/$defs/BuildSpec"
         }
       ]
     },
     "BuildSpec": {
-      "description": "Build settings of a docker stem (`context`, `dockerfile`) or a compose\nstem (`services`, `before_setup`); `secrets` and `allow_read` apply to\nboth (44).",
+      "description": "Build settings of a docker stem (`context`, `dockerfile`) or a compose\nstem (`services`); `before_setup`, `secrets` and `allow_read` apply to\nboth (44, 51).",
       "type": "object",
       "properties": {
         "context": {
@@ -2263,7 +2263,7 @@
           }
         },
         "before_setup": {
-          "description": "(compose) Build the images before `setup` (default `false`: at\nstart); `setup` then gets `STEMS_IMAGE` and `STEMS_IMAGES`.",
+          "description": "Build the image(s) before `setup` (default `false`: at start);\n`setup` and `pre_start` then get `STEMS_IMAGE` (compose: also\n`STEMS_IMAGES`). Docker and compose stems only.",
           "type": [
             "boolean",
             "null"
