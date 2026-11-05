@@ -7,18 +7,25 @@
 //! `unknown` for external stems) or failed. Tasks are spawned in
 //! `start_order()` layer order so permits go to earlier layers first.
 //!
-//! A dependency that failed or was skipped skips its dependants. With
+//! A dependency that failed or was skipped skips its dependants; one that is
+//! ready but whose `soft_fail` seed failed (41) skips its `condition:
+//! seeded` dependants (reason `seed_degraded`). With
 //! fail-fast, the first failure also skips every stem that has not asked to
 //! start yet (already started stems keep running). Cancellation (a `down`
 //! arriving mid-`up`) skips everything not yet started and stops waiting.
+//!
+//! A stem with a hard edge (`if_disabled: skip`, the default) to a disabled
+//! stem is left out of the plan and reported as skipped with reason
+//! `dependency_disabled:<dep>`, and so are its own hard dependants (46).
+//! Those skips are the configuration's intent: they do not make `ok` false.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::json;
 use stems_api::{StemFailure, UpResult};
-use stems_config::{Condition, Resolved, StemType};
+use stems_config::{Condition, IfDisabled, Resolved, StemType};
 use stems_core::{Error, ErrorCode, SelectOptions, Selection, StemState, WorkspaceGraph};
 use tokio::sync::{Semaphore, watch};
 use tokio::task::JoinSet;
@@ -36,6 +43,11 @@ pub struct Plan {
     pub layers: Vec<Vec<String>>,
     /// Hard dependencies inside the plan, with their condition.
     pub deps: HashMap<String, Vec<(String, Condition)>>,
+    /// Stems left out because a hard dependency, direct or not, is disabled
+    /// (46): `(stem, disabled dependency)`, in start order.
+    pub disabled_skips: Vec<(String, String)>,
+    /// Disabled stems the selection covers (46, `UpResult::disabled`).
+    pub disabled: Vec<String>,
 }
 
 /// The plan for `requested` (all enabled stems if empty), adding hard
@@ -53,7 +65,9 @@ pub fn plan(ws: &Resolved, requested: &[String], no_deps: bool) -> Result<Plan, 
         strict_profiles: None,
     };
     let sel = Selection::resolve(w, None, &names, opts)?;
-    plan_closure(ws, &sel.closure)
+    let mut plan = plan_closure(ws, &sel.closure)?;
+    plan.disabled = disabled_of(ws, &sel.closure, requested.is_empty(), &[]);
+    Ok(plan)
 }
 
 /// The plan of `up`: `requested` stems, else the profile (`profile`, which
@@ -65,13 +79,65 @@ pub fn plan_up(
     requested: &[String],
 ) -> Result<(Plan, Selection), Error> {
     let sel = Selection::resolve(&ws.workspace, profile, requested, SelectOptions::default())?;
-    Ok((plan_closure(ws, &sel.closure)?, sel))
+    let mut plan = plan_closure(ws, &sel.closure)?;
+    let everything = requested.is_empty() && sel.profile.is_none();
+    plan.disabled = disabled_of(ws, &sel.closure, everything, &sel.disabled);
+    Ok((plan, sel))
+}
+
+/// The disabled stems a selection covers (46), in declaration order: every
+/// disabled stem when `everything` was selected, else `members` (a
+/// profile's disabled members) and the disabled targets of the edges of
+/// `closure`.
+fn disabled_of(
+    ws: &Resolved,
+    closure: &[String],
+    everything: bool,
+    members: &[String],
+) -> Vec<String> {
+    let w = &ws.workspace;
+    let mut set: HashSet<&str> = members.iter().map(String::as_str).collect();
+    for n in closure {
+        if let Some(s) = w.stem(n) {
+            set.extend(s.depends_on.iter().map(|d| d.stem.as_str()));
+        }
+    }
+    w.disabled_stems()
+        .filter(|s| everything || set.contains(s.name.as_str()))
+        .map(|s| s.name.clone())
+        .collect()
 }
 
 /// Layers and edges for an already closed set of stems.
 fn plan_closure(ws: &Resolved, closure: &[String]) -> Result<Plan, Error> {
     let w = &ws.workspace;
-    let set: HashSet<String> = closure.iter().cloned().collect();
+    let mut set: HashSet<String> = closure.iter().cloned().collect();
+    // Hard edges to disabled stems skip the dependant, transitively over
+    // hard edges (46). Layers are in dependency order, so a dependency's
+    // verdict is known before its dependants'.
+    let mut skips: Vec<(String, String)> = Vec::new();
+    for n in w.start_order()?.into_iter().flatten() {
+        if !set.contains(&n) {
+            continue;
+        }
+        let Some(s) = w.stem(&n) else { continue };
+        let cause = s.depends_on.iter().filter(|d| !d.soft).find_map(|d| {
+            if w.stem(&d.stem).is_some_and(|t| !t.enabled) {
+                (d.if_disabled == IfDisabled::Skip).then(|| d.stem.clone())
+            } else {
+                skips
+                    .iter()
+                    .find(|(k, _)| *k == d.stem)
+                    .map(|(_, why)| why.clone())
+            }
+        });
+        if let Some(dep) = cause {
+            skips.push((n, dep));
+        }
+    }
+    for (n, _) in &skips {
+        set.remove(n);
+    }
     let layers: Vec<Vec<String>> = w
         .start_order()?
         .into_iter()
@@ -103,6 +169,8 @@ fn plan_closure(ws: &Resolved, closure: &[String]) -> Result<Plan, Error> {
         order,
         layers,
         deps,
+        disabled_skips: skips,
+        disabled: Vec::new(),
     })
 }
 
@@ -121,8 +189,10 @@ pub struct RunOptions {
     pub max_parallel: usize,
     /// Overall deadline.
     pub deadline: Option<Instant>,
-    /// `--pass-env` values.
-    pub pass_env: BTreeMap<String, String>,
+    /// The caller's environment and `--pass-env` values (37); `None`: a
+    /// start stems makes on its own (config apply), so each stem reuses
+    /// the environment of its last user start.
+    pub call_env: Option<super::env::CallEnv>,
     /// Cancels the run.
     pub cancel: CancellationToken,
 }
@@ -134,29 +204,44 @@ enum Stage {
     /// `healthy`, `post_start`/`seed` still running (16).
     Healthy,
     Ready,
+    /// Ready, but its `soft_fail` seed failed: not seeded (41).
+    Unseeded,
     Failed,
     Skipped,
+    /// Skipped because of a soft-failed seed upstream (`seed_degraded`).
+    SkippedSeed,
 }
 
 impl Stage {
     fn satisfies(self, c: Condition) -> bool {
         match c {
-            Condition::Started => matches!(self, Stage::Started | Stage::Healthy | Stage::Ready),
-            Condition::Healthy => matches!(self, Stage::Healthy | Stage::Ready),
+            Condition::Started => matches!(
+                self,
+                Stage::Started | Stage::Healthy | Stage::Ready | Stage::Unseeded
+            ),
+            Condition::Healthy => matches!(self, Stage::Healthy | Stage::Ready | Stage::Unseeded),
             // Ready = the whole start sequence, seed included (16).
             Condition::Seeded => self == Stage::Ready,
         }
     }
     fn is_bad(self) -> bool {
-        matches!(self, Stage::Failed | Stage::Skipped)
+        matches!(self, Stage::Failed | Stage::Skipped | Stage::SkippedSeed)
     }
 }
 
 enum Outcome {
     Ready,
+    /// Ready, not seeded (its `soft_fail` seed failed, 41).
+    Unseeded,
     Failed(Error),
     Skipped,
+    /// Skipped for a reason other than a failed dependency (41).
+    SkippedBecause(&'static str),
 }
+
+/// `skipped_reasons` value: a `condition: seeded` dependency (or one of its
+/// skipped dependants) is ready but its `soft_fail` seed failed (41).
+const SEED_DEGRADED: &str = "seed_degraded";
 
 async fn until(deadline: Option<Instant>) {
     match deadline {
@@ -213,8 +298,10 @@ pub async fn run(
             };
             let stage = match &out {
                 Outcome::Ready => Stage::Ready,
+                Outcome::Unseeded => Stage::Unseeded,
                 Outcome::Failed(_) => Stage::Failed,
-                Outcome::Skipped => Stage::Skipped,
+                Outcome::SkippedBecause(SEED_DEGRADED) => Stage::SkippedSeed,
+                Outcome::Skipped | Outcome::SkippedBecause(_) => Stage::Skipped,
             };
             stages[&name].send_replace(stage);
             (i, name, out)
@@ -231,14 +318,29 @@ pub async fn run(
     let mut res = UpResult::default();
     for (_, name, out) in outs {
         match out {
-            Outcome::Ready => res.ready.push(name),
+            Outcome::Ready | Outcome::Unseeded => res.ready.push(name),
             Outcome::Failed(error) => res.failed.push(StemFailure { stem: name, error }),
             Outcome::Skipped => res.skipped.push(name),
+            Outcome::SkippedBecause(why) => {
+                res.skipped_reasons.insert(name.clone(), why.to_string());
+                res.skipped.push(name);
+            }
         }
     }
     res.ok = res.failed.is_empty() && res.skipped.is_empty();
+    // Skips for a disabled dependency are the config's intent (46).
+    for (name, dep) in &plan.disabled_skips {
+        res.skipped_reasons
+            .insert(name.clone(), format!("{DEPENDENCY_DISABLED}{dep}"));
+        res.skipped.push(name.clone());
+    }
+    res.disabled = plan.disabled.clone();
     res
 }
+
+/// Prefix of the `skipped_reasons` value of a stem skipped because a hard
+/// dependency is disabled (46): `dependency_disabled:<dep>`.
+pub const DEPENDENCY_DISABLED: &str = "dependency_disabled:";
 
 async fn one(
     name: &str,
@@ -251,11 +353,17 @@ async fn one(
 ) -> Outcome {
     for (dep, cond) in deps {
         let mut rx = stages[dep].subscribe();
+        let unseeded = |s: Stage| s == Stage::Unseeded && *cond == Condition::Seeded;
         let r = tokio::select! {
-            r = rx.wait_for(|s| s.satisfies(*cond) || s.is_bad()) => r.map(|s| *s).unwrap_or(Stage::Skipped),
+            r = rx.wait_for(|s| s.satisfies(*cond) || s.is_bad() || unseeded(*s)) => r.map(|s| *s).unwrap_or(Stage::Skipped),
             () = opts.cancel.cancelled() => return Outcome::Skipped,
             () = until(opts.deadline) => return Outcome::Failed(timeout_error(name)),
         };
+        // Skipped (transitively) because a `condition: seeded` dependency's
+        // `soft_fail` seed failed: the reason says so all the way down.
+        if unseeded(r) || r == Stage::SkippedSeed {
+            return Outcome::SkippedBecause(SEED_DEGRADED);
+        }
         if r.is_bad() {
             return Outcome::Skipped;
         }
@@ -280,11 +388,14 @@ async fn one(
     // The start includes `setup`/`pre_start` (16), which may take long: a
     // cancellation (`down`) must not wait for it (the stop kills the script).
     let started = tokio::select! {
-        r = cell.start(
+        r = cell.start_with(
             opts.ws.clone(),
             &opts.actor,
             &opts.reason,
-            opts.pass_env.clone(),
+            opts
+                .call_env
+                .clone()
+                .unwrap_or_else(|| cell.info().restart.call_env()),
         ) => r,
         () = opts.cancel.cancelled() => return Outcome::Skipped,
     };
@@ -321,6 +432,7 @@ async fn one(
         break p.state;
     };
     match end {
+        StemState::Healthy if super::hooks::seed_soft_failed(cell) => Outcome::Unseeded,
         StemState::Healthy => Outcome::Ready,
         StemState::Unknown | StemState::Unhealthy if external => Outcome::Ready,
         other => fail(cell.error().unwrap_or_else(|| {

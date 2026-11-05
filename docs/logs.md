@@ -144,11 +144,36 @@ the current directory):
 With `--since`, older events and log records are left out.
 
 **Redaction.** In every environment map of the config (`env`, `local_env`,
-any `*_env`, `environment`), values whose key matches
-`(?i)(secret|token|password|passwd|key)` are replaced by `"<redacted>"`
-(`stems_daemon::logs::export::redact` takes extra patterns: the hook for
-later secrets work). Log lines themselves are not redacted: review a bundle
-before sharing it.
+any `*_env`, `environment`), values of secret names are replaced by
+`"<redacted>"` — the same `stems_core::redact::Redactor` as `stems show`
+(47, [config.md](config.md#secrets): built-in patterns, `secrets:`,
+`redaction:`). Compared with the old key regex
+`(?i)(secret|token|password|passwd|key)`, `*CREDENTIAL*` and `*APIKEY*`
+names are now redacted too, while a name merely containing `KEY` (e.g.
+`KEYCLOAK_URL`, `MONKEY`) no longer is. Log lines are scrubbed at capture
+(below); review a bundle before sharing it anyway.
+
+## Secret redaction
+
+Before a line of a stem's output (or of its scripts) is parsed and stored,
+every secret **value** of that stem's configured env — names decided as in
+[config.md](config.md#secrets), values from its `env:` (which includes the
+workspace `env:` and `stems.local.yaml`) and its `env_files` (read when the
+config is loaded), at least 6 characters long — is
+replaced by `<redacted:KEY>`. A docker/compose image build's output lines
+(`docker.build` events) are scrubbed the same way, of those values and of
+the `{id, env}` build-secret values taken from the caller's shell. The scrubbing happens once, at ingest, so the
+log files, `stems logs`, `--follow`, the TUI, `--export` and the MCP log
+resource all see the same redacted text. It is per stem: a stem's log is
+scrubbed of its own values only.
+
+Limits, stated plainly: values shorter than 6 characters are left alone
+(too likely to match ordinary text); a value split across lines, printed
+encoded (base64, URL-encoded, JSON-escaped) or transformed is not caught;
+values that come from `--pass-env`, the caller's shell (other than build
+secrets) or a dependency's secret output are not scrubbed (secret outputs never reach
+the logs in the first place); lines written before the workspace was
+(re)loaded keep what they had.
 
 ## Scripts (deliverable 16; 17 for custom scripts)
 
@@ -159,3 +184,5 @@ script runner (`stems_daemon::scripts::ScriptRunner`, [scripts.md](scripts.md))
 forwards stdout and stderr of every lifecycle script this way. Workspace
 scripts (`bootstrap`, `teardown`) log under the pseudo-stem `_workspace`:
 `stems logs _workspace --script bootstrap`.
+
+See also: [Dashboard](tui.md) · [Metrics](metrics.md) · [Protocol](protocol.md) · [What stems can do](features.md)

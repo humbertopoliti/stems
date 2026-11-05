@@ -182,6 +182,66 @@ same inputs ([doctor.md](doctor.md), [compose.md](compose.md#stale-images)).
 Docker `build:` stems always rebuild on start, so for them the check is
 informational.
 
+### Build secrets and paths outside the context (`buildx`)
+
+A build that needs a private credential or a file outside its context
+declares them instead of going through a wrapper script:
+
+```yaml
+stems:
+  api:
+    type: docker
+    build:
+      context: "${codebase}"
+      dockerfile: "${workspace.root}/../infra/Dockerfile.api"   # may live elsewhere
+      secrets:
+        - { id: adc, file: "${env.HOME}/.config/gcloud/application_default_credentials.json" }
+        - { id: npm, env: NPM_TOKEN }
+      allow_read:                                               # exact paths; no globs, no symlinks
+        - "${workspace.root}/../infra"
+```
+
+- **`secrets`** are BuildKit secrets: the Dockerfile mounts them with `RUN
+  --mount=type=secret,id=adc,target=…[,required=false]`. They are never a
+  build arg and never end up in a layer. Each is `{id, file}` (a file,
+  relative paths against the workspace root) or `{id, env}` (a variable of
+  the stem's env, else of the shell that runs the `stems` command which
+  starts or builds the stem — like `${env.X}` — else of the daemon's own;
+  only the build process gets it, never the container); both or neither is
+  `SCHEMA_INVALID`. The value never appears on a command line: stems passes
+  `--secret id=adc,src=<path>` / `--secret id=npm,env=NPM_TOKEN`.
+- **`allow_read`** lists **exact absolute paths** (after `${…}` and `~`)
+  outside the build context that the build may read: a credentials file
+  under `$HOME`, a checkout that resolves outside the workspace, a
+  Dockerfile in another repo. `validate` rejects glob characters (`* ? [
+  {`), relative paths and a path whose last component is a symlink (list
+  what it points to) as `SCHEMA_INVALID` at `stems.<n>.build.allow_read[i]`.
+  The build context, the Dockerfile's directory and every secret file are
+  granted already; there is no wildcard and no "disable the checks" option.
+- With `secrets` or `allow_read`, the image is built with the docker CLI
+  instead of the Engine API: `docker buildx build --load --progress plain
+  -t stems/<ws>/<stem>:<run_id> --label stems.workspace=<ws> --label
+  stems.stem=<stem> -f <dockerfile> [--secret …] <context>` (BuildKit; each
+  output line is a `docker.build` event, the last 20 are `details.tail` of a
+  failure). `buildx build` itself does not enforce Bake's `fs.read`
+  entitlement, so for docker stems `allow_read` is validated and part of the
+  spec hash, nothing more. Without them the API path above stays (a
+  Dockerfile outside the context alone works there too).
+- Before the build, every secret file and every `allow_read` path must
+  exist and every `env` secret must be set: otherwise the start fails with
+  `SETUP_FAILED` ("building its image failed"), `details.build: true` and
+  `details.secret` (+ `file`/`env`) or `details.allow_read`.
+- `buildx` comes with Docker Desktop. Without it such a build is
+  `DOCKER_UNAVAILABLE` with a hint, and `stems doctor`'s `docker.version`
+  (which reports `buildx vX.Y.Z`) fails naming the stems that need it.
+- The spec hash (restart: recreate or not) includes the secret ids and
+  sources and `allow_read`. The stale-image inputs (35) do **not** include
+  secret files or `allow_read` trees (they may be large or a home
+  directory): only the context and the Dockerfile.
+
+Compose stems take the same `secrets`/`allow_read` in the object form of
+their `build:` and are built with Bake ([compose.md](compose.md#build-secrets-extra-services-and-before_setup-bake)).
+
 ## Handles
 
 `Handle::Container { id, container_id, name }`: `pid()`/`pgid()` are `0` and
@@ -422,3 +482,5 @@ named volume, `<ws>_net`) is left. Checklist results:
 - `wait` on a container that runs longer than the per-request timeout
   (the retry path) was not exercised deliberately.
 - Linux CI: the suite has run on macOS only.
+
+See also: [Compose](compose.md) · [Doctor](doctor.md) · [Config](config.md) · [What stems can do](features.md)

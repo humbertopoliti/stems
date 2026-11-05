@@ -3428,6 +3428,7 @@ dependencies = [
  "stems-core",
  "stems-daemon",
  "stems-mcp",
+ "stems-runtime",
  "stems-tui",
  "tempfile",
  "tokio",
@@ -3468,6 +3469,7 @@ dependencies = [
  "stems-config",
  "tempfile",
  "thiserror 2.0.21",
+ "toml",
 ]
 
 [[package]]

@@ -184,3 +184,5 @@ orphan remains (none found, or all killed/adopted); exit 3 `ORPHANS_FOUND`
 * Stems without ports are invisible to the orphan scan.
 * Adopted processes lose their stdout/stderr pipe; a program that exits on
   `EPIPE` may die on its next write (it then shows as `failed`).
+
+See also: [Process model](process-model.md) · [Doctor](doctor.md) · [Lifecycle](lifecycle.md) · [What stems can do](features.md)

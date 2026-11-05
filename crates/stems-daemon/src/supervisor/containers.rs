@@ -21,7 +21,7 @@
 //!
 //! See `docs/docker.md` and `docs/compose.md` ("Daemon wiring").
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -33,8 +33,9 @@ use stems_api::{EventKind, StemFailure, StemStatus};
 use stems_config::{PortRef, PullPolicy, Stem, StemRuntime, StemType, Workspace};
 use stems_core::{Error, ErrorCode};
 use stems_runtime::docker::{
-    BuildSpec, HealthcheckSpec, ImageProgress, PortMapping, PortProto, ProgressSink, PullOutcome,
-    PullPolicy as ImagePull, VolumeMount, container_name, labels_of, verify_labels, volume_name,
+    BuildSecret, BuildSpec, HealthcheckSpec, ImageProgress, PortMapping, PortProto, ProgressSink,
+    PullOutcome, PullPolicy as ImagePull, SecretEnv, SecretSource, VolumeMount, container_name,
+    labels_of, verify_labels, volume_name,
 };
 use stems_runtime::{
     AdoptRecord, ComposeOptions, ComposeRuntime, ContainerSpec, DockerOptions, DockerRuntime,
@@ -138,6 +139,9 @@ pub struct Containers {
     builds: Mutex<HashMap<String, bool>>,
     /// Last `State.Health.Status` per running stem.
     health: Mutex<HashMap<String, String>>,
+    /// Compose stems whose images were built before `setup` in the start
+    /// sequence in progress (44): the start does not build them again.
+    prebuilt: Mutex<HashSet<String>>,
 }
 
 impl std::fmt::Debug for Containers {
@@ -167,6 +171,7 @@ impl Containers {
             restart_ids: Mutex::new(HashMap::new()),
             builds: Mutex::new(HashMap::new()),
             health: Mutex::new(HashMap::new()),
+            prebuilt: Mutex::new(HashSet::new()),
         }
     }
 
@@ -360,6 +365,8 @@ pub fn container_spec(
     spec.build = d.build.as_ref().map(|b| BuildSpec {
         context: b.context.clone(),
         dockerfile: b.dockerfile.clone(),
+        secrets: b.secrets.iter().map(runtime_secret).collect(),
+        allow_read: b.allow_read.clone(),
     });
     for p in &stem.ports {
         let host = host_ports
@@ -448,7 +455,8 @@ pub fn named_volumes(ws: &Workspace, stem: &Stem) -> Vec<String> {
 /// resolved against the integration repo), service, project (the config
 /// default `stems-<ws>` is normalised the way compose wants it), `env`
 /// (interpolation input, exported and written to the env file), stop
-/// grace and `adopt`.
+/// grace, `adopt` and `inject_env` (with the primary port's container port,
+/// which the override gives the container as `PORT`).
 pub fn compose_spec(
     ws: &Workspace,
     stem: &Stem,
@@ -473,7 +481,167 @@ pub fn compose_spec(
     spec.stop_grace = stem.stop_grace.as_duration();
     spec.adopt = c.adopt;
     spec.build = c.build;
+    spec.bake = stems_runtime::compose::BakeOptions {
+        services: c.build_options.services.clone(),
+        before_setup: c.build_options.before_setup,
+        secrets: c.build_options.secrets.iter().map(runtime_secret).collect(),
+        allow_read: c.build_options.allow_read.clone(),
+    };
+    spec.inject_env = c.inject_env;
+    spec.container_port = stem.primary_port().and_then(|p| p.container_port);
     Ok(spec)
+}
+
+/// A config build secret as the runtime's.
+fn runtime_secret(s: &stems_config::BuildSecret) -> BuildSecret {
+    BuildSecret {
+        id: s.id.clone(),
+        source: match &s.source {
+            stems_config::SecretSource::File(f) => SecretSource::File(f.clone()),
+            stems_config::SecretSource::Env(v) => SecretSource::Env(v.clone()),
+        },
+    }
+}
+
+/// Before a build with secrets or `allow_read` (44): every secret file
+/// exists, every `env` secret is set (in the stem env, else `daemon_env`:
+/// the requesting command's environment or the daemon's), every `allow_read` path exists. A miss is the build
+/// failure (`SETUP_FAILED`, `details.build: true`) naming it:
+/// `details.secret` (+ `file`/`env`) or `details.allow_read`.
+pub fn check_build_inputs(
+    stem: &str,
+    secrets: &[BuildSecret],
+    allow_read: &[PathBuf],
+    env: &BTreeMap<String, String>,
+    daemon_env: &dyn Fn(&str) -> bool,
+) -> Result<(), Error> {
+    let failed = |what: String, hint: String, details: serde_json::Value| {
+        Error::new(
+            ErrorCode::SetupFailed,
+            format!("cannot start `{stem}`: building its image failed: {what}"),
+        )
+        .with_hint(hint)
+        .with_details(details)
+    };
+    for s in secrets {
+        match &s.source {
+            SecretSource::File(f) if !f.is_file() => {
+                return Err(failed(
+                    format!(
+                        "build secret `{}` reads {}, which does not exist",
+                        s.id,
+                        f.display()
+                    ),
+                    format!(
+                        "create the file (or fix `file:` of secret `{}` in stems.{stem}.build.secrets)",
+                        s.id
+                    ),
+                    json!({ "stem": stem, "build": true, "secret": s.id, "file": f }),
+                ));
+            }
+            SecretSource::Env(v) if !env.contains_key(v) && !daemon_env(v) => {
+                return Err(failed(
+                    format!("build secret `{}` reads ${v}, which is not set", s.id),
+                    format!(
+                        "set {v} in the stem's env (or in the shell that runs `stems`), or use `file:`"
+                    ),
+                    json!({ "stem": stem, "build": true, "secret": s.id, "env": v }),
+                ));
+            }
+            _ => {}
+        }
+    }
+    if let Some(p) = allow_read.iter().find(|p| !p.exists()) {
+        return Err(failed(
+            format!("`allow_read` path {} does not exist", p.display()),
+            format!("fix or remove it in stems.{stem}.build.allow_read"),
+            json!({ "stem": stem, "build": true, "allow_read": p }),
+        ));
+    }
+    Ok(())
+}
+
+/// Forget that `stem`'s images were built before `setup` (44): called when
+/// a start attempt begins and when its sequence fails or is cancelled, so a
+/// marker never outlives the start that set it.
+pub(crate) fn clear_prebuilt(core: &Core, stem: &str) {
+    if let Some(c) = core.runtimes.containers() {
+        lock(&c.prebuilt).remove(stem);
+    }
+}
+
+fn daemon_has_env(v: &str) -> bool {
+    std::env::var_os(v).is_some()
+}
+
+/// `build.before_setup` of a compose stem (44): build the images now, so
+/// `setup` can use them, and mark the stem so its start does not build them
+/// again. Returns `STEMS_IMAGES` (`svc=image[,svc=image]`) and
+/// `STEMS_IMAGE` (the stem's own service) for `setup`; `None` when the stem
+/// does not build before `setup`. With the build off for this run
+/// (`--no-build`, `build: false`), nothing is built but the image names are
+/// still given.
+pub(crate) async fn build_before_setup(
+    core: &Core,
+    ws: &Workspace,
+    stem: &Stem,
+    env: &BTreeMap<String, String>,
+    request_env: &BTreeMap<String, String>,
+) -> Result<Option<BTreeMap<String, String>>, Error> {
+    let StemRuntime::Compose(cfg) = &stem.runtime else {
+        return Ok(None);
+    };
+    if !cfg.build_options.before_setup {
+        return Ok(None);
+    }
+    let c = containers(core)?;
+    let mut spec = compose_spec(ws, stem, &core.run_id, env)?;
+    let param = *lock(&core.build_override);
+    spec.build = super::stale::effective_build(param, spec.build);
+    let rt = c
+        .compose(&ws.name)
+        .await
+        .map_err(|e| runtime_error(&stem.name, e))?;
+    let images = if spec.uses_bake() {
+        spec.secret_env = SecretEnv::select(&spec.bake.secrets, &spec.env, request_env);
+        check_build_inputs(
+            &stem.name,
+            &spec.bake.secrets,
+            &spec.bake.allow_read,
+            &spec.env,
+            &|v| spec.secret_env.0.contains_key(v) || daemon_has_env(v),
+        )?;
+        spec.progress = progress_sink(core, &stem.name, build_secrets(ws, stem, &spec.secret_env));
+        let images = rt
+            .build_images(&spec)
+            .await
+            .map_err(|e| runtime_error(&stem.name, e))?;
+        lock(&c.prebuilt).insert(stem.name.clone());
+        images
+    } else {
+        rt.service_images(&spec)
+            .await
+            .map_err(|e| runtime_error(&stem.name, e))?
+    };
+    Ok(Some(image_vars(&spec.service, &images)))
+}
+
+/// `STEMS_IMAGES=svc=image[,svc=image]` and, when the stem's own service
+/// is among them, `STEMS_IMAGE=<its image>`.
+pub fn image_vars(service: &str, images: &[(String, String)]) -> BTreeMap<String, String> {
+    let mut vars = BTreeMap::new();
+    vars.insert(
+        "STEMS_IMAGES".to_string(),
+        images
+            .iter()
+            .map(|(s, i)| format!("{s}={i}"))
+            .collect::<Vec<_>>()
+            .join(","),
+    );
+    if let Some((_, i)) = images.iter().find(|(s, _)| s == service) {
+        vars.insert("STEMS_IMAGE".to_string(), i.clone());
+    }
+    vars
 }
 
 /// A container runtime error as a §7.5 catalogue error for `stem`:
@@ -564,14 +732,44 @@ pub fn progress_event(stem: &str, p: ImageProgress) -> EventDraft {
     }
 }
 
-/// A progress sink whose items become events (ends with the last sender).
-pub(crate) fn progress_sink(core: &Core, stem: &str) -> ProgressSink {
+/// `p` with `secrets` scrubbed from a build output line (47): a build may
+/// echo a secret value, and `docker.build` events reach every subscriber.
+pub fn scrub_progress(p: ImageProgress, secrets: &[(String, String)]) -> ImageProgress {
+    match p {
+        ImageProgress::Build { stem, line } => {
+            let line = stems_core::redact::scrub(&line, secrets).unwrap_or(line);
+            ImageProgress::Build { stem, line }
+        }
+        other => other,
+    }
+}
+
+/// The values scrubbed from `stem`'s build output: its secret env values
+/// (env files included) and the request's `env` build-secret values.
+fn build_secrets(ws: &Workspace, stem: &Stem, extra: &SecretEnv) -> Vec<(String, String)> {
+    let mut out = stems_core::redact::Redactor::new(ws).secret_values(stem);
+    for (k, v) in &extra.0 {
+        if !v.is_empty() && !out.iter().any(|(_, x)| x == v) {
+            out.push((k.clone(), v.clone()));
+        }
+    }
+    out.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(&b.0)));
+    out
+}
+
+/// A progress sink whose items become events (ends with the last sender);
+/// build lines are scrubbed of `secrets` first.
+pub(crate) fn progress_sink(
+    core: &Core,
+    stem: &str,
+    secrets: Vec<(String, String)>,
+) -> ProgressSink {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<ImageProgress>(256);
     let events = core.events.clone();
     let stem = stem.to_string();
     tokio::spawn(async move {
         while let Some(p) = rx.recv().await {
-            events.emit(progress_event(&stem, p));
+            events.emit(progress_event(&stem, scrub_progress(p, &secrets)));
         }
     });
     ProgressSink(Some(tx))
@@ -636,6 +834,7 @@ pub(crate) fn start_spec(
     ws: &Workspace,
     stem: &Stem,
     env: &BTreeMap<String, String>,
+    request_env: &BTreeMap<String, String>,
     host_ports: &[(String, u16)],
 ) -> Result<StartSpec, Error> {
     match stem.kind() {
@@ -643,12 +842,37 @@ pub(crate) fn start_spec(
             let mut spec = compose_spec(ws, stem, &core.run_id, env)?;
             let param = *lock(&core.build_override);
             spec.build = super::stale::effective_build(param, spec.build);
-            spec.progress = progress_sink(core, &stem.name);
+            // Built before `setup` in this sequence (44): not again.
+            spec.prebuilt = core
+                .runtimes
+                .containers()
+                .is_some_and(|c| lock(&c.prebuilt).remove(&stem.name));
+            spec.secret_env = SecretEnv::select(&spec.bake.secrets, &spec.env, request_env);
+            if spec.uses_bake() && !spec.prebuilt {
+                check_build_inputs(
+                    &stem.name,
+                    &spec.bake.secrets,
+                    &spec.bake.allow_read,
+                    &spec.env,
+                    &|v| spec.secret_env.0.contains_key(v) || daemon_has_env(v),
+                )?;
+            }
+            spec.progress =
+                progress_sink(core, &stem.name, build_secrets(ws, stem, &spec.secret_env));
             Ok(StartSpec::Compose(Box::new(spec)))
         }
         _ => {
             let mut spec = container_spec(ws, stem, &core.run_id, env, host_ports)?;
-            spec.progress = progress_sink(core, &stem.name);
+            if let Some(b) = spec.build.as_ref() {
+                spec.secret_env = SecretEnv::select(&b.secrets, &spec.env, request_env);
+            }
+            if let Some(b) = spec.build.as_ref().filter(|b| b.needs_buildx()) {
+                check_build_inputs(&stem.name, &b.secrets, &b.allow_read, &spec.env, &|v| {
+                    spec.secret_env.0.contains_key(v) || daemon_has_env(v)
+                })?;
+            }
+            spec.progress =
+                progress_sink(core, &stem.name, build_secrets(ws, stem, &spec.secret_env));
             Ok(StartSpec::Docker(Box::new(spec)))
         }
     }
@@ -790,7 +1014,13 @@ pub(crate) async fn after_down(
         match s.kind() {
             StemType::Compose => {
                 if let Some(rt) = c.compose_if_connected()
-                    && let Ok(spec) = compose_spec(ws, s, &core.run_id, &BTreeMap::new())
+                    // Interpolated like a start, so `-f`/project resolve alike.
+                    && let Ok(spec) = compose_spec(
+                        ws,
+                        s,
+                        &core.run_id,
+                        &config_env(ws, s, &core.run_id, &core.ports),
+                    )
                     && let Err(e) = rt.remove_service(&spec).await
                 {
                     tracing::debug!(stem = %s.name, error = %e, "compose rm on down");
@@ -847,10 +1077,15 @@ pub(crate) async fn adopt(
     let h = match kind {
         StemType::Compose => {
             let rt = c.compose(&ws.name).await.ok()?;
-            match ws
-                .stem(stem)
-                .and_then(|s| compose_spec(ws, s, &core.run_id, &config_env(s)).ok())
-            {
+            match ws.stem(stem).and_then(|s| {
+                compose_spec(
+                    ws,
+                    s,
+                    &core.run_id,
+                    &config_env(ws, s, &core.run_id, &core.ports),
+                )
+                .ok()
+            }) {
                 Some(spec) => rt.adopt_service(record, &spec).await,
                 None => rt.adopt(record).await,
             }
@@ -867,15 +1102,34 @@ pub(crate) async fn adopt(
     Some(h)
 }
 
-/// A stem's config env (`env` plus local overrides), without the
-/// daemon's substitutions: enough for compose interpolation off the
-/// start path (adoption, `doctor`).
-pub(crate) fn config_env(stem: &Stem) -> BTreeMap<String, String> {
-    stem.env
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .chain(stem.local_env.clone())
-        .collect()
+/// A stem's env for compose interpolation off the start path (adoption,
+/// `doctor`): the layers [`super::env::build_env`] sets (`PORT`, `env`,
+/// `env_files`, local overrides, `STEMS_*`), without `--pass-env` or the
+/// daemon's environment, so it matches a real start. When that fails (a
+/// missing env file) it falls back to `env` plus local overrides.
+pub(crate) fn config_env(
+    ws: &Workspace,
+    stem: &Stem,
+    run_id: &str,
+    ports: &super::ports::PortBook,
+) -> BTreeMap<String, String> {
+    let inputs = super::env::EnvInputs {
+        base: &BTreeMap::new(),
+        pass_env: &BTreeMap::new(),
+        run_id,
+        ports,
+        outputs: None,
+        strict_outputs: false,
+    };
+    match super::env::build_env(ws, stem, &inputs, &mut Vec::new()) {
+        Ok(env) => env.own,
+        Err(_) => stem
+            .env
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .chain(stem.local_env.clone())
+            .collect(),
+    }
 }
 
 /// Refresh `stem`'s container health (for `status`) while `generation`

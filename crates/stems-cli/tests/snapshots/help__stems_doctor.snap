@@ -23,7 +23,7 @@ Options:
           Also kill processes stems did not start that hold declared ports
 
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -52,3 +52,6 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems validate`, `stems up`, `stems down`; docs/doctor.md#checks,
+docs/doctor.md#requires, docs/doctor.md#custom-checks; `stems features doctor`.

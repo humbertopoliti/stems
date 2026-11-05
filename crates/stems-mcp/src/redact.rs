@@ -2,10 +2,11 @@
 //!
 //! stems' config has no typed secret values (secret *outputs* are commands
 //! whose results the daemon redacts), but env vars and variables often
-//! carry credentials. So, anywhere in the JSON:
-//! * a string value whose key looks like a secret (`*PASSWORD*`,
-//!   `*SECRET*`, `*TOKEN*`, `*API_KEY*`, `*PRIVATE_KEY*`, `*CREDENTIAL*`,
-//!   `*ACCESS_KEY*`, `*PASSWD*`) becomes `"<redacted>"`;
+//! carry credentials. The names are decided by the shared
+//! [`stems_core::redact::Redactor`] (47: built-in patterns, `secrets:`,
+//! `redaction:`; `docs/config.md#secrets`). Anywhere in the JSON:
+//! * a string value whose key is a secret name becomes `"<redacted>"`
+//!   (in a stem's env maps, that stem's own `secrets:` apply too);
 //! * the password of a URL (`scheme://user:pass@host`) becomes `<redacted>`.
 
 use std::sync::LazyLock;
@@ -13,42 +14,42 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde_json::Value;
 use stems_api::REDACTED;
-
-const SECRET_WORDS: [&str; 9] = [
-    "PASSWORD",
-    "PASSWD",
-    "SECRET",
-    "TOKEN",
-    "API_KEY",
-    "APIKEY",
-    "PRIVATE_KEY",
-    "CREDENTIAL",
-    "ACCESS_KEY",
-];
+use stems_core::redact::Redactor;
 
 static URL_PASSWORD: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?P<pre>[A-Za-z][A-Za-z0-9+.-]*://[^:/@\s]+:)[^@/\s]+@").expect("valid regex")
 });
 
-/// Whether an env / variable name looks like it holds a secret.
+/// Whether an env / variable name looks like it holds a secret (the
+/// built-in patterns only).
 pub fn is_secret_key(key: &str) -> bool {
-    let k = key.to_ascii_uppercase().replace('-', "_");
-    SECRET_WORDS.iter().any(|w| k.contains(w))
+    Redactor::default().is_secret(None, key)
 }
 
-/// Redact `v` in place.
+/// Redact `v` in place with the built-in patterns.
 pub fn redact(v: &mut Value) {
+    redact_with(v, &Redactor::default());
+}
+
+/// Redact `v` (a config document of `stem`, or the workspace's) in place
+/// with the workspace's `redactor`.
+pub fn redact_config(v: &mut Value, stem: Option<&str>, redactor: &Redactor) {
+    redactor.redact_json(v, stem);
+    redact_with(v, redactor);
+}
+
+fn redact_with(v: &mut Value, r: &Redactor) {
     match v {
         Value::Object(m) => {
             for (k, x) in m.iter_mut() {
-                if x.is_string() && is_secret_key(k) {
+                if x.is_string() && r.is_secret(None, k) {
                     *x = Value::String(REDACTED.into());
                 } else {
-                    redact(x);
+                    redact_with(x, r);
                 }
             }
         }
-        Value::Array(a) => a.iter_mut().for_each(redact),
+        Value::Array(a) => a.iter_mut().for_each(|x| redact_with(x, r)),
         Value::String(s) if URL_PASSWORD.is_match(s) => {
             *s = URL_PASSWORD
                 .replace_all(s, format!("${{pre}}{REDACTED}@").as_str())

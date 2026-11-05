@@ -388,6 +388,28 @@ workspace:
       variant: local
       variants:
       - docker
+      inherited_from:
+        codebase: base
+        depends_on: base
+        description: base
+        env.DATABASE_URL: base
+        env.HOST: base
+        env.PORT: base
+        env.REDIS_URL: base
+        env.SHOP_CHAOS: base
+        env.SHOP_CONFIG: base
+        env.SHOP_PSQL: base
+        env_files: base
+        health: base
+        overlays: base
+        ports: base
+        scripts.create-test-user: base
+        scripts.seed: base
+        scripts.setup: base
+        scripts.start: base
+        stop_grace: base
+        type: base
+        watch: base
     shop-worker:
       name: shop-worker
       type: process

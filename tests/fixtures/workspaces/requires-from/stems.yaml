@@ -1,0 +1,45 @@
+# requires-from — per-stem `requires:` with versions read from the codebase
+# (deliverable 40; tests/features/doctor/requires-from.feature).
+#
+# app/      .nvmrc v20.11.1, package.json packageManager pnpm@9.1.0 and
+#           engines.node >=18, .tool-versions (nodejs + python), no .python-version
+# app-lts/  .nvmrc `lts/*` (no version can be derived)
+schema_version: 1
+name: requires-from
+
+stems:
+  web:
+    type: process
+    codebase: ./app
+    ports: [{ name: http, port: auto }]
+    stop_grace: 1s
+    scripts: { start: python3 -m http.server }
+    requires:
+      node: { from: .nvmrc }
+      pnpm: { from: "package.json#packageManager" }
+      yarn: { from: "package.json#engines.node" }
+  py:
+    type: process
+    codebase: ./app
+    ports: [{ name: http, port: auto }]
+    stop_grace: 1s
+    scripts: { start: python3 -m http.server }
+    requires:
+      python3: { from: [.python-version, .tool-versions] }
+  lts:
+    type: process
+    codebase: ./app-lts
+    ports: [{ name: http, port: auto }]
+    stop_grace: 1s
+    scripts: { start: python3 -m http.server }
+    requires:
+      node: { from: .nvmrc }
+  off:
+    type: process
+    enabled: false
+    codebase: ./app
+    ports: [{ name: http, port: auto }]
+    stop_grace: 1s
+    scripts: { start: python3 -m http.server }
+    requires:
+      ruby: { from: .ruby-version }

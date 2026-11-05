@@ -25,7 +25,7 @@ Options:
           Deadline (e.g. 60s)
 
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -54,3 +54,6 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems up`, `stems down`, `stems stop`, `stems restart`; docs/lifecycle.md#commands;
+`stems features lifecycle`.

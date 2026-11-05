@@ -174,3 +174,5 @@ JSON (`--json`): `data` is the `metrics` RPC result
 `stems status --json` carries the latest numbers of a running stem as
 `metrics: {ts, cpu_pct, rss_bytes, children}`; the TUI builds its CPU/MEM
 sparkline columns from it (last 30 samples).
+
+See also: [Logs](logs.md) · [Health](health.md) · [Dashboard](tui.md) · [What stems can do](features.md)

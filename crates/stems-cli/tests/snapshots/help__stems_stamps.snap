@@ -15,7 +15,7 @@ Options:
           Clear the stamps so setup/seed run again
 
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -44,3 +44,5 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems reset`; docs/scripts.md#stamps-fr-sc-5; `stems features scripts`.

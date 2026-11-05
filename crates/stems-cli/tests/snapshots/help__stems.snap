@@ -1,12 +1,11 @@
 ---
 source: crates/stems-cli/tests/help.rs
-assertion_line: 10
 expression: help
 ---
 Local environment management toolkit for multi-process systems.
 
-stems reads an integration repo's `stems.yaml`, validates it, and (from later releases) starts,
-supervises and tears down every stem it declares.
+stems reads an integration repo's `stems.yaml`, validates it, starts, supervises and tears down
+every stem it declares.
 
 Output: human text on a terminal, a JSON envelope `{ "ok", "data", "errors", "version" }` when
 stdout is not a terminal or with `--json`. Exit codes: 0 ok, 1 runtime failure, 2 config, validation
@@ -14,55 +13,71 @@ or usage error, 3 partial success or orphans, 4 daemon unavailable.
 
 Usage: stems [OPTIONS] [COMMAND]
 
-Commands:
-  init           Scaffold a new integration repo in the current (or --workspace) directory
-  validate       Check the workspace config without starting anything
-  show           Print the resolved workspace config (or one stem's)
-  completions    Print a shell completion script
+Lifecycle:
   up             Start stems (and their dependencies), attached or detached
   down           Stop stems in reverse dependency order
   start          Start stems (and unstarted hard dependencies)
   stop           Stop stems
   restart        Restart stems (stop, then start)
-  attach         Open the dashboard (TUI) on the workspace daemon
+  build          Run build scripts (or docker builds)
+  pull           Pull the images of docker stems now (a moved tag such as `latest` included)
+  watch          Pause or resume watchdogs
+
+Inspect:
   status         Show the state of every stem
   logs           Show or follow stem and script logs
   events         Show or follow the event stream (NDJSON with --json)
   metrics        Show CPU, memory and disk usage per stem
   health         Show the last health probe results per stem, with latency
   graph          Draw the dependency graph
+
+Scripts & context:
   run            Run a stem or workspace script
   scripts        List scripts
   exec           Run an ad-hoc command in a stem's context (env, cwd or container)
   shell          Open an interactive shell in a stem's context
+  compose        Run `docker compose` in a compose stem's context (file, project, env)
   reset          Run a stem's `reset` script and clear its stamps
-  build          Run build scripts (or docker builds)
-  pull           Pull the images of docker stems now (a moved tag such as `latest` included)
   stamps         Show or clear setup/seed stamps
-  overlays       Show the overlays stems has written into codebases
-  doctor         Diagnose the environment: Docker, tool versions, ports, orphans
-  repos          Clone or update git codebases
-  watch          Pause or resume watchdogs
-  profiles       List profiles
-  outputs        Show values published by stems' `outputs:`
-  config         Read or change local config overrides
+  overlays       Show the overlays stems has written into codebases, or render a stem's overlays now
+                 (`stems overlays render <stem>`)
+
+Config:
+  init           Scaffold a new integration repo in the current (or --workspace) directory
+  validate       Check the workspace config without starting anything
+  show           Print the resolved workspace config (or one stem's)
   switch         Switch a stem to one of its variants (e.g. from a local process to a docker
                  container), or back to `local`
   configuration  List, select or save named configurations (overlays declared under
                  `configurations:` in stems.yaml)
+  profiles       List profiles
+  config         Read or change local config overrides
   add            Add a stem to stems.yaml
   remove         Remove a stem from stems.yaml
   edit           Open $EDITOR at a stem's block in stems.yaml
+
+Environment & ports:
+  env            Print the environment stems gives a stem
+  ports          List every stem's host ports and the variables that address them
+  outputs        Show values published by stems' `outputs:`
+
+Doctor & repos:
+  doctor         Diagnose the environment: Docker, tool versions, ports, orphans
+  repos          Clone, update or check out git codebases
+
+Dashboard & agents:
+  attach         Open the dashboard (TUI) on the workspace daemon
   mcp            Run the MCP server (agent interface)
-  upgrade        Upgrade stems (delegates to Homebrew when installed with brew)
+  features       List everything stems can do, by area, with commands, config keys and docs
+  docs           List the documentation pages, or print one
+
+Maintenance:
   daemon         Manage the workspace daemon
+  upgrade        Upgrade stems (delegates to Homebrew when installed with brew)
+  completions    Print a shell completion script
   help           Print this message or the help of the given subcommand(s)
 
 Options:
-  -h, --help
-          Print help (see a summary with '-h')
-
-Global options:
       --workspace <PATH>
           Workspace directory or stems.yaml path (default: $STEMS_WORKSPACE, else walk up from the
           current directory)
@@ -92,6 +107,15 @@ Global options:
 
   -V, --version
           Print version information (`--json` adds commit and build date)
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Where to look:
+  stems features [<area>]   everything stems can do, by area, with commands, config keys
+                            and docs (`--json` for agents; docs/features.md)
+  stems docs [<topic>]      list the reference pages, or print one
+  stems <command> --help    the details; ends with related commands and docs
 
 Lifecycle hooks (fixed `scripts:` names stems runs itself): setup, pre_start, start, health,
 post_start, seed, pre_stop, stop, post_stop, build, reset; workspace: bootstrap, teardown.

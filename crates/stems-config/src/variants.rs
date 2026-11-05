@@ -15,8 +15,14 @@
 //! are substituted after the merge, so `${codebase}` in a variant is the
 //! stem's codebase.
 //!
-//! This runs on the YAML trees before substitution; `variant`/`variants`
-//! keys are removed from the merged tree afterwards ([`strip`]).
+//! A variant with `inherit: false` is merged over an empty stem instead
+//! (only `enabled` and the selection are kept from the base), so it must be
+//! a complete definition. `inherit` is only valid inside a variant.
+//!
+//! This runs on the YAML trees before substitution; `variant`/`variants`/
+//! `inherit` keys are removed from the merged tree afterwards ([`strip`]).
+
+use std::collections::BTreeMap;
 
 use indexmap::IndexMap;
 use serde_yaml_ng::{Mapping, Value};
@@ -39,7 +45,7 @@ pub fn is_base(name: &str) -> bool {
 /// Stem fields that only apply to some stem types (the flat
 /// process/docker/compose fields of [`crate::raw::RawStem`]). A variant
 /// changing `type` drops all of them from the base.
-pub const TYPE_SPECIFIC_FIELDS: [&str; 16] = [
+pub const TYPE_SPECIFIC_FIELDS: [&str; 17] = [
     "cwd",
     "command",
     "shell",
@@ -56,13 +62,20 @@ pub const TYPE_SPECIFIC_FIELDS: [&str; 16] = [
     "service",
     "project_name",
     "adopt",
+    "inject_env",
 ];
 
-/// A stem's variants: the active one (`None` = the base) and every name.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// Keys of a stem that are not part of its definition: the selection and
+/// the variants themselves. Never inherited, overridden or reported.
+pub(crate) const SELECTION_KEYS: [&str; 3] = ["variant", "variants", "inherit"];
+
+/// A stem's variants: the active one (`None` = the base), every name, and
+/// the active variant's merged definition (for provenance).
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct StemVariants {
     pub active: Option<String>,
     pub names: Vec<String>,
+    pub def: Option<Value>,
 }
 
 fn stems_of(v: Option<&Value>) -> Option<&Mapping> {
@@ -95,7 +108,8 @@ fn definitions(name: &str, main: Option<&Value>, local: Option<&Value>) -> Mappi
 }
 
 /// `stems.<n>.variant`: the local file's when it sets the key (even to
-/// null), else the committed one.
+/// null), else the committed one. (`stems show --variant` overrides both,
+/// see [`apply`].)
 fn selection(main: Option<&Value>, local: Option<&Value>) -> Option<String> {
     let v = match local.and_then(Value::as_mapping) {
         Some(m) if m.contains_key("variant") => m.get("variant"),
@@ -108,13 +122,27 @@ fn selection(main: Option<&Value>, local: Option<&Value>) -> Option<String> {
     }
 }
 
+/// True if the variant definition sets `inherit: false`.
+fn standalone(def: &Value) -> bool {
+    def.get("inherit") == Some(&Value::Bool(false))
+}
+
 /// Merge the variant `def` over the stem mapping `base` (see the module docs).
 pub(crate) fn apply_variant(base: &mut Value, def: &Value, stem: &str) {
     if !base.is_mapping() {
         *base = Value::Mapping(Mapping::new());
     }
-    let Value::Mapping(def) = def else { return };
-    if let (Value::Mapping(b), Some(t)) = (&mut *base, def.get("type"))
+    let Value::Mapping(def_map) = def else { return };
+    if standalone(def)
+        && let Value::Mapping(b) = &mut *base
+    {
+        // `inherit: false`: an empty base; `enabled` and the selection stay.
+        b.retain(|k, _| {
+            k.as_str()
+                .is_some_and(|k| k == "enabled" || SELECTION_KEYS.contains(&k))
+        });
+    }
+    if let (Value::Mapping(b), Some(t)) = (&mut *base, def_map.get("type"))
         && b.get("type") != Some(t)
     {
         for f in TYPE_SPECIFIC_FIELDS {
@@ -122,18 +150,22 @@ pub(crate) fn apply_variant(base: &mut Value, def: &Value, stem: &str) {
         }
         b.insert(Value::String("type".into()), t.clone());
     }
-    let mut def = def.clone();
-    def.remove("variants");
-    def.remove("variant");
+    let mut def = def_map.clone();
+    for k in SELECTION_KEYS {
+        def.remove(k);
+    }
     merge(base, Value::Mapping(def), &stem_path(stem));
 }
 
 /// Apply every stem's active variant to `main` (the committed tree, before
-/// `stems.local.yaml` is merged). Returns each stem's variants; problems
-/// (`UNKNOWN_VARIANT`, reserved or nested variants) go to `diags`.
+/// `stems.local.yaml` is merged). `overrides` (`stems show <stem>
+/// --variant <name>`) replaces a stem's selection. Returns each stem's
+/// variants; problems (`UNKNOWN_VARIANT`, reserved or nested variants,
+/// `inherit` outside a variant) go to `diags`.
 pub(crate) fn apply(
     main: &mut Value,
     local: Option<&Value>,
+    overrides: &BTreeMap<String, String>,
     diags: &mut Vec<Diagnostic>,
 ) -> IndexMap<String, StemVariants> {
     let mut names: Vec<String> = Vec::new();
@@ -155,6 +187,22 @@ pub(crate) fn apply(
         let local_stem = stems_of(local).and_then(|m| m.get(&key));
         let defs = definitions(&name, main_stem.as_ref(), local_stem);
         let p = stem_path(&name);
+        if [main_stem.as_ref(), local_stem]
+            .into_iter()
+            .flatten()
+            .any(|s| s.get("inherit").is_some())
+        {
+            diags.push(
+                Diagnostic::new(
+                    codes::SCHEMA_INVALID,
+                    format!("only a variant can set `inherit` (stem `{name}`)"),
+                )
+                .with_path(p.key("inherit"))
+                .with_hint(format!(
+                    "move it into one of `stems.{name}.variants`, or remove it"
+                )),
+            );
+        }
         let variant_names: Vec<String> = defs.keys().map(key_string).collect();
         for (k, def) in &defs {
             let vname = key_string(k);
@@ -188,7 +236,10 @@ pub(crate) fn apply(
                 }
             }
         }
-        let selected = selection(main_stem.as_ref(), local_stem);
+        let selected = match overrides.get(&name) {
+            Some(o) => Some(o.clone()),
+            None => selection(main_stem.as_ref(), local_stem),
+        };
         let active = match selected {
             None => None,
             Some(s) if is_base(&s) => None,
@@ -236,11 +287,13 @@ pub(crate) fn apply(
             }
         }
         if !variant_names.is_empty() || active.is_some() {
+            let def = active.as_ref().and_then(|v| defs.get(v.as_str())).cloned();
             out.insert(
                 name,
                 StemVariants {
                     active,
                     names: variant_names,
+                    def,
                 },
             );
         }
@@ -285,15 +338,17 @@ pub fn committed_selection(main: &Value, stem: &str) -> Option<String> {
     selection(stems_of(Some(main)).and_then(|m| m.get(&key)), None)
 }
 
-/// Remove `variant` / `variants` from every stem of the merged tree.
+/// Remove `variant` / `variants` / `inherit` from every stem of the merged
+/// tree.
 pub(crate) fn strip(merged: &mut Value) {
     let Some(Value::Mapping(stems)) = merged.get_mut("stems") else {
         return;
     };
     for (_, s) in stems.iter_mut() {
         if let Value::Mapping(m) = s {
-            m.remove("variant");
-            m.remove("variants");
+            for k in SELECTION_KEYS {
+                m.remove(k);
+            }
         }
     }
 }
@@ -311,7 +366,7 @@ mod tests {
         let mut m = y(main);
         let l = local.map(y);
         let mut diags = Vec::new();
-        apply(&mut m, l.as_ref(), &mut diags);
+        apply(&mut m, l.as_ref(), &BTreeMap::new(), &mut diags);
         if let Some(l) = l {
             merge(&mut m, l, &ConfigPath::root());
         }
@@ -510,14 +565,80 @@ stems:
     fn apply_reports_names_and_active() {
         let mut m = y(&with("docker"));
         let mut diags = Vec::new();
-        let r = apply(&mut m, None, &mut diags);
+        let r = apply(&mut m, None, &BTreeMap::new(), &mut diags);
+        assert_eq!(r["api"].active.as_deref(), Some("docker"));
+        assert_eq!(r["api"].names, ["docker", "slow"]);
+        assert_eq!(r["api"].def.as_ref().unwrap()["type"], y("docker"));
+    }
+
+    #[test]
+    fn overrides_replace_the_selection() {
+        let one = |stem: &str, v: &str| BTreeMap::from([(stem.to_string(), v.to_string())]);
+        for (sel, over, want) in [
+            (None, "docker", "docker"),
+            (Some("docker"), "local", "process"),
+            (Some("docker"), "base", "process"),
+            (Some("docker"), "slow", "process"),
+        ] {
+            let mut m = y(&sel.map_or_else(|| BASE.to_string(), with));
+            let mut diags = Vec::new();
+            apply(&mut m, None, &one("api", over), &mut diags);
+            assert!(diags.is_empty(), "{diags:?}");
+            assert_eq!(m["stems"]["api"]["type"], y(want), "{sel:?} -> {over}");
+        }
+        let mut m = y(BASE);
+        let mut diags = Vec::new();
+        apply(&mut m, None, &one("api", "nope"), &mut diags);
+        assert_eq!(diags[0].code, codes::UNKNOWN_VARIANT);
+        assert_eq!(m["stems"]["api"]["type"], y("process"));
+    }
+
+    #[test]
+    fn inherit_false_starts_from_an_empty_stem() {
+        let local = "stems: { api: { enabled: false, variant: alone, variants: { alone: { inherit: false, type: docker, image: i } } } }";
+        let (api, diags) = effective(BASE, Some(local));
+        assert!(diags.is_empty(), "{diags:?}");
         assert_eq!(
-            r["api"],
-            StemVariants {
-                active: Some("docker".into()),
-                names: vec!["docker".into(), "slow".into()],
-            }
+            api,
+            y("{ type: docker, image: i, enabled: false }"),
+            "only the variant and the local layer"
         );
+        // Without `type` the stem has none (the resolver reports it).
+        let local = "stems: { api: { variant: alone, variants: { alone: { inherit: false, command: x } } } }";
+        let (api, _) = effective(BASE, Some(local));
+        assert_eq!(api, y("{ command: x }"));
+        // `inherit: true` is the default.
+        let local =
+            "stems: { api: { variant: v, variants: { v: { inherit: true, cwd: other } } } }";
+        let (api, _) = effective(BASE, Some(local));
+        assert_eq!(api["command"], y("python3 app.py"));
+        assert_eq!(api["cwd"], y("other"));
+        assert!(api.get("inherit").is_none());
+    }
+
+    #[test]
+    fn inherit_on_a_stem_is_a_schema_error() {
+        let (api, diags) = effective(BASE, Some("stems: { api: { inherit: false } }"));
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, codes::SCHEMA_INVALID);
+        assert_eq!(
+            diags[0].path.as_ref().unwrap().to_string(),
+            "stems.api.inherit"
+        );
+        assert!(api.get("inherit").is_none(), "stripped");
+    }
+
+    #[test]
+    fn null_in_a_variant_removes_an_inherited_script() {
+        let local = "stems: { api: { variant: bare, variants: { bare: { scripts: { seed: ~ }, env: { A: ~ } } } } }";
+        let (mut api, diags) = effective(BASE, Some(local));
+        assert!(diags.is_empty(), "{diags:?}");
+        crate::merge::prune_nulls(&mut api);
+        assert_eq!(
+            api["scripts"],
+            y("{ start: python3 app.py, lint: { command: echo lint, timeout: 5s } }")
+        );
+        assert_eq!(api["env"], y("{ B: '2' }"));
     }
 
     #[test]

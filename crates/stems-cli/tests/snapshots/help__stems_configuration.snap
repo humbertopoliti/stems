@@ -49,3 +49,5 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: docs/config.md#configurations; `stems features config`.

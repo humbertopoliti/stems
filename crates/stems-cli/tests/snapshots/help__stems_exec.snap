@@ -2,7 +2,15 @@
 source: crates/stems-cli/tests/help.rs
 expression: help
 ---
-Run an ad-hoc command in a stem's context (env, cwd or container)
+Run an ad-hoc command in a stem's context (env, cwd or container).
+
+A process or external stem: the command runs here, in your terminal, with your environment plus what
+stems sets for the stem (`PORT`, `env`, `env_files`, `STEMS_*`, dependencies' ports and outputs), in
+its codebase (else its state directory). A running docker/compose stem: `docker exec` into its
+container (`--host` runs on the host instead). The exit code is the command's. Works without a
+daemon (from the config; auto ports then stay unresolved) and never starts one. `--json` prints
+`{stem, container, cwd, argv, exit}` after the command (its output still streams first). See
+docs/exec.md.
 
 Usage: stems exec [OPTIONS] <STEM> -- <COMMAND>...
 
@@ -14,8 +22,18 @@ Arguments:
           Command and arguments (after `--`)
 
 Options:
+      --host
+          Run on the host even for a docker/compose stem
+
+      --cwd <DIR>
+          Working directory (default: the stem's codebase, else its state directory). Host only
+
+      --fresh
+          Keep only PATH, HOME, USER, LOGNAME, SHELL, TMPDIR, TERM, LANG and LC_* of your
+          environment (like a script's `inherit_env: false`). Host only
+
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -44,3 +62,5 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems shell`, `stems env`; docs/exec.md; `stems features env`.

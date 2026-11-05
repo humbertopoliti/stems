@@ -6,9 +6,11 @@
 //! 1. finds it (`UNKNOWN_STEM`, `SCRIPT_NOT_FOUND`);
 //! 2. validates the arguments against its `args` schema
 //!    ([`stems_core::scriptargs`], `SCRIPT_ARGS_INVALID`, exit 2);
-//! 3. checks `requires:` — every listed stem must be `healthy`; with
-//!    `start_deps` they are started first (like `stems start`), else
-//!    `SCRIPT_REQUIRES_UNMET`;
+//! 3. checks `requires_stopped:` — every listed stem must not run
+//!    (`stopped`, `failed`); with `stop_deps` they are stopped first (like
+//!    `stems stop`) — and `requires:` — every listed stem must be
+//!    `healthy`; with `start_deps` they are started first (like `stems
+//!    start`); else `SCRIPT_REQUIRES_UNMET` (49);
 //! 4. waits (bounded by `ready_timeout_ms`, default 30 s) while the owning
 //!    stem is in its start sequence (`setup`, `starting`, `seeding`, or
 //!    `healthy` with `post_start`/`seed` pending), else `START_TIMEOUT`;
@@ -24,6 +26,9 @@
 //! The run itself is a spawned task, so a client that disconnects never
 //! leaves a half-supervised script behind; `wait: false` replies with the
 //! `run_id` at once. Daemon shutdown cancels (kills) running scripts.
+//!
+//! `stem_env` (37, `docs/exec.md`) gives `stems exec`/`shell`/`env` a
+//! stem's context ([`exec_env`]); they run the command themselves.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
@@ -32,14 +37,18 @@ use std::time::{Duration, Instant};
 use serde_json::{Map, Value, json};
 use stems_api::{
     EventKind, RunScriptAccepted, RunScriptParams, RunScriptResult, ScriptArgsInput,
-    ScriptCatalogParams, ScriptCatalogResult, StartParams,
+    ScriptCatalogParams, ScriptCatalogResult, StartParams, StemEnvParams, StemEnvResult,
+    StopParams,
 };
-use stems_config::{Backoff, Resolved, Script, StemRuntime};
+use stems_config::{Backoff, Resolved, Script, Stem, StemRuntime, Workspace};
 use stems_core::scriptargs::{ParsedArgs, build_catalog, parse_args, parse_args_json};
 use stems_core::{Error, ErrorCode, StemState};
 use tokio_util::sync::CancellationToken;
 
-use super::hooks::{stem_env, workspace_env};
+use super::env::{CallEnv, EnvInputs, StemEnv, build_env};
+use super::hooks::{stem_env_with, workspace_env};
+use super::outputs::OutputStore;
+use super::ports::PortBook;
 use super::{Core, Supervisor, schedule};
 use crate::events::EventDraft;
 use crate::scripts::{RunContext, ScriptRef, WORKSPACE_LOG_STEM};
@@ -144,6 +153,101 @@ fn with_context(e: Error, stem: Option<&str>, name: &str) -> Error {
     e
 }
 
+/// What `stems exec` / `stems env` add to the caller's environment for
+/// `stem` (37): its own layers (never a base) with the ports of `ports`
+/// (an `auto` port it has not allocated stays a `${stem...}` reference),
+/// the outputs of `outputs`, `STEMS_STATE_DIR`; `run_id: None` (no daemon)
+/// leaves out `STEMS_RUN_ID`. Returns the env and the names of variables
+/// still holding a reference.
+pub fn exec_env(
+    ws: &Workspace,
+    stem: &Stem,
+    ports: &PortBook,
+    outputs: Option<&OutputStore>,
+    run_id: Option<&str>,
+    state_dir: &std::path::Path,
+) -> Result<(BTreeMap<String, String>, Vec<String>), Error> {
+    let none = BTreeMap::new();
+    let mut env = build_env(
+        ws,
+        stem,
+        &EnvInputs {
+            base: &none,
+            pass_env: &none,
+            run_id: run_id.unwrap_or_default(),
+            ports,
+            outputs,
+            strict_outputs: false,
+        },
+        &mut Vec::new(),
+    )?
+    .own;
+    if run_id.is_none() {
+        env.remove("STEMS_RUN_ID");
+    }
+    env.insert("STEMS_STATE_DIR".into(), state_dir.display().to_string());
+    let mut unresolved: Vec<String> = env
+        .iter()
+        .filter(|(_, v)| v.contains("${stem."))
+        .map(|(k, _)| k.clone())
+        .collect();
+    // Port variables of an `auto` port nobody allocated yet are absent (42).
+    for var in port_vars(ws, stem) {
+        if !env.contains_key(&var) && !unresolved.contains(&var) {
+            unresolved.push(var);
+        }
+    }
+    unresolved.sort();
+    Ok((env, unresolved))
+}
+
+/// Every port variable `build_env` sets for `stem` once its ports (and its
+/// dependencies') are allocated: `PORT`, `PORT_<NAME>`, `STEMS_<DEP>_PORT`,
+/// `STEMS_<DEP>_PORT_<NAME>`.
+fn port_vars(ws: &Workspace, stem: &Stem) -> Vec<String> {
+    let mut vars = Vec::new();
+    if !stem.ports.is_empty() {
+        vars.push("PORT".to_string());
+    }
+    for (i, port) in stem.ports.iter().enumerate() {
+        if super::ports::is_named(i, port) {
+            vars.push(super::ports::own_port_var(&port.name));
+        }
+    }
+    for dep in &stem.depends_on {
+        let Some(d) = ws.stem(&dep.stem) else {
+            continue;
+        };
+        if !d.ports.is_empty() {
+            vars.push(super::env::port_var(&dep.stem));
+        }
+        for (i, port) in d.ports.iter().enumerate() {
+            if super::ports::is_named(i, port) {
+                vars.push(super::ports::named_port_var(&dep.stem, &port.name));
+            }
+        }
+    }
+    vars
+}
+
+/// A stem's default working directory for `exec`: its codebase, else its
+/// state directory.
+pub fn exec_cwd(stem: &Stem, state_dir: &std::path::Path) -> std::path::PathBuf {
+    match &stem.codebase {
+        Some(cb) => cb.path().to_path_buf(),
+        None => state_dir.to_path_buf(),
+    }
+}
+
+/// A stem that does not run, as `requires_stopped:` wants it: `stopped`,
+/// `failed` or `disabled` (49).
+pub fn is_stopped(state: StemState) -> bool {
+    matches!(
+        state,
+        StemState::Stopped | StemState::Failed | StemState::Disabled
+    )
+}
+
 /// States in which a stem is still going through its start sequence.
 fn in_start_sequence(state: StemState, pending: bool) -> bool {
     matches!(
@@ -160,7 +264,7 @@ struct Job {
     name: String,
     script: Script,
     parsed: ParsedArgs,
-    env: BTreeMap<String, String>,
+    env: StemEnv,
     cwd_override: Option<std::path::PathBuf>,
     shell: Option<String>,
     actor: String,
@@ -224,7 +328,8 @@ impl Job {
                     },
                     RunContext {
                         args: argv.clone(),
-                        env: self.env.clone(),
+                        env: self.env.full.clone(),
+                        own_env: Some(self.env.own.clone()),
                         extra_env: self.parsed.to_env(),
                         cwd_override: self.cwd_override.clone(),
                         shell: self.shell.clone(),
@@ -260,6 +365,8 @@ impl Job {
                 argv,
                 tail: r.tail.clone(),
                 queued,
+                // `soft_fail` softens the lifecycle, not an explicit run (41).
+                soft: r.soft_failed(),
                 error: (!ok).then(|| {
                     let mut e = r.error();
                     if let Value::Object(m) = &mut e.details {
@@ -274,6 +381,61 @@ impl Job {
 }
 
 impl Supervisor {
+    /// `stem_env` (37): `stem`'s context for `exec`/`shell`/`env`. Never
+    /// allocates a port; the env of a running stem is the one it got.
+    pub fn stem_env(&self, p: &StemEnvParams, actor: &str) -> Result<StemEnvResult, Error> {
+        let ws = self.workspace(false, actor)?;
+        schedule::plan(&ws, std::slice::from_ref(&p.stem), true)?;
+        let stem = ws
+            .workspace
+            .stem(&p.stem)
+            .ok_or_else(|| Error::internal(format!("stem `{}` vanished", p.stem)))?;
+        let state_dir = self.core.scripts.state_dir(Some(&stem.name));
+        let _ = std::fs::create_dir_all(&state_dir);
+        let (state, handle, live) = {
+            let cell = self.cell(&stem.name);
+            let info = cell.info();
+            (info.state, info.handle.clone(), info.env.clone())
+        };
+        let running = state.is_running();
+        let ports = self.core.ports.frozen();
+        let (mut env, _) = exec_env(
+            &ws.workspace,
+            stem,
+            &ports,
+            Some(&self.core.outputs),
+            Some(&self.core.run_id),
+            &state_dir,
+        )?;
+        if running && !live.is_empty() {
+            env.extend(live);
+        }
+        if !p.reveal {
+            super::outputs::redact_env(&self.core, stem, &mut env);
+        }
+        let unresolved = env
+            .iter()
+            .filter(|(_, v)| v.contains("${stem."))
+            .map(|(k, _)| k.clone())
+            .collect();
+        let container = match handle {
+            Some(stems_runtime::Handle::Container { container_id, .. }) if running => {
+                Some(container_id)
+            }
+            _ => None,
+        };
+        Ok(StemEnvResult {
+            stem: stem.name.clone(),
+            kind: stem.kind().to_string(),
+            cwd: exec_cwd(stem, &state_dir),
+            env,
+            container,
+            state,
+            running,
+            unresolved,
+        })
+    }
+
     /// `script_catalog`.
     pub fn script_catalog(
         &self,
@@ -293,26 +455,61 @@ impl Supervisor {
             .collect()
     }
 
+    /// Stems of `requires_stopped` that run, with their state (49).
+    fn unmet_stopped(&self, stopped: &[String]) -> Vec<(String, StemState)> {
+        stopped
+            .iter()
+            .map(|r| (r.clone(), self.cell(r).state()))
+            .filter(|(_, s)| !is_stopped(*s))
+            .collect()
+    }
+
+    /// `requires_stopped:` of `p`'s script do not run (`stop_deps`: stopped
+    /// first), then its `requires:` are healthy (`start_deps`: started
+    /// first, in the caller's environment).
     async fn ensure_requires(
         &self,
         ws: &Resolved,
-        stem: Option<&str>,
-        name: &str,
-        requires: &[String],
-        start_deps: bool,
+        p: &RunScriptParams,
+        script: &Script,
         actor: &str,
     ) -> Result<(), Error> {
-        if !requires.is_empty() {
-            schedule::plan(ws, requires, true)?;
+        let (stem, name) = (p.stem.as_deref(), p.name.as_str());
+        let (requires, stopped) = (&script.requires, &script.requires_stopped);
+        for list in [requires, stopped] {
+            if !list.is_empty() {
+                schedule::plan(ws, list, true)?;
+            }
+        }
+        let mut unmet_stopped = self.unmet_stopped(stopped);
+        let mut stop_error = None;
+        if !unmet_stopped.is_empty() && p.stop_deps {
+            let names: Vec<String> = unmet_stopped.iter().map(|(n, _)| n.clone()).collect();
+            match self
+                .stop(
+                    StopParams {
+                        stems: names,
+                        ..StopParams::default()
+                    },
+                    actor,
+                )
+                .await
+            {
+                Ok(r) => stop_error = r.failed.into_iter().next().map(|f| f.error),
+                Err(e) => stop_error = Some(e),
+            }
+            unmet_stopped = self.unmet_stopped(stopped);
         }
         let mut unmet = self.unmet(requires);
         let mut start_error = None;
-        if !unmet.is_empty() && start_deps {
+        let mut restarted_stopped = false;
+        if !unmet.is_empty() && p.start_deps && unmet_stopped.is_empty() {
             let names: Vec<String> = unmet.iter().map(|(n, _)| n.clone()).collect();
             match self
                 .start(
                     StartParams {
                         stems: names,
+                        caller_env: p.caller_env.clone(),
                         ..StartParams::default()
                     },
                     actor,
@@ -323,39 +520,79 @@ impl Supervisor {
                 Err(e) => start_error = Some(e),
             }
             unmet = self.unmet(requires);
+            // A hard dependency of a `requires` stem may be one of the
+            // `requires_stopped` ones: starting them started it again.
+            unmet_stopped = self.unmet_stopped(stopped);
+            restarted_stopped = !unmet_stopped.is_empty();
         }
-        if unmet.is_empty() {
+        if unmet.is_empty() && unmet_stopped.is_empty() {
             return Ok(());
         }
         let what = match stem {
             Some(s) => format!("script `{name}` of `{s}`"),
             None => format!("workspace script `{name}`"),
         };
-        let list: Vec<String> = unmet.iter().map(|(n, s)| format!("{n} ({s})")).collect();
-        let names: Vec<&str> = unmet.iter().map(|(n, _)| n.as_str()).collect();
-        let hint = if start_deps {
-            "they could not be started; see `stems status` and `stems logs`".to_string()
-        } else {
-            format!(
-                "start them with `stems up {}`, or rerun with `--start-deps`",
-                names.join(" ")
-            )
+        let listed = |l: &[(String, StemState)]| {
+            l.iter()
+                .map(|(n, s)| format!("{n} ({s})"))
+                .collect::<Vec<_>>()
+                .join(", ")
         };
-        Err(Error::new(
-            ErrorCode::ScriptRequiresUnmet,
-            format!("{what} requires healthy stems: {}", list.join(", ")),
-        )
-        .with_hint(hint)
-        .with_details(json!({
-            "stem": stem,
-            "script": name,
-            "requires": requires,
-            "unmet": unmet
-                .iter()
+        let names = |l: &[(String, StemState)]| {
+            l.iter()
+                .map(|(n, _)| n.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let mut msgs = Vec::new();
+        let mut hints = Vec::new();
+        if !unmet.is_empty() {
+            msgs.push(format!("{what} requires healthy stems: {}", listed(&unmet)));
+            hints.push(if p.start_deps {
+                "they could not be started; see `stems status` and `stems logs`".to_string()
+            } else {
+                format!(
+                    "start them with `stems up {}`, or rerun with `--start-deps`",
+                    names(&unmet)
+                )
+            });
+        }
+        if !unmet_stopped.is_empty() {
+            msgs.push(format!(
+                "{what} requires stopped stems: {}",
+                listed(&unmet_stopped)
+            ));
+            hints.push(if restarted_stopped {
+                format!(
+                    "`--start-deps` started them again as hard dependencies of the `requires` stems: `requires` and `requires_stopped` conflict ({})",
+                    names(&unmet_stopped)
+                )
+            } else if p.stop_deps {
+                "they could not be stopped; see `stems status` (running dependants need `stems stop --cascade`)".to_string()
+            } else {
+                format!(
+                    "stop them with `stems stop {}`, or rerun with `--stop-deps`",
+                    names(&unmet_stopped)
+                )
+            });
+        }
+        let pairs = |l: &[(String, StemState)]| {
+            l.iter()
                 .map(|(n, s)| json!({ "stem": n, "state": s }))
-                .collect::<Vec<_>>(),
-            "start_error": start_error,
-        })))
+                .collect::<Vec<_>>()
+        };
+        Err(Error::new(ErrorCode::ScriptRequiresUnmet, msgs.join("; "))
+            .with_hint(hints.join("; "))
+            .with_details(json!({
+                "stem": stem,
+                "script": name,
+                "requires": requires,
+                "unmet": pairs(&unmet),
+                "start_error": start_error,
+                "requires_stopped": stopped,
+                "unmet_stopped": pairs(&unmet_stopped),
+                "stop_error": stop_error,
+            })))
     }
 
     /// Wait while `stem` is in its start sequence (bounded by `bound`).
@@ -394,7 +631,7 @@ impl Supervisor {
     /// `run_script`: returns [`RunScriptResult`] (or [`RunScriptAccepted`]
     /// with `wait: false`) as JSON.
     pub async fn run_script(&self, p: RunScriptParams, actor: &str) -> Result<Value, Error> {
-        let ws = self.workspace(true, actor)?;
+        let ws = self.workspace_for(actor, p.caller_env.as_ref(), &[])?;
         let stem_name = p.stem.as_deref();
         let name = p.name.as_str();
         let (script, stem) = match stem_name {
@@ -424,8 +661,9 @@ impl Supervisor {
         }
         .map_err(|e| with_context(e, stem_name, name))?;
 
-        self.ensure_requires(&ws, stem_name, name, &script.requires, p.start_deps, actor)
-            .await?;
+        self.ensure_requires(&ws, &p, &script, actor).await?;
+        // The caller's environment is the script's base layer (37).
+        let call = CallEnv::new(p.caller_env.clone(), BTreeMap::new());
         if let Some(s) = stem_name {
             let bound = p
                 .ready_timeout_ms
@@ -435,6 +673,8 @@ impl Supervisor {
 
         let (env, cwd_override, shell) = match &stem {
             Some(st) => {
+                // What stems set at the stem's start (its `--pass-env`, the
+                // outputs then) over this call's base, else built now.
                 let launch_env = self
                     .cell(&st.name)
                     .info()
@@ -442,8 +682,13 @@ impl Supervisor {
                     .as_ref()
                     .map(|l| l.env.clone());
                 let env = match launch_env {
+                    Some(e) if call.caller.is_some() => {
+                        let mut full = call.base(&self.core.base_env).clone();
+                        full.extend(e.own.clone());
+                        StemEnv { own: e.own, full }
+                    }
                     Some(e) => e,
-                    None => stem_env(&self.core, &ws.workspace, st, &BTreeMap::new())?,
+                    None => stem_env_with(&self.core, &ws.workspace, st, &call, false)?,
                 };
                 let cwd_override = (st.codebase.is_none() && !script.cwd_set)
                     .then(|| self.core.scripts.state_dir(Some(&st.name)));
@@ -453,11 +698,7 @@ impl Supervisor {
                 };
                 (env, cwd_override, shell)
             }
-            None => (
-                workspace_env(&self.core, &ws.workspace, &BTreeMap::new()),
-                None,
-                None,
-            ),
+            None => (workspace_env(&self.core, &ws.workspace, &call), None, None),
         };
         let slot_key = stem_name.unwrap_or(WORKSPACE_LOG_STEM);
         let slot = (!script.concurrent).then(|| self.runs.slot(slot_key));

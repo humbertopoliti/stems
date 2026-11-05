@@ -4,7 +4,6 @@
 //! loop (`IMAGE_STALE`, reported like a stem that was given up on), and the
 //! pure error/event builders shared with `doctor`.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -175,9 +174,9 @@ pub(crate) async fn crash_guard(core: &Arc<Core>, cell: &Arc<StemCell>) -> Optio
     }
     let ws = cell.info().restart.workspace().cloned()?;
     let stem = ws.workspace.stem(&cell.name)?;
-    let mut spec =
-        super::containers::compose_spec(&ws.workspace, stem, &core.run_id, &BTreeMap::new())
-            .ok()?;
+    // Interpolated like a start, so the check sees the same compose files.
+    let env = super::containers::config_env(&ws.workspace, stem, &core.run_id, &core.ports);
+    let mut spec = super::containers::compose_spec(&ws.workspace, stem, &core.run_id, &env).ok()?;
     spec.build = false;
     let check = compose_check(core, &spec).await?;
     check

@@ -40,7 +40,9 @@ get_events, get_health, get_metrics, get_config. Act with start, stop, restart, 
 run_script and the <stem>__<script> tools (custom scripts). Destructive calls (down with \
 all/volumes, up with fresh, reset, doctor with fix) need confirm: true after asking the user, \
 and the workspace setting agent.allow_destructive. Every action is recorded with your client \
-name as actor.";
+name as actor. Read the stems://features resource (the output of `stems features --json`) to \
+discover everything stems can do, including what has no tool here (stems exec, stems compose, \
+stems ports, overlays), with the doc page of each.";
 
 struct Inner {
     backend: Backend,

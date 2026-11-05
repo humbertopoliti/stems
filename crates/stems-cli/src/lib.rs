@@ -65,7 +65,16 @@ pub fn run(inv: &Invocation, stdout: &mut dyn Write, stderr: &mut dyn Write) -> 
     let no_color = has("--no-color") || env_no_color;
     let colored = inv.stdout_is_tty && !no_color;
 
-    let cmd = Cli::command().color(if colored {
+    // Help footers (See also, hook tables, grouped headings) are rendered
+    // only when help can be shown: decorating every subcommand on each
+    // invocation costs a few MB of RSS, which the daemon would keep.
+    let wants_help = has("--help") || has("-h") || has("help");
+    let base = if wants_help {
+        crate::cli::command_unbuilt()
+    } else {
+        Cli::command()
+    };
+    let cmd = base.color(if colored {
         ColorChoice::Always
     } else {
         ColorChoice::Never
@@ -113,7 +122,7 @@ pub fn run(inv: &Invocation, stdout: &mut dyn Write, stderr: &mut dyn Write) -> 
         match cli.command {
             Some(c) => commands::dispatch(c, &ctx, opts.mode, stdout),
             None => {
-                let mut help = Cli::command();
+                let mut help = crate::cli::command_unbuilt();
                 let text = help.render_help().to_string();
                 if opts.mode == output::Mode::Human {
                     let _ = stderr.write_all(text.as_bytes());

@@ -78,6 +78,32 @@ fn report_rendering_golden() {
 }
 
 #[test]
+fn per_stem_requires_row_golden() {
+    let r = DoctorReport::new(
+        vec![
+            CheckResult::ok("requires.web.node", "node 20.11.1 satisfies 20.11.1 (from .nvmrc)"),
+            CheckResult::fail(
+                "requires.web.pnpm",
+                "`pnpm` 9.0.0 does not satisfy the required range 9.1.0 (from package.json#packageManager)",
+            )
+            .hint("install pnpm 9.1.0")
+            .code(ErrorCode::ToolVersion),
+        ],
+        false,
+    );
+    insta::assert_snapshot!(r.render_human(), @r"
+    CHECK              STATUS  MESSAGE
+    requires.web.node  ✓ ok    node 20.11.1 satisfies 20.11.1 (from .nvmrc)
+    requires.web.pnpm  ✗ fail  `pnpm` 9.0.0 does not satisfy the required range 9.1.0 (from package.json#packageManager)
+
+    hints:
+      requires.web.pnpm: install pnpm 9.1.0
+
+    1 ok, 0 warn, 1 fail
+    ");
+}
+
+#[test]
 fn report_json_shape_and_exit() {
     let r = sample();
     let v = serde_json::to_value(&r).unwrap();
@@ -459,4 +485,88 @@ fn image_check_golden() {
 
     3 ok, 2 warn, 0 fail
     ");
+}
+
+#[tokio::test]
+async fn custom_checks_report_status_details_fix_and_timeout() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(d.path().join("ws")).unwrap();
+    std::fs::write(
+        d.path().join("ws/stems.yaml"),
+        r#"schema_version: 1
+name: w
+env: { WS_VAR: from-ws }
+checks:
+  ok: { command: 'test "$WS_VAR" = from-ws' }
+  bad: { command: 'echo boom >&2; exit 4', message: nope, hint: do it, fix: 'touch fixed' }
+  soft: { command: 'false', severity: warn }
+  slow: { command: 'sleep 5', timeout: 1s }
+  skipped: { command: 'false', when: [up] }
+stems:
+  a: { type: external, checks: { mine: { command: 'true' } } }
+"#,
+    )
+    .unwrap();
+    let r = run(input(d.path()), false).await;
+    let get = |id: &str| {
+        r.checks
+            .iter()
+            .find(|c| c.id == id)
+            .unwrap_or_else(|| panic!("{id}"))
+    };
+    assert_eq!(get("check.ok").status, CheckStatus::Ok);
+    let bad = get("check.bad");
+    assert_eq!(bad.status, CheckStatus::Fail);
+    assert_eq!(bad.message, "nope");
+    assert_eq!(bad.hint.as_deref(), Some("do it"));
+    assert!(bad.fixable);
+    assert_eq!(bad.code, Some(ErrorCode::CheckFailed));
+    assert_eq!(bad.details["exit"], 4);
+    assert_eq!(bad.details["tail"], "boom");
+    assert_eq!(get("check.soft").status, CheckStatus::Warn);
+    assert!(!get("check.soft").fixable);
+    let slow = get("check.slow");
+    assert_eq!(slow.status, CheckStatus::Fail);
+    assert!(slow.message.contains("timed out"), "{}", slow.message);
+    assert_eq!(get("check.a.mine").status, CheckStatus::Ok);
+    assert!(r.checks.iter().all(|c| c.id != "check.skipped"));
+}
+
+#[test]
+fn docker_version_notes_buildx() {
+    // 44: buildx is reported; missing, it only fails when a stem needs it.
+    let ok = checks::buildx_note("29.8.0", Some("buildx v0.37.1"), &[]);
+    assert_eq!(ok.status, CheckStatus::Ok);
+    assert_eq!(ok.message, "Docker Engine 29.8.0; buildx v0.37.1");
+    assert_eq!(ok.details["buildx"], "buildx v0.37.1");
+    let quiet = checks::buildx_note("29.8.0", None, &[]);
+    assert_eq!(quiet.status, CheckStatus::Ok);
+    let needed = checks::buildx_note("29.8.0", None, &["api".to_string()]);
+    assert_eq!(needed.status, CheckStatus::Fail);
+    assert_eq!(needed.code, Some(ErrorCode::DockerUnavailable));
+    assert!(needed.message.contains("api needs"), "{}", needed.message);
+    assert!(needed.hint.as_deref().unwrap().contains("buildx"));
+}
+
+#[tokio::test]
+async fn up_checks_of_stems_outside_the_selection_never_run() {
+    // 48: entries are filtered by the selection *before* running.
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(
+        d.path().join("stems.yaml"),
+        "schema_version: 1\nname: t\nstems:\n  a: { type: process, command: run, checks: { mine: { command: 'touch ran-a', when: [up] } } }\n  b: { type: process, command: run, checks: { other: { command: 'touch ran-b; false', when: [up] } } }\n",
+    )
+    .unwrap();
+    let resolved = stems_config::load(LoadOptions {
+        workspace: Some(d.path().to_path_buf()),
+        cwd: d.path().to_path_buf(),
+        env: Default::default(),
+        skip_local: true,
+    })
+    .unwrap();
+    preflight_up(&resolved, &["a".to_string()], None)
+        .await
+        .unwrap();
+    assert!(d.path().join("ran-a").exists());
+    assert!(!d.path().join("ran-b").exists(), "b's check ran");
 }

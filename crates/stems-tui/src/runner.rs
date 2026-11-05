@@ -29,6 +29,14 @@ use crate::view::{render_text, view};
 /// terminal is restored on panic.
 pub const ENV_PANIC_TEST: &str = "STEMS_TUI_PANIC_TEST";
 
+/// The TUI's own environment minus `STEMS_*`: the `caller_env` of the
+/// actions that spawn something (49).
+pub fn caller_env() -> std::collections::BTreeMap<String, String> {
+    std::env::vars()
+        .filter(|(k, _)| !k.starts_with("STEMS_"))
+        .collect()
+}
+
 /// Run one command; `None` for [`Cmd::Exit`] and for the commands the
 /// runners handle themselves ([`Cmd::SubscribeLogs`], [`Cmd::Copy`],
 /// [`Cmd::SavePref`]).
@@ -50,7 +58,11 @@ pub async fn exec(client: &Client, cmd: &Cmd) -> Option<Msg> {
         Cmd::Action(a) => Msg::Rpc(RpcResult::Action {
             action: a.clone(),
             result: client
-                .call_with_timeout::<Value>(a.method(), a.params(), ACTION_TIMEOUT)
+                .call_with_timeout::<Value>(
+                    a.method(),
+                    a.params_with_env(&caller_env()),
+                    ACTION_TIMEOUT,
+                )
                 .await
                 .map_err(Box::new),
         }),

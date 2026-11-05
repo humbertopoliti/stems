@@ -13,7 +13,7 @@
 //!   every enabled stem's, lifecycle and custom, with descriptions and
 //!   argument schemas). It needs no daemon: the config is loaded locally.
 //!   `data = ScriptCatalogResult { scripts: [{stem, name, description, args,
-//!   requires, kind, timeout, retries, concurrent, mcp_tool, input_schema}],
+//!   requires, requires_stopped, kind, timeout, retries, concurrent, mcp_tool, input_schema}],
 //!   lifecycle_hooks: [names] }`; the human table ends with a `lifecycle
 //!   hooks:` footer. **`scripts --lifecycle`** (36) lists every lifecycle
 //!   hook instead, set or not, in lifecycle order: `data = { lifecycle:
@@ -129,7 +129,9 @@ async fn run_async(
         args: ScriptArgsInput::Argv(args.args.clone()),
         wait: !args.no_wait,
         start_deps: args.start_deps,
+        stop_deps: args.stop_deps,
         ready_timeout_ms: parse_wait(args.wait.as_deref())?,
+        caller_env: Some(super::exec::caller_env(&ctx.env)),
     };
     let t = client::target(ctx)?;
     let (c, started) = connect_or_start(ctx, &t).await?;
@@ -361,6 +363,7 @@ mod tests {
             argv: Vec::new(),
             tail: Vec::new(),
             queued: false,
+            soft: false,
             error: None,
         }
     }

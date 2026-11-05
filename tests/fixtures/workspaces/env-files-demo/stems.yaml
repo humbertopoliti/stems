@@ -1,0 +1,21 @@
+# env-files-demo — fixture for validate/env-files.feature and
+# lifecycle/env-files-precedence.feature (FR-ST-4, deliverable 38).
+#
+# `api` sets API_URL and SAME in `env:` and again in env/api.env: the file
+# wins (API_URL differs, so `validate` warns ENV_SHADOWED; SAME is equal, so
+# it does not). env/api.local.env is `required: false` and absent: skipped.
+schema_version: 1
+name: env-files-demo
+
+stems:
+  api:
+    type: process
+    command: exec sleep 300
+    env:
+      API_URL: http://from-env
+      SAME: "1"
+    env_files:
+      - env/api.env
+      - { path: env/api.local.env, required: false }
+    health: { type: process, interval: 200ms }
+    stop_grace: 1s

@@ -139,7 +139,9 @@ stem instead of rewriting it:
 
 A stem's `env` is compose's interpolation input, so the compose file can keep
 publishing `${REDIS_PORT:-16379}` while stems stays the source of truth for
-the port. One compose stem is one service: add a stem per service you want
+the port. It is not the container's environment: a variable reaches the
+container only when the compose file names it, or with `inject_env: true`
+([compose.md](compose.md#env-overrides-and-precedence)). One compose stem is one service: add a stem per service you want
 stems to track. Details: [docker.md](docker.md), [compose.md](compose.md).
 
 Check it:
@@ -192,7 +194,11 @@ A **process** stem runs your code from its repository:
   output, so nothing is written into the code repository.
 - `${stem.postgres.port}` and `${stem.self.port}` keep ports in one place:
   change a port once and everything that uses it follows.
-- `env_files` load `KEY=value` files from the integration repo.
+- `env_files` load `KEY=value` files from the integration repo; their
+  values beat `env:` (`stems validate` warns `ENV_SHADOWED` when they
+  differ) and `stems.local.yaml` beats them. Mark a file that may be absent
+  `{ path: env/api.local.env, required: false }`. See
+  [config.md](config.md#environment-fr-st-4).
 - `stop_grace` is how long a stop waits after SIGTERM before SIGKILL, and
   `restart` restarts the stem when it crashes (`never`, `on-failure` or
   `always`, with backoff). See [restart.md](restart.md).
@@ -367,6 +373,13 @@ Rules worth knowing:
 - **Inside a container, `localhost` is the container itself**, so reach the
   host's services through `host.docker.internal`.
 - `local` and `base` are reserved names that mean the base definition.
+- `null` removes what the variant would inherit: `scripts: { setup: ~ }`
+  skips the base's host-side setup, `env: { LOG_LEVEL: ~ }` unsets a
+  variable. `inherit: false` starts the variant from an empty stem (give it
+  a `type` and everything else it needs).
+- `stems show api --variant docker --json` previews a variant without
+  switching; its `inherited_from` says which layer (`base`, `variant`,
+  `local`, ...) each field comes from.
 
 Switch while everything runs:
 
@@ -525,7 +538,9 @@ stems up
 
 Put a `requires:` block in `stems.yaml` so `stems doctor` and
 `stems validate` check tool versions (`python3: ">=3.11"`, `node: ">=20"`)
-before anything starts. Document the profiles in the integration repo's
+before anything starts. A stem can have its own `requires:` that reads the
+version from its codebase (`node: { from: .nvmrc }`): see
+[doctor.md](doctor.md#requires). Document the profiles in the integration repo's
 README.
 
 ## 14. Let agents operate it
@@ -550,3 +565,5 @@ enabled. See [mcp.md](mcp.md).
 - [ ] `stems.local.yaml.example` shows the useful overrides; no secrets are committed
 - [ ] `requires:` lists the tools and versions
 - [ ] `stems validate` and `stems doctor` pass on a clean machine, and `stems graph` looks right
+
+See also: [What stems can do (everything else)](features.md) · [Config](config.md) · [Lifecycle](lifecycle.md) · [Scripts](scripts.md) · [Documentation index](README.md)

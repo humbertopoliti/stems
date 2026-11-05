@@ -131,6 +131,25 @@ impl Action {
         }
     }
 
+    /// [`Action::params`] plus `caller_env` (49) for the actions that spawn
+    /// something (`start`, `restart`, `up`, `run_script`): the TUI is
+    /// launched from the user's shell, so its environment is the base layer
+    /// of what they start and what `${env.X}` resolves against.
+    pub fn params_with_env(&self, env: &std::collections::BTreeMap<String, String>) -> Value {
+        let mut p = self.params();
+        let spawns = matches!(
+            self,
+            Action::Start(_)
+                | Action::Restart { .. }
+                | Action::UpAll { .. }
+                | Action::RunScript { .. }
+        );
+        if spawns && let Value::Object(m) = &mut p {
+            m.insert("caller_env".into(), json!(env));
+        }
+        p
+    }
+
     /// What is being done (`restart shop-api`), for notices and errors.
     pub fn describe(&self) -> String {
         match self {
@@ -492,6 +511,17 @@ mod tests {
         };
         assert_eq!(a.params(), json!({"stems": ["b"], "build": true}));
         assert_eq!(a.describe(), "rebuild b");
+        // Spawning actions carry the TUI's environment (49); others do not.
+        let env: std::collections::BTreeMap<String, String> =
+            [("FOO".to_string(), "bar".to_string())].into();
+        assert_eq!(
+            a.params_with_env(&env),
+            json!({"stems": ["b"], "build": true, "caller_env": {"FOO": "bar"}})
+        );
+        assert_eq!(
+            Action::DownAll.params_with_env(&env),
+            Action::DownAll.params()
+        );
         assert_eq!(
             Action::Watch {
                 stem: "api".into(),

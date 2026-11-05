@@ -41,3 +41,5 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems daemon start`, `stems daemon stop`; docs/protocol.md; `stems features agents`.

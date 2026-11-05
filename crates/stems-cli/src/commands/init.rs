@@ -174,8 +174,12 @@ fn header(name: &str, from: Option<&str>) -> String {
          #\n\
          # Lifecycle hooks (`scripts:` names stems runs itself; see\n\
          # `stems scripts --lifecycle`): {hooks}.\n\
-         # Any other script name is a custom script (`stems run`).\n",
-        hooks = stems_config::lifecycle::summary()
+         # Any other script name is a custom script (`stems run`).\n\
+         #\n\
+         # Top-level keys (`stems features` lists everything stems can do,\n\
+         # `stems docs config` prints the reference):\n{keys}",
+        hooks = stems_config::lifecycle::summary(),
+        keys = top_level_keys()
     );
     if from.is_some() {
         h.push_str(
@@ -186,6 +190,16 @@ fn header(name: &str, from: Option<&str>) -> String {
     }
     h.push('\n');
     h
+}
+
+/// One comment line per top-level key with its purpose, generated from
+/// `stems_config::features::CONFIG_KEYS` (kept equal to the schema).
+fn top_level_keys() -> String {
+    let keys = stems_config::features::CONFIG_KEYS;
+    let width = keys.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+    keys.iter()
+        .map(|(k, purpose)| format!("#   {k:<width$}  {purpose}\n"))
+        .collect()
 }
 
 fn empty_config(name: &str) -> String {
@@ -465,6 +479,23 @@ mod tests {
         let v: serde_yaml_ng::Value = serde_yaml_ng::from_str(&sc.config).unwrap();
         assert_eq!(v["name"], serde_yaml_ng::Value::from("x"));
         assert!(v["stems"].as_mapping().is_some_and(|m| m.is_empty()));
+    }
+
+    #[test]
+    fn template_lists_every_top_level_schema_key() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../schema/stems.schema.json")).unwrap();
+        for (from, sc) in [
+            ("empty", scaffold("x", None)),
+            ("minimal", scaffold("x", Some(Template::Minimal))),
+        ] {
+            for key in schema["properties"].as_object().unwrap().keys() {
+                assert!(
+                    sc.config.contains(&format!("\n#   {key} ")),
+                    "{from} template does not mention `{key}`"
+                );
+            }
+        }
     }
 
     #[test]

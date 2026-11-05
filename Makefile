@@ -112,11 +112,13 @@ trace:
 		echo "trace: REQUIREMENTS.md/plan/ not present, skipping the traceability check"; \
 	fi
 
-# API docs, plus docs/cli.md generated from the clap tree (`stems __docs`);
-# crates/stems-cli/tests/docs.rs fails when docs/cli.md drifts.
+# API docs, plus docs/cli.md generated from the clap tree (`stems __docs`) and
+# docs/features.md from the feature index (`stems __docs features`);
+# crates/stems-cli/tests/docs.rs fails when either drifts.
 docs:
 	$(CARGO) doc --workspace --no-deps
 	$(CARGO) run -q -p stems-cli -- __docs > docs/cli.md
+	$(CARGO) run -q -p stems-cli -- __docs features > docs/features.md
 
 # --- release (deliverable 32; see release/RELEASING.md) ----------------------
 

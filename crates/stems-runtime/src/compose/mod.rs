@@ -25,7 +25,9 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt as _;
 
-use crate::docker::{DockerRuntime, ImageProgress, ProgressSink, classify_stop};
+use crate::docker::{
+    BuildSecret, DockerRuntime, ImageProgress, ProgressSink, SecretSource, classify_stop,
+};
 use crate::output::{LineSplitter, OutputStream};
 use crate::runtime::{
     AdoptRecord, ExitStatus, Handle, HandleId, Orphan, OrphanScope, Runtime, RuntimeError,
@@ -33,8 +35,9 @@ use crate::runtime::{
 };
 
 pub use command::{
-    ComposeCommand, ComposeTarget, compose_env, display_command, env_file_path, marker_path,
-    quote_env_value, render_env_file, write_env_file,
+    ComposeCommand, ComposeTarget, OverrideInputs, compose_env, display_command, env_file_path,
+    marker_path, override_file_path, quote_env_value, render_env_file, render_override,
+    render_override_file, write_env_file,
 };
 pub use parse::{
     COMPOSE_TAIL_LINES, ComposeAdoptRejection, LABEL_COMPOSE_CONFIG_FILES, LABEL_COMPOSE_PROJECT,
@@ -74,14 +77,59 @@ pub struct ComposeSpec {
     /// true; deliverable 35). A service without `build:` is unaffected.
     #[serde(default = "default_build")]
     pub build: bool,
+    /// `inject_env: true` (38): also put the env file into the service's
+    /// container through `<env_dir>/<stem>.override.yaml`, a second `-f`.
+    #[serde(default)]
+    pub inject_env: bool,
+    /// With `inject_env`: the container port of the stem's primary port;
+    /// the override sets `PORT` to it (the env file's `PORT` is the host
+    /// port).
+    #[serde(default)]
+    pub container_port: Option<u16>,
+    /// The object form of `build:` (44): images built with `docker buildx
+    /// bake` (secrets, `allow_read`, extra services), then `up --no-build`.
+    #[serde(default, skip_serializing_if = "BakeOptions::is_plain")]
+    pub bake: BakeOptions,
+    /// The images were already built in this start sequence
+    /// (`build.before_setup`, 44): `up` does not build them again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub prebuilt: bool,
     /// Where the output lines of `up --build` go (`docker.build` events).
     /// Ignored by equality and serde.
     #[serde(skip)]
     pub progress: ProgressSink,
+    /// `env` build secrets' values from the request (44): given to the
+    /// compose/Bake process only. Ignored by equality and serde.
+    #[serde(skip)]
+    pub secret_env: crate::docker::SecretEnv,
 }
 
 fn default_build() -> bool {
     true
+}
+
+/// The object form of a compose stem's `build:` (44).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BakeOptions {
+    /// Services built; empty: the stem's service.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub services: Vec<String>,
+    /// Built before `setup` (the daemon's concern; recorded for `show`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub before_setup: bool,
+    /// BuildKit secrets, declared in the override file.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<BuildSecret>,
+    /// Extra `--allow fs.read=` paths (exact, absolute).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow_read: Vec<PathBuf>,
+}
+
+impl BakeOptions {
+    /// The bool form: nothing for Bake to do.
+    pub fn is_plain(&self) -> bool {
+        self == &Self::default()
+    }
 }
 
 impl ComposeSpec {
@@ -105,8 +153,52 @@ impl ComposeSpec {
             stop_grace: Duration::from_secs(10),
             adopt: false,
             build: true,
+            inject_env: false,
+            container_port: None,
+            bake: BakeOptions::default(),
+            prebuilt: false,
             progress: ProgressSink::default(),
+            secret_env: crate::docker::SecretEnv::default(),
         }
+    }
+
+    /// Images are built with `docker buildx bake` (44): `build` is on and
+    /// the object form asks for more than `build: true`.
+    pub fn uses_bake(&self) -> bool {
+        self.build && !self.bake.is_plain()
+    }
+
+    /// The services whose images are built: `bake.services`, else the
+    /// stem's service.
+    pub fn build_services(&self) -> Vec<String> {
+        if self.bake.services.is_empty() {
+            vec![self.service.clone()]
+        } else {
+            self.bake.services.clone()
+        }
+    }
+
+    /// A generated override file is passed (`inject_env`, build secrets).
+    pub fn needs_override(&self) -> bool {
+        self.inject_env || !self.bake.secrets.is_empty()
+    }
+
+    /// The generated override file's content (`env_file`: the stem's env
+    /// file, `<env_dir>/<stem>.env`), or `None` when none is passed
+    /// ([`Self::needs_override`]). The runtime and `stems compose` (43) both
+    /// write exactly this.
+    pub fn override_body(&self, env_file: &Path) -> Option<String> {
+        if !self.needs_override() {
+            return None;
+        }
+        let services = self.build_services();
+        Some(render_override(&OverrideInputs {
+            service: &self.service,
+            env_file: self.inject_env.then_some(env_file),
+            container_port: self.container_port,
+            secrets: &self.bake.secrets,
+            build_services: &services,
+        }))
     }
 }
 
@@ -185,6 +277,20 @@ fn now_secs() -> i32 {
         .map_or(0, |d| i32::try_from(d.as_secs()).unwrap_or(i32::MAX))
 }
 
+/// Grant `fs.read` on a path stems itself needs Bake to read (a context, a
+/// Dockerfile's directory, a secret file): normalised, plus its canonical
+/// form when a symlink makes it differ. The user's `allow_read` entries are
+/// passed exactly as written.
+fn grant(allow: &mut BTreeSet<PathBuf>, p: &Path) {
+    let p = crate::docker::normalize(p);
+    if let Ok(real) = std::fs::canonicalize(&p)
+        && real != p
+    {
+        allow.insert(real);
+    }
+    allow.insert(p);
+}
+
 /// Projects that have an ownership marker in `env_dir`.
 fn marked_projects(env_dir: &Path) -> Vec<String> {
     let Ok(rd) = std::fs::read_dir(env_dir) else {
@@ -250,10 +356,25 @@ impl ComposeRuntime {
         }
     }
 
+    /// Write `spec`'s env file and, with `inject_env` or build secrets,
+    /// its override file.
+    fn write_inputs(&self, spec: &ComposeSpec) -> Result<(), RuntimeError> {
+        let env_file = env_file_path(&self.opts.env_dir, &spec.stem);
+        write_env_file(&env_file, &spec.env)?;
+        if let Some(body) = spec.override_body(&env_file) {
+            command::write_private(&override_file_path(&self.opts.env_dir, &spec.stem), &body)?;
+        }
+        Ok(())
+    }
+
     fn spec_invocation(&self, spec: &ComposeSpec) -> Invocation {
         Invocation {
             target: ComposeTarget::for_spec(spec, &self.opts.env_dir),
-            env: compose_env(&spec.env, Some(self.docker.host())),
+            env: {
+                let mut env = compose_env(&spec.env, Some(self.docker.host()));
+                spec.secret_env.apply_to(&mut env);
+                env
+            },
             cwd: spec
                 .file
                 .parent()
@@ -476,10 +597,8 @@ impl ComposeRuntime {
         let lock = self.project_lock(&spec.project_name);
         let _guard = lock.lock().await;
 
+        self.write_inputs(spec)?;
         let inv = self.spec_invocation(spec);
-        if let Some(env_file) = &inv.target.env_file {
-            write_env_file(env_file, &spec.env)?;
-        }
 
         let existing = self.project_ps(&spec.project_name).await?;
         let marker = marker_path(&self.opts.env_dir, &spec.project_name);
@@ -497,10 +616,18 @@ impl ComposeRuntime {
             });
         }
 
+        if spec.uses_bake() && !spec.prebuilt {
+            self.bake_images(spec, &inv).await?;
+        }
         // A second of slack so lines logged in the same second as `up` are kept.
         let since = now_secs().saturating_sub(1);
-        let up = ComposeCommand::up(&inv.target, spec.build);
-        if spec.build {
+        let up_build = spec.build && !spec.uses_bake();
+        let up = if spec.uses_bake() {
+            ComposeCommand::up_no_build(&inv.target)
+        } else {
+            ComposeCommand::up(&inv.target, spec.build)
+        };
+        if up_build {
             // The build output is visible as `docker.build` events.
             let (progress, stem) = (spec.progress.clone(), spec.stem.clone());
             let on_line = move |line: String| {
@@ -541,14 +668,116 @@ impl ComposeRuntime {
         Ok(handle)
     }
 
+    /// Build `spec`'s images with Bake (44), before `setup`
+    /// (`build.before_setup`): writes the env and override files first.
+    /// Returns `(service, image)` for each built service (`STEMS_IMAGES`).
+    pub async fn build_images(
+        &self,
+        spec: &ComposeSpec,
+    ) -> Result<Vec<(String, String)>, RuntimeError> {
+        self.ensure_version().await?;
+        let lock = self.project_lock(&spec.project_name);
+        let _guard = lock.lock().await;
+        self.write_inputs(spec)?;
+        let inv = self.spec_invocation(spec);
+        self.bake_images(spec, &inv).await
+    }
+
+    /// The images `spec`'s build services run, without building anything
+    /// (`STEMS_IMAGES` when the build is off for this run).
+    pub async fn service_images(
+        &self,
+        spec: &ComposeSpec,
+    ) -> Result<Vec<(String, String)>, RuntimeError> {
+        let json = self.config_json_text(spec).await?;
+        spec.build_services()
+            .into_iter()
+            .map(|svc| {
+                let cfg = service_config(&json, &spec.project_name, &svc, &spec.file)?;
+                Ok((svc, cfg.image))
+            })
+            .collect()
+    }
+
+    /// `docker buildx bake` of `spec`'s build services ([`ComposeCommand::
+    /// bake`]); the caller wrote the inputs and holds the project lock.
+    /// Every service must have `build:`; its context, its Dockerfile's
+    /// directory and the secret files are granted `fs.read` along with
+    /// `allow_read`. The stem env (plus `COMPOSE_PROJECT_NAME`) is the
+    /// process's env, so the files interpolate like `compose up`.
+    async fn bake_images(
+        &self,
+        spec: &ComposeSpec,
+        inv: &Invocation,
+    ) -> Result<Vec<(String, String)>, RuntimeError> {
+        let json = self.config_json_text(spec).await?;
+        let mut images = Vec::new();
+        let mut allow: BTreeSet<PathBuf> = spec.bake.allow_read.iter().cloned().collect();
+        for svc in spec.build_services() {
+            let cfg = service_config(&json, &spec.project_name, &svc, &spec.file)?;
+            let Some(build) = cfg.build else {
+                return Err(RuntimeError::BuildFailed {
+                    tail: vec![format!(
+                        "service `{svc}` has no `build:` in {}; list only services that are built in `build.services`",
+                        spec.file.display()
+                    )],
+                });
+            };
+            grant(&mut allow, &build.context);
+            if let Some(dir) = build.dockerfile.parent() {
+                grant(&mut allow, dir);
+            }
+            images.push((svc, cfg.image));
+        }
+        for s in &spec.bake.secrets {
+            if let SecretSource::File(f) = &s.source {
+                grant(&mut allow, f);
+            }
+        }
+        let allow: Vec<PathBuf> = allow.into_iter().collect();
+        let args = ComposeCommand::bake(&inv.target, &images, &allow);
+        let mut env = inv.env.clone();
+        env.entry("COMPOSE_PROJECT_NAME".into())
+            .or_insert_with(|| spec.project_name.clone());
+        // The `fs` entitlement checks stay on whatever the environment says.
+        env.insert("BUILDX_BAKE_ENTITLEMENTS_FS".into(), "1".into());
+        let (progress, stem) = (spec.progress.clone(), spec.stem.clone());
+        let on_line = move |line: String| {
+            progress.send(ImageProgress::Build {
+                stem: stem.clone(),
+                line,
+            });
+        };
+        crate::docker::run_build_command(&self.opts.binary, &args, &env, &inv.cwd, &on_line)
+            .await?;
+        Ok(images)
+    }
+
     /// `docker compose config --format json` for `spec`'s service: its
     /// image name and build inputs ([`ServiceConfig`], deliverable 35).
-    /// The stem env is exported for interpolation; the env file is passed
-    /// only when it exists (the first start has not written it yet).
+    /// The stem env is exported for interpolation; the env file (and the
+    /// `inject_env` override, which names it) is passed only when it exists
+    /// (the first start has not written it yet).
     pub async fn service_config(&self, spec: &ComposeSpec) -> Result<ServiceConfig, RuntimeError> {
+        let json = self.config_json_text(spec).await?;
+        service_config(&json, &spec.project_name, &spec.service, &spec.file)
+    }
+
+    /// The text of `docker compose config --format json` (see
+    /// [`Self::service_config`]).
+    async fn config_json_text(&self, spec: &ComposeSpec) -> Result<String, RuntimeError> {
         let mut inv = self.spec_invocation(spec);
         if inv.target.env_file.as_ref().is_some_and(|f| !f.exists()) {
             inv.target.env_file = None;
+            inv.target.override_file = None;
+        }
+        if inv
+            .target
+            .override_file
+            .as_ref()
+            .is_some_and(|f| !f.exists())
+        {
+            inv.target.override_file = None;
         }
         let ran = self
             .run(
@@ -557,7 +786,7 @@ impl ComposeRuntime {
                 Some(QUICK_TIMEOUT),
             )
             .await?;
-        service_config(&ran.stdout, &spec.project_name, &spec.service, &spec.file)
+        Ok(ran.stdout)
     }
 
     fn invocation_of(&self, h: &Handle) -> Option<Invocation> {
@@ -611,7 +840,15 @@ impl ComposeRuntime {
     /// `docker compose rm -f -s -v <service>` for `spec` without a handle
     /// (the daemon's `down` of a compose stem that was already stopped).
     pub async fn remove_service(&self, spec: &ComposeSpec) -> Result<(), RuntimeError> {
-        let inv = self.spec_invocation(spec);
+        let mut inv = self.spec_invocation(spec);
+        if inv
+            .target
+            .override_file
+            .as_ref()
+            .is_some_and(|f| !f.exists())
+        {
+            inv.target.override_file = None;
+        }
         let lock = self.project_lock(&inv.target.project);
         let _guard = lock.lock().await;
         self.run(&inv, ComposeCommand::rm(&inv.target), Some(QUICK_TIMEOUT))
@@ -638,12 +875,10 @@ impl ComposeRuntime {
             tracing::debug!(container = want, ?why, "compose adopt: rejected");
             return None;
         }
-        let inv = self.spec_invocation(spec);
-        if let Some(env_file) = &inv.target.env_file
-            && let Err(e) = write_env_file(env_file, &spec.env)
-        {
+        if let Err(e) = self.write_inputs(spec) {
             tracing::warn!(error = %e, "compose adopt: env file not written");
         }
+        let inv = self.spec_invocation(spec);
         let h = self.docker.attach(inspect.id.as_deref()?).await.ok()?;
         self.targets().insert(h.id(), inv);
         Some(h)

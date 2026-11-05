@@ -131,7 +131,8 @@ impl VolumeMount {
 }
 
 /// Lexically resolve `.` and `..` (no filesystem access).
-fn normalize(p: &Path) -> PathBuf {
+/// Lexical normalisation (`.` dropped, `..` folded); no filesystem access.
+pub fn normalize(p: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for c in p.components() {
         match c {
@@ -145,11 +146,101 @@ fn normalize(p: &Path) -> PathBuf {
     out
 }
 
-/// `build: { context, dockerfile }` (both absolute).
+/// `build: { context, dockerfile, secrets, allow_read }` (paths absolute).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildSpec {
     pub context: PathBuf,
     pub dockerfile: PathBuf,
+    /// BuildKit secrets (44): the build goes through `docker buildx build`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<BuildSecret>,
+    /// Paths outside the context the build may read (44). `buildx build`
+    /// does not enforce `fs.read`, so nothing is passed for them; they are
+    /// validated and part of the spec hash.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow_read: Vec<PathBuf>,
+}
+
+impl BuildSpec {
+    /// A plain build of `context` with `dockerfile`.
+    pub fn new(context: impl Into<PathBuf>, dockerfile: impl Into<PathBuf>) -> Self {
+        Self {
+            context: context.into(),
+            dockerfile: dockerfile.into(),
+            secrets: Vec::new(),
+            allow_read: Vec::new(),
+        }
+    }
+
+    /// Built with the docker CLI (`docker buildx build`, BuildKit) rather
+    /// than through the Engine API's classic builder: the stem declares
+    /// secrets or `allow_read`. A Dockerfile outside the context alone keeps
+    /// the API path (the tarball carries it, [`super::EXTERNAL_DOCKERFILE`]).
+    pub fn needs_buildx(&self) -> bool {
+        !self.secrets.is_empty() || !self.allow_read.is_empty()
+    }
+}
+
+/// One BuildKit secret (44), mounted by `RUN --mount=type=secret,id=<id>`.
+/// The value never appears on a command line: a file is passed by path, an
+/// env secret by variable name.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct BuildSecret {
+    pub id: String,
+    #[serde(flatten)]
+    pub source: SecretSource,
+}
+
+/// Where a [`BuildSecret`]'s value comes from.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SecretSource {
+    /// A file (absolute).
+    File(PathBuf),
+    /// An environment variable of the build process.
+    Env(String),
+}
+
+impl BuildSecret {
+    /// The value of `--secret`: `id=<id>,src=<file>` or `id=<id>,env=<VAR>`.
+    pub fn flag(&self) -> String {
+        match &self.source {
+            SecretSource::File(f) => format!("id={},src={}", self.id, f.display()),
+            SecretSource::Env(v) => format!("id={},env={v}", self.id),
+        }
+    }
+}
+
+/// `docker buildx build` for a docker stem with secrets/`allow_read` (44):
+/// `buildx build --load --progress plain -t <tag> --label stems.workspace=…
+/// --label stems.stem=… -f <dockerfile> [--secret …] <context>` (the
+/// arguments after the `docker` binary).
+pub fn buildx_build_args(spec: &ContainerSpec, build: &BuildSpec) -> Vec<std::ffi::OsString> {
+    let tag = spec.build_tag().unwrap_or_default();
+    let mut v: Vec<std::ffi::OsString> = [
+        "buildx",
+        "build",
+        "--load",
+        "--progress",
+        "plain",
+        "-t",
+        tag.as_str(),
+    ]
+    .into_iter()
+    .map(Into::into)
+    .collect();
+    for (k, val) in [(LABEL_WORKSPACE, &spec.workspace), (LABEL_STEM, &spec.stem)] {
+        v.push("--label".into());
+        v.push(format!("{k}={val}").into());
+    }
+    v.push("-f".into());
+    v.push(build.dockerfile.clone().into());
+    for s in &build.secrets {
+        v.push("--secret".into());
+        v.push(s.flag().into());
+    }
+    v.push(build.context.clone().into());
+    v
 }
 
 /// When `image` is pulled (`pull:` of a docker stem).
@@ -212,6 +303,48 @@ impl PartialEq for ProgressSink {
 }
 impl Eq for ProgressSink {}
 
+/// Values of `{id, env}` build secrets (44) that the stem env does not set,
+/// taken from the requesting command's environment: given to the build
+/// process only (never to the container). Ignored by equality and serde.
+#[derive(Debug, Clone, Default)]
+pub struct SecretEnv(pub BTreeMap<String, String>);
+
+impl SecretEnv {
+    /// For each `env` secret of `secrets` that `own` does not set, its
+    /// value in `lookup` (the request's environment), if any.
+    pub fn select(
+        secrets: &[BuildSecret],
+        own: &BTreeMap<String, String>,
+        lookup: &BTreeMap<String, String>,
+    ) -> Self {
+        Self(
+            secrets
+                .iter()
+                .filter_map(|s| match &s.source {
+                    SecretSource::Env(v) if !own.contains_key(v) => {
+                        lookup.get(v).map(|x| (v.clone(), x.clone()))
+                    }
+                    _ => None,
+                })
+                .collect(),
+        )
+    }
+
+    /// Add the values to a build process's `env` (the stem env wins).
+    pub fn apply_to(&self, env: &mut BTreeMap<String, String>) {
+        for (k, v) in &self.0 {
+            env.entry(k.clone()).or_insert_with(|| v.clone());
+        }
+    }
+}
+
+impl PartialEq for SecretEnv {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+impl Eq for SecretEnv {}
+
 /// Everything the Docker runtime needs to create a stem's container.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContainerSpec {
@@ -245,6 +378,9 @@ pub struct ContainerSpec {
     pub stop_grace: Duration,
     #[serde(skip)]
     pub progress: ProgressSink,
+    /// `env` build secrets' values from the request (build process only).
+    #[serde(skip)]
+    pub secret_env: SecretEnv,
 }
 
 impl ContainerSpec {
@@ -271,6 +407,7 @@ impl ContainerSpec {
             healthcheck: None,
             stop_grace: Duration::from_secs(10),
             progress: ProgressSink::default(),
+            secret_env: SecretEnv::default(),
         }
     }
 

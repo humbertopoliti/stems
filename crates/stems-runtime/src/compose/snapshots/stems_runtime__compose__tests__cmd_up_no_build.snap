@@ -1,0 +1,5 @@
+---
+source: crates/stems-runtime/src/compose/tests.rs
+expression: "show(ComposeCommand::up_no_build(&t))"
+---
+docker compose --ansi never -f /work/shop/compose.yml -f /home/dev/.stems/hello-shop/compose/api.override.yaml -p stems-shop --env-file /home/dev/.stems/hello-shop/compose/api.env up -d --no-deps --no-build api

@@ -168,9 +168,13 @@ changes, script runs, `up`/`down`) carry the same actor, so `stems events`,
 | `stems://graph` | the dependency graph (JSON, live glyphs when the daemon runs) |
 | `stems://<stem>/config` | one stem's resolved config (JSON, redacted) |
 | `stems://<stem>/logs?tail=200` | the stem's last `tail` log lines as text (`<ts> <stream> <level> [<script>] <text>`; default 200, at most 500) |
+| `stems://features` | everything stems can do: the feature index as JSON, `{areas, features: [{area, name, one_liner, commands, config_keys, doc}]}` (the same as `stems features --json`; needs no daemon) |
 
-`resources/list` enumerates the workspace, the graph and each stem's config and
-logs; `resources/templates/list` has `stems://{stem}/config` and
+The server's `instructions` point agents at `stems://features` to discover
+capabilities that have no tool (exec, compose passthrough, ports, overlays, ...).
+
+`resources/list` enumerates the workspace, the graph, the feature index and
+each stem's config and logs; `resources/templates/list` has `stems://{stem}/config` and
 `stems://{stem}/logs{?tail}`.
 
 ## Prompts
@@ -186,13 +190,28 @@ logs; `resources/templates/list` has `stems://{stem}/config` and
 
 The MCP server never reveals secrets: `get_outputs` never asks the daemon for
 secret values, `get_status` never includes the environment, and config JSON
-(`get_config`, `stems://…/config`, `doctor`) is redacted: string values whose key
-looks like a secret (`*PASSWORD*`, `*SECRET*`, `*TOKEN*`, `*API_KEY*`,
-`*PRIVATE_KEY*`, `*CREDENTIAL*`, `*ACCESS_KEY*`, `*PASSWD*`) and URL passwords
-(`postgres://user:<redacted>@host`) become `<redacted>`.
+(`get_config`, `stems://workspace`, `stems://…/config`, `doctor`) is
+redacted: string values whose key is a secret name and URL passwords
+(`postgres://user:<redacted>@host`) become `<redacted>`. Secret names are
+decided by the same `Redactor` as `stems show` (47,
+[config.md](config.md#secrets)): the built-in patterns (`*TOKEN*`,
+`*SECRET*`, `*PASSWORD*`, `*PASSWD*`, `*CREDENTIAL*`, `*_KEY`, `*_KEY_*`,
+`*APIKEY*`), the workspace's and each stem's `secrets:` (with `!NAME`
+exceptions) and `redaction:`. Log lines (`stems://<stem>/logs`) are
+scrubbed of secret values when captured ([logs.md](logs.md#secret-redaction)).
 
 ## Limits and non-goals
 
 * HTTP transport: `127.0.0.1` only, no authentication, off unless asked for.
 * Long calls (`up`, `down`, `run_script`, `start`, ...) wait up to 15 minutes.
+* No caller environment: unlike the CLI and the TUI, the MCP server sends no
+  `caller_env` (it is launched by the agent's client, not from your shell),
+  so what it starts gets the daemon's environment, and `${env.X}` in the
+  config resolves against the latest `stems` command's environment (else
+  the daemon's); see [lifecycle.md](lifecycle.md#a-stems-environment-fr-st-4).
+* A script with `requires_stopped:` is refused while those stems run; the
+  `run_script` tool has `start_deps` but no `stop_deps` (stopping stems is
+  left to an explicit `stop`).
 * No embedded assistant (`stems ask`, FR-AI-5) in v1.
+
+See also: [Protocol](protocol.md) · [What stems can do](features.md) · [CLI reference](cli.md)

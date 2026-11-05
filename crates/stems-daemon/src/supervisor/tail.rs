@@ -14,8 +14,9 @@
 //!   had lines (many apps log to stdout); absent otherwise;
 //! - `output_truncated: bool` — more lines existed than shown.
 //!
-//! Each line is cut at [`MAX_CHARS`] characters (`…`). Log text is not
-//! redacted anywhere in stems today, so none is applied here either.
+//! Each line is cut at [`MAX_CHARS`] characters (`…`). The lines come from
+//! the log ring, which stores them with the stem's secret values already
+//! scrubbed (`<redacted:KEY>`, 47), so nothing more is applied here.
 
 use std::time::Duration;
 

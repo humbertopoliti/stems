@@ -13,6 +13,11 @@ fn yes() -> bool {
     true
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_true(b: &bool) -> bool {
+    *b
+}
+
 /// `up` params.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct UpParams {
@@ -66,6 +71,12 @@ pub struct UpParams {
     /// build.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<bool>,
+    /// The environment of the `stems` command (37): the base layer of
+    /// everything this request starts (scripts, processes, command probes),
+    /// minus `STEMS_*`. Absent: the daemon's own environment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    pub caller_env: Option<BTreeMap<String, String>>,
 }
 
 impl Default for UpParams {
@@ -84,6 +95,7 @@ impl Default for UpParams {
             force_overlays: false,
             no_watch: false,
             build: None,
+            caller_env: None,
         }
     }
 }
@@ -109,8 +121,25 @@ pub struct UpResult {
     pub ready: Vec<String>,
     /// Stems that failed.
     pub failed: Vec<StemFailure>,
-    /// Stems not started (a dependency failed, or fail-fast aborted).
+    /// Stems not started (a dependency failed, or fail-fast aborted, or a
+    /// hard dependency is disabled).
     pub skipped: Vec<String>,
+    /// Why some `skipped` stems were skipped, when it is not a failed
+    /// dependency (41: `seed_degraded`, a `condition: seeded` dependency
+    /// whose `soft_fail` seed failed; 46: `dependency_disabled:<dep>`, a
+    /// hard dependency, direct or not, is disabled). Omitted when empty.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub skipped_reasons: BTreeMap<String, String>,
+    /// Ready stems (or `_workspace`) whose `soft_fail` script failed (41):
+    /// degraded, not stamped, retried next time. Never changes `ok`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub degraded: Vec<DegradedScript>,
+    /// Disabled stems the run left out (46): the workspace's when
+    /// everything was selected, else the selected profile's disabled
+    /// members and the disabled targets of the planned stems' edges.
+    /// Omitted when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled: Vec<String>,
     /// `restart` with a cascade (FR-LC-9): what happened to the dependants.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cascade: Option<CascadeReport>,
@@ -121,6 +150,50 @@ pub struct UpResult {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(with = "Vec<Value>")]
     pub warnings: Vec<Error>,
+}
+
+/// A `soft_fail` script that failed during `up`/`start`/`restart` (41).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DegradedScript {
+    /// Stem (`_workspace` for `bootstrap`).
+    pub stem: String,
+    /// Script name.
+    pub script: String,
+    /// Exit code (`null` when killed or timed out).
+    pub exit: Option<i32>,
+    /// It ran into its `timeout` (omitted when false).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub timed_out: bool,
+}
+
+/// A `soft_fail` script that failed in a stem's current run (41): the stem
+/// is degraded until it is stopped or restarted.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ScriptWarning {
+    /// Script name.
+    pub script: String,
+    /// Exit code (`null` when killed or timed out).
+    pub exit: Option<i32>,
+    /// Signal that killed it.
+    pub signal: Option<i32>,
+    /// It ran into its `timeout`.
+    pub timed_out: bool,
+    /// Its last output lines (at most 10).
+    pub tail: Vec<String>,
+    /// When it finished.
+    pub at: DateTime<Utc>,
+}
+
+impl ScriptWarning {
+    /// `setup exited 3 (soft_fail)`: the degraded reason.
+    pub fn failure(&self) -> stems_core::health::SoftFailure {
+        stems_core::health::SoftFailure {
+            script: self.script.clone(),
+            exit: self.exit,
+            signal: self.signal,
+            timed_out: self.timed_out,
+        }
+    }
 }
 
 /// The outcome of a cascading restart (FR-LC-9, `docs/restart.md`).
@@ -204,6 +277,12 @@ pub struct StartParams {
     /// `None` = each stem's `build:` (35).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<bool>,
+    /// The environment of the `stems` command (37): the base layer of
+    /// everything this request starts (scripts, processes, command probes),
+    /// minus `STEMS_*`. Absent: the daemon's own environment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    pub caller_env: Option<BTreeMap<String, String>>,
 }
 
 /// `stop` params.
@@ -242,6 +321,12 @@ pub struct RestartParams {
     /// `restart.cascade`; `true`/`false` overrides it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cascade: Option<bool>,
+    /// The environment of the `stems` command (37): the base layer of
+    /// everything this request starts (scripts, processes, command probes),
+    /// minus `STEMS_*`. Absent: the daemon's own environment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    pub caller_env: Option<BTreeMap<String, String>>,
 }
 
 /// `status` params.
@@ -282,13 +367,24 @@ pub struct StemStatus {
     #[schemars(with = "String")]
     pub glyph: Glyph,
     /// Why it is in this state; for a degraded stem, the degraded reasons
-    /// (`dependency postgres unhealthy; flapping`). Empty for a plain
+    /// (`dependency postgres unhealthy; flapping`); for a disabled stem
+    /// where `enabled` was set (`enabled: false in stems.local.yaml`,
+    /// `enabled: ${env.WITH_SEARCH} → false`, 46). Empty for a plain
     /// healthy stem.
     pub reason: Option<String>,
+    /// `false` for a disabled stem (state `disabled`, 46); omitted when
+    /// `true`.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub enabled: bool,
     /// `healthy`, but with a warning (FR-GR-6, FR-HS-2): glyph `degraded`,
     /// derived for every snapshot, never stored (see `docs/health.md`).
     #[serde(default)]
     pub degraded: bool,
+    /// `soft_fail` scripts that failed in this run of the stem (41); a
+    /// healthy stem with warnings is degraded. Cleared by a stop or
+    /// restart. Omitted when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<ScriptWarning>,
     /// Leader pid while running.
     pub pid: Option<i32>,
     /// Process group while running.
@@ -339,6 +435,39 @@ pub struct StemStatus {
     /// `{id, origin}`; omitted otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cascade: Option<CascadeRef>,
+}
+
+impl StemStatus {
+    /// The row of a disabled stem (46): state `disabled`, glyph `-`,
+    /// `enabled: false`, nothing running.
+    pub fn disabled(name: &str, kind: &str, reason: Option<String>) -> Self {
+        Self {
+            name: name.to_string(),
+            kind: kind.to_string(),
+            state: StemState::Disabled,
+            glyph: Glyph::Disabled,
+            reason,
+            enabled: false,
+            degraded: false,
+            warnings: Vec::new(),
+            pid: None,
+            pgid: None,
+            ports: Vec::new(),
+            uptime_s: None,
+            started_at: None,
+            restarts: 0,
+            restarts_in_window: 0,
+            seeded: false,
+            health: None,
+            metrics: None,
+            error: None,
+            env: None,
+            outputs: BTreeMap::new(),
+            watch: None,
+            variant: None,
+            cascade: None,
+        }
+    }
 }
 
 /// What `status` and `outputs` show instead of a secret output's value.
@@ -404,6 +533,10 @@ pub struct StatusSummary {
     pub unknown: usize,
     /// Transitioning: `setup`, `starting`, `seeding`, `stopping`.
     pub starting: usize,
+    /// `disabled` (46): listed, never started. Omitted when 0, so the
+    /// summary of a workspace without disabled stems is unchanged.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub disabled: usize,
 }
 
 impl StatusSummary {
@@ -419,6 +552,7 @@ impl StatusSummary {
                 Glyph::Stopped => s.stopped += 1,
                 Glyph::Unknown => s.unknown += 1,
                 Glyph::Transitioning => s.starting += 1,
+                Glyph::Disabled => s.disabled += 1,
             }
         }
         s
@@ -542,6 +676,10 @@ pub struct SwitchConfigurationResult {
     pub applied: Option<crate::reload::ConfigApplyResult>,
 }
 
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -562,7 +700,9 @@ mod tests {
             state: StemState::Healthy,
             glyph: Glyph::Healthy,
             reason: None,
+            enabled: true,
             degraded: false,
+            warnings: Vec::new(),
             pid: Some(10),
             pgid: Some(10),
             ports: vec![PortStatus {
@@ -612,5 +752,24 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(old.unhealthy, 0);
+        assert_eq!(old.disabled, 0);
+    }
+
+    #[test]
+    fn disabled_rows_are_counted_and_say_enabled_false() {
+        let d = StemStatus::disabled(
+            "search",
+            "process",
+            Some("enabled: false in stems.yaml".into()),
+        );
+        let v = serde_json::to_value(&d).unwrap();
+        assert_eq!(v["state"], "disabled");
+        assert_eq!(v["glyph"], "disabled");
+        assert_eq!(v["enabled"], false);
+        assert_eq!(serde_json::from_value::<StemStatus>(v).unwrap(), d);
+        let mut on = d.clone();
+        on.enabled = true;
+        assert!(serde_json::to_value(&on).unwrap().get("enabled").is_none());
+        assert_eq!(StatusSummary::of(&[d]).disabled, 1);
     }
 }

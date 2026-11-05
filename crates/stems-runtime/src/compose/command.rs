@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use crate::docker::grace_secs;
 
-/// What a compose invocation addresses: `-f <file> -p <project>
-/// [--env-file <file>]` plus the service the operation acts on.
+/// What a compose invocation addresses: `-f <file> [-f <override>] -p
+/// <project> [--env-file <file>]` plus the service the operation acts on.
 ///
 /// `file: None` is a project-only invocation (`docker compose -p <project>
 /// ...`), which compose v2 resolves from container labels: used for the
@@ -23,6 +23,10 @@ pub struct ComposeTarget {
     /// Empty for whole-project operations (`ps`).
     pub service: String,
     pub env_file: Option<PathBuf>,
+    /// `<env_dir>/<stem>.override.yaml` (`inject_env: true`): a second
+    /// `-f` that adds the env file to the service's `env_file:`. Only
+    /// passed together with `file`.
+    pub override_file: Option<PathBuf>,
 }
 
 impl ComposeTarget {
@@ -34,6 +38,9 @@ impl ComposeTarget {
             project: spec.project_name.clone(),
             service: spec.service.clone(),
             env_file: Some(env_file_path(env_dir, &spec.stem)),
+            override_file: spec
+                .needs_override()
+                .then(|| override_file_path(env_dir, &spec.stem)),
         }
     }
 
@@ -44,6 +51,7 @@ impl ComposeTarget {
             project: project.into(),
             service: String::new(),
             env_file: None,
+            override_file: None,
         }
     }
 }
@@ -53,12 +61,17 @@ impl ComposeTarget {
 pub struct ComposeCommand;
 
 impl ComposeCommand {
-    /// `compose --ansi never [-f <file>] -p <project> [--env-file <f>]`.
+    /// `compose --ansi never [-f <file> [-f <override>]] -p <project>
+    /// [--env-file <f>]`.
     fn base(t: &ComposeTarget) -> Vec<OsString> {
         let mut v: Vec<OsString> = vec!["compose".into(), "--ansi".into(), "never".into()];
         if let Some(f) = &t.file {
             v.push("-f".into());
             v.push(f.into());
+            if let Some(o) = &t.override_file {
+                v.push("-f".into());
+                v.push(o.into());
+            }
         }
         v.push("-p".into());
         v.push(t.project.clone().into());
@@ -88,6 +101,49 @@ impl ComposeCommand {
         } else {
             Self::with(t, &["up", "-d", "--no-deps"])
         }
+    }
+
+    /// `up -d --no-deps --no-build <service>`: the images were built by
+    /// [`Self::bake`] (44), compose must not build them again (it cannot
+    /// pass the secrets).
+    pub fn up_no_build(t: &ComposeTarget) -> Vec<OsString> {
+        Self::with(t, &["up", "-d", "--no-deps", "--no-build"])
+    }
+
+    /// `buildx bake --load --progress plain -f <file> [-f <override>]
+    /// [--allow fs.read=<path>]… [--set <svc>.tags=<image>]… <svc>…` (44):
+    /// the compose file(s) as the Bake definition, one target per service,
+    /// each tagged with the image compose runs (`<project>-<svc>` when the
+    /// service names none), loaded into the engine. `allow` is passed in
+    /// the order given (callers sort it).
+    pub fn bake(
+        t: &ComposeTarget,
+        images: &[(String, String)],
+        allow: &[PathBuf],
+    ) -> Vec<OsString> {
+        let mut v: Vec<OsString> = ["buildx", "bake", "--load", "--progress", "plain"]
+            .map(OsString::from)
+            .into();
+        if let Some(f) = &t.file {
+            v.push("-f".into());
+            v.push(f.into());
+            if let Some(o) = &t.override_file {
+                v.push("-f".into());
+                v.push(o.into());
+            }
+        }
+        for p in allow {
+            let mut a = OsString::from("fs.read=");
+            a.push(p);
+            v.push("--allow".into());
+            v.push(a);
+        }
+        for (svc, image) in images {
+            v.push("--set".into());
+            v.push(format!("{svc}.tags={image}").into());
+        }
+        v.extend(images.iter().map(|(svc, _)| OsString::from(svc)));
+        v
     }
 
     /// `stop -t <grace secs, rounded up> <service>`.
@@ -164,6 +220,109 @@ fn shell_quote(s: &str) -> String {
 /// `<env_dir>/<stem>.env`.
 pub fn env_file_path(env_dir: &Path, stem: &str) -> PathBuf {
     env_dir.join(format!("{stem}.env"))
+}
+
+/// `<env_dir>/<stem>.override.yaml` (`inject_env: true`).
+pub fn override_file_path(env_dir: &Path, stem: &str) -> PathBuf {
+    env_dir.join(format!("{stem}.override.yaml"))
+}
+
+/// What the generated override file (`<env_dir>/<stem>.override.yaml`)
+/// declares: the `inject_env` part (38) and the build secrets (44).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OverrideInputs<'a> {
+    /// The stem's service.
+    pub service: &'a str,
+    /// `inject_env: true`: the stem's env file.
+    pub env_file: Option<&'a Path>,
+    /// With `env_file`: the container port the override gives as `PORT`.
+    pub container_port: Option<u16>,
+    /// Build secrets: declared top-level and added to each of
+    /// `build_services`' `build.secrets`.
+    pub secrets: &'a [crate::docker::BuildSecret],
+    pub build_services: &'a [String],
+}
+
+/// The override compose file (passed as a second `-f`): with an env file,
+/// [`render_override_file`]'s `env_file:`/`PORT` for the service; with
+/// secrets, a top-level `secrets:` (`file:` or `environment:`) and each
+/// build service's `build.secrets` naming them (compose and Bake merge
+/// both with the user's file, so it needs no stems-specific edits).
+/// Strings are JSON-quoted (valid YAML).
+pub fn render_override(o: &OverrideInputs<'_>) -> String {
+    use crate::docker::SecretSource;
+    let q = |s: &str| serde_json::to_string(s).unwrap_or_else(|_| format!("{s:?}"));
+    let mut out = String::from(match (o.env_file.is_some(), o.secrets.is_empty()) {
+        (true, true) => {
+            "# Written by stems for `inject_env: true` (passed as a second `-f`); do not edit.\n"
+        }
+        (false, _) => {
+            "# Written by stems for `build.secrets` (passed as a second `-f`); do not edit.\n"
+        }
+        (true, false) => {
+            "# Written by stems for `inject_env: true` and `build.secrets` (passed as a second `-f`); do not edit.\n"
+        }
+    });
+    out.push_str("services:\n");
+    let mut services: Vec<&str> = Vec::new();
+    if o.env_file.is_some() || o.secrets.is_empty() {
+        services.push(o.service);
+    }
+    if !o.secrets.is_empty() {
+        for s in o.build_services {
+            if !services.contains(&s.as_str()) {
+                services.push(s);
+            }
+        }
+    }
+    for svc in services {
+        out.push_str(&format!("  {}:\n", q(svc)));
+        if svc == o.service
+            && let Some(env_file) = o.env_file
+        {
+            out.push_str("    env_file:\n");
+            out.push_str(&format!("      - {}\n", q(&env_file.to_string_lossy())));
+            if let Some(p) = o.container_port {
+                out.push_str("    environment:\n");
+                out.push_str(&format!("      PORT: \"{p}\"\n"));
+            }
+        }
+        if !o.secrets.is_empty() && o.build_services.iter().any(|b| b == svc) {
+            out.push_str("    build:\n      secrets:\n");
+            for s in o.secrets {
+                out.push_str(&format!("        - {}\n", q(&s.id)));
+            }
+        }
+    }
+    if !o.secrets.is_empty() {
+        out.push_str("secrets:\n");
+        for s in o.secrets {
+            out.push_str(&format!("  {}:\n", q(&s.id)));
+            match &s.source {
+                SecretSource::File(f) => {
+                    out.push_str(&format!("    file: {}\n", q(&f.to_string_lossy())));
+                }
+                SecretSource::Env(v) => out.push_str(&format!("    environment: {}\n", q(v))),
+            }
+        }
+    }
+    out
+}
+
+/// The override compose file of an `inject_env: true` stem: the stem's env
+/// file appended to `service`'s `env_file:` (compose appends `env_file`
+/// lists across `-f` files, later files winning; the service's own
+/// `environment:` still wins over every env file), plus `environment: {PORT:
+/// <container_port>}` when the stem's primary port maps to a container
+/// port, so the container sees the port it listens on, not the host port.
+/// Strings are JSON-quoted (valid YAML).
+pub fn render_override_file(service: &str, env_file: &Path, container_port: Option<u16>) -> String {
+    render_override(&OverrideInputs {
+        service,
+        env_file: Some(env_file),
+        container_port,
+        ..Default::default()
+    })
 }
 
 /// `<env_dir>/<project>.owned`: written after a successful `up`, it marks

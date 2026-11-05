@@ -1,6 +1,5 @@
 ---
 source: crates/stems-cli/src/commands/run.rs
-assertion_line: 383
 expression: "serde_json::to_string_pretty(&r).unwrap()"
 ---
 {
@@ -11,10 +10,12 @@ expression: "serde_json::to_string_pretty(&r).unwrap()"
       "description": null,
       "args": [],
       "requires": [],
+      "requires_stopped": [],
       "kind": "lifecycle",
       "timeout": null,
       "retries": 0,
       "concurrent": false,
+      "inherit_env": true,
       "mcp_tool": "workspace__bootstrap",
       "input_schema": {
         "type": "object",
@@ -31,10 +32,12 @@ expression: "serde_json::to_string_pretty(&r).unwrap()"
       "requires": [
         "postgres"
       ],
+      "requires_stopped": [],
       "kind": "custom",
       "timeout": null,
       "retries": 0,
       "concurrent": false,
+      "inherit_env": true,
       "mcp_tool": "workspace__nuke_databases",
       "input_schema": {
         "type": "object",
@@ -49,10 +52,12 @@ expression: "serde_json::to_string_pretty(&r).unwrap()"
       "description": null,
       "args": [],
       "requires": [],
+      "requires_stopped": [],
       "kind": "lifecycle",
       "timeout": null,
       "retries": 0,
       "concurrent": false,
+      "inherit_env": true,
       "mcp_tool": "workspace__teardown",
       "input_schema": {
         "type": "object",
@@ -67,10 +72,12 @@ expression: "serde_json::to_string_pretty(&r).unwrap()"
       "description": null,
       "args": [],
       "requires": [],
+      "requires_stopped": [],
       "kind": "lifecycle",
       "timeout": null,
       "retries": 0,
       "concurrent": false,
+      "inherit_env": true,
       "mcp_tool": "postgres__reset",
       "input_schema": {
         "type": "object",
@@ -85,10 +92,12 @@ expression: "serde_json::to_string_pretty(&r).unwrap()"
       "description": "Apply migrations and insert a handful of sample rows",
       "args": [],
       "requires": [],
+      "requires_stopped": [],
       "kind": "lifecycle",
       "timeout": null,
       "retries": 0,
       "concurrent": false,
+      "inherit_env": true,
       "mcp_tool": "postgres__seed",
       "input_schema": {
         "type": "object",
@@ -112,10 +121,12 @@ expression: "serde_json::to_string_pretty(&r).unwrap()"
         }
       ],
       "requires": [],
+      "requires_stopped": [],
       "kind": "custom",
       "timeout": null,
       "retries": 0,
       "concurrent": false,
+      "inherit_env": true,
       "mcp_tool": "postgres__seed_large",
       "input_schema": {
         "type": "object",
@@ -155,10 +166,12 @@ expression: "serde_json::to_string_pretty(&r).unwrap()"
         }
       ],
       "requires": [],
+      "requires_stopped": [],
       "kind": "custom",
       "timeout": null,
       "retries": 0,
       "concurrent": false,
+      "inherit_env": true,
       "mcp_tool": "shop_api__create_test_user",
       "input_schema": {
         "type": "object",
@@ -189,10 +202,12 @@ expression: "serde_json::to_string_pretty(&r).unwrap()"
       "description": null,
       "args": [],
       "requires": [],
+      "requires_stopped": [],
       "kind": "lifecycle",
       "timeout": null,
       "retries": 0,
       "concurrent": false,
+      "inherit_env": true,
       "mcp_tool": "shop_api__seed",
       "input_schema": {
         "type": "object",
@@ -207,10 +222,12 @@ expression: "serde_json::to_string_pretty(&r).unwrap()"
       "description": null,
       "args": [],
       "requires": [],
+      "requires_stopped": [],
       "kind": "lifecycle",
       "timeout": null,
       "retries": 0,
       "concurrent": false,
+      "inherit_env": true,
       "mcp_tool": "shop_api__setup",
       "input_schema": {
         "type": "object",
@@ -225,10 +242,12 @@ expression: "serde_json::to_string_pretty(&r).unwrap()"
       "description": null,
       "args": [],
       "requires": [],
+      "requires_stopped": [],
       "kind": "lifecycle",
       "timeout": null,
       "retries": 0,
       "concurrent": false,
+      "inherit_env": true,
       "mcp_tool": "shop_api__start",
       "input_schema": {
         "type": "object",
@@ -243,10 +262,12 @@ expression: "serde_json::to_string_pretty(&r).unwrap()"
       "description": null,
       "args": [],
       "requires": [],
+      "requires_stopped": [],
       "kind": "lifecycle",
       "timeout": null,
       "retries": 0,
       "concurrent": false,
+      "inherit_env": true,
       "mcp_tool": "shop_worker__start",
       "input_schema": {
         "type": "object",
@@ -261,10 +282,12 @@ expression: "serde_json::to_string_pretty(&r).unwrap()"
       "description": null,
       "args": [],
       "requires": [],
+      "requires_stopped": [],
       "kind": "lifecycle",
       "timeout": null,
       "retries": 0,
       "concurrent": false,
+      "inherit_env": true,
       "mcp_tool": "shop_web__start",
       "input_schema": {
         "type": "object",

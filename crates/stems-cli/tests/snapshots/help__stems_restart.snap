@@ -33,7 +33,7 @@ Options:
           Restart only these stems, even if `restart.cascade` is set
 
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -62,3 +62,7 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems build`, `stems status`, `stems up`, `stems down`, `stems start`;
+docs/restart.md#cascading-restarts-fr-lc-9, docs/scripts.md#build-in-the-start-sequence-when,
+docs/restart.md#policies; `stems features lifecycle`.

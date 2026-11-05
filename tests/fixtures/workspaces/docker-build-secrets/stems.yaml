@@ -1,0 +1,31 @@
+# docker-build-secrets — a docker stem built with a BuildKit secret and a
+# Dockerfile outside its build context (deliverable 44,
+# tests/features/docker/build-secrets.feature; needs Docker with buildx:
+# `make e2e-docker`).
+#
+# The secret `tok` is a file (never a build arg, never in a layer): the
+# Dockerfile mounts it with `RUN --mount=type=secret,id=tok` and copies it
+# to /www/token, which busybox httpd serves on 8080, published on 18841.
+# `allow_read` lists the Dockerfile's directory, outside the context.
+schema_version: 1
+name: docker-build-secrets
+
+stems:
+  api:
+    type: docker
+    build:
+      context: app
+      dockerfile: "${workspace.root}/infra/Dockerfile"
+      secrets:
+        - { id: tok, file: secrets/tok.txt }
+      allow_read:
+        - "${workspace.root}/infra"
+    ports: [{ name: http, port: 18841, container_port: 8080 }]
+    health:
+      type: http
+      url: "http://127.0.0.1:18841/index.txt"
+      interval: 400ms
+      timeout: 300ms
+      retries: 5
+      start_timeout: 120s
+    stop_grace: 2s

@@ -1,5 +1,6 @@
 ---
 source: crates/stems-daemon/src/supervisor/containers/tests.rs
+assertion_line: 150
 expression: v
 ---
 {
@@ -11,6 +12,7 @@ expression: v
   "project_name": "hello-shop",
   "env": {
     "PORT": "16379",
+    "PORT_REDIS": "16379",
     "REDIS_PORT": "16379",
     "STEMS_RUN_ID": "RUN",
     "STEMS_STEM": "redis",
@@ -21,5 +23,7 @@ expression: v
     "nanos": 0
   },
   "adopt": false,
-  "build": true
+  "build": true,
+  "inject_env": false,
+  "container_port": 6379
 }

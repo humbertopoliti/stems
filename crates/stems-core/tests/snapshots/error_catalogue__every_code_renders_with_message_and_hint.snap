@@ -50,10 +50,15 @@ UNKNOWN_DEPENDENCY: stem `shop-api` depends on `postgres`, which is not defined
   at stems.yaml:12:5 (stems.shop-api.depends_on)
   hint: define a stem named `postgres` under `stems:` or remove it from stems.shop-api.depends_on
 
-# exit 2 — an enabled stem has a hard `depends_on` edge to a stem with `enabled: false`
-DEPENDENCY_DISABLED: stem `shop-web` needs `shop-api`, which is disabled (`enabled: false`)
+# exit 2 — an enabled stem has a hard `depends_on` edge to a disabled stem, so `up`/`start` skip it (unless the edge says `if_disabled: start`; a warning)
+DEPENDENCY_DISABLED: stem `shop-web` needs `shop-api`, which is disabled: `up` skips `shop-web`
   at stems.yaml:40:5 (stems.shop-web.depends_on)
-  hint: enable `shop-api` (remove `enabled: false`, usually in stems.local.yaml), disable `shop-web` too, or mark the edge `soft: true`
+  hint: enable `shop-api` (usually in stems.local.yaml), or mark the edge `if_disabled: start` (start `shop-web` anyway) or `soft: true`
+
+# exit 2 — a stem's `enabled:` names an environment variable that is unset, so the stem is disabled (an info note)
+ENABLED_VAR_UNSET: search disabled: WITH_SEARCH is unset
+  at stems.yaml:30:5 (stems.search.enabled)
+  hint: export WITH_SEARCH=1 to enable `search`
 
 # exit 2 — hard `depends_on` edges form a cycle (mark one edge `soft: true` to break it)
 CYCLE: dependency cycle: shop-api -> shop-worker -> shop-api
@@ -172,6 +177,30 @@ START_TIMEOUT: `postgres` did not start within 60s
 START_FAILED: `shop-worker` exited with code 3 before it became ready
   hint: check `stems logs shop-worker`; run its start command by hand in the codebase to see why it exits
 
+# exit 1 — `stems exec`/`stems shell` needs the stem's container running (or `--host` to run on the host)
+STEM_NOT_RUNNING: `postgres` is not running: there is no container to exec into
+  hint: start it with `stems start postgres`, or run on the host with `--host`
+
+# exit 2 — a required `env_files` entry does not exist (mark it `{path, required: false}` if it is optional)
+ENV_FILE_NOT_FOUND: env file env/shop-api.local.env of `shop-api` does not exist
+  at stems.yaml:14:5 (stems.shop-api.env_files[1])
+  hint: create it, or mark it optional: `- { path: env/shop-api.local.env, required: false }`
+
+# exit 2 — an `env_files` entry sets a key that the stem's `env:` or an earlier env file sets to a different value; the file wins (a warning)
+ENV_SHADOWED: `API_URL` of `shop-api` from env/shop-api.env shadows the value set in `stems.shop-api.env`
+  at stems.yaml:13:5 (stems.shop-api.env_files[0])
+  hint: remove one, or move the value into stems.local.yaml if it is a local override
+
+# exit 2 — a stem's `requires:` entry reads its range `from:` a file of a git codebase that is not cloned yet, so it is checked after `up` clones it (a warning)
+REQUIRES_NOT_CHECKED: `node` of `shop-web` is not checked: its range comes from .nvmrc in a git codebase that is not cloned yet
+  at stems.yaml:21:5 (stems.shop-web.requires.node)
+  hint: `stems up shop-web` clones it; run `stems validate` or `stems doctor` again afterwards to check the version
+
+# exit 2 — stems sharing a compose project disagree on `inject_env`, so compose may recreate one service without the injected environment (a warning)
+COMPOSE_INJECT_ENV_MIXED: `shop-cache` and `shop-db` share the compose project `shop` but only `shop-cache` sets `inject_env: true`
+  at stems.yaml:30:5 (stems.shop-cache.inject_env)
+  hint: set the same `inject_env` on every stem of the project: compose may recreate a service without the injected environment when another stem of the project starts
+
 # exit 1 — a stem ignored SIGTERM for `stop_grace` and was killed
 STOP_TIMEOUT_KILLED: `shop-worker` ignored SIGTERM for 2s and was killed
   hint: handle SIGTERM in the service, or raise `stop_grace`
@@ -216,6 +245,14 @@ GIT_NOT_INSTALLED: `shop-api` has a git codebase but `git` is not on PATH
 GIT_CLONE_FAILED: cloning git@github.com:acme/shop-api.git failed: permission denied (publickey)
   hint: check your SSH key / access to the repository, then `stems repos sync shop-api`
 
+# exit 1 — `stems repos checkout` refused a git codebase with uncommitted changes (`--force` checks out anyway, carrying them over)
+REPO_DIRTY: the codebase of `shop-api` has 2 uncommitted change(s); not checked out
+  hint: commit, stash or discard them, or rerun with `--force` to carry them over
+
+# exit 1 — `stems status --expect <state>`: some stems are not in that state (`data.mismatch`)
+STATUS_MISMATCH: 1 of 2 stems is not healthy: shop-api (starting)
+  hint: wait for it with `--timeout <duration>` (e.g. `--timeout 30s`)
+
 # exit 1 — another stems daemon holds this workspace's lock
 LOCK_HELD: another stems daemon (pid 777) holds the lock for this workspace
   hint: use that daemon (`stems status`), or stop it with `stems daemon stop`
@@ -223,6 +260,10 @@ LOCK_HELD: another stems daemon (pid 777) holds the lock for this workspace
 # exit 1 — `stems upgrade` could not run the upgrade command, or it failed
 UPGRADE_FAILED: `brew upgrade stems` exited with status 1
   hint: run `brew upgrade stems` yourself to see why; `stems upgrade --dry-run` prints the command
+
+# exit 1 — a user-defined `checks:` entry (severity `fail`) failed, so `stems up` started nothing
+CHECK_FAILED: check `registry-login` failed: not logged in to ghcr.io
+  hint: run `docker login ghcr.io`
 
 # exit 1 — the command is not implemented yet in this build
 NOT_IMPLEMENTED: `stems graph` is not implemented until deliverable 23

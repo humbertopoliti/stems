@@ -1,0 +1,12 @@
+---
+source: crates/stems-runtime/src/compose/tests.rs
+assertion_line: 61
+expression: "render_override_file(\"redis\", &env_file_path(&env_dir(), \"redis\"), Some(6379))"
+---
+# Written by stems for `inject_env: true` (passed as a second `-f`); do not edit.
+services:
+  "redis":
+    env_file:
+      - "/home/dev/.stems/hello-shop/compose/redis.env"
+    environment:
+      PORT: "6379"

@@ -2,7 +2,10 @@
 source: crates/stems-cli/tests/help.rs
 expression: help
 ---
-Open an interactive shell in a stem's context
+Open an interactive shell in a stem's context.
+
+`stems exec <stem> -- $SHELL -i` (your `SHELL`, else /bin/sh); in a running container `bash`, else
+`sh`. See docs/exec.md.
 
 Usage: stems shell [OPTIONS] <STEM>
 
@@ -11,8 +14,11 @@ Arguments:
           Stem whose context to use
 
 Options:
+      --host
+          Open the shell on the host even for a docker/compose stem
+
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -41,3 +47,5 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems exec`, `stems env`; docs/exec.md; `stems features env`.

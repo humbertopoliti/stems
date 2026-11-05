@@ -25,8 +25,8 @@ print the envelope. The daemon's wire protocol is documented in
 ```text
 Local environment management toolkit for multi-process systems.
 
-stems reads an integration repo's `stems.yaml`, validates it, and (from later releases) starts,
-supervises and tears down every stem it declares.
+stems reads an integration repo's `stems.yaml`, validates it, starts, supervises and tears down
+every stem it declares.
 
 Output: human text on a terminal, a JSON envelope `{ "ok", "data", "errors", "version" }` when
 stdout is not a terminal or with `--json`. Exit codes: 0 ok, 1 runtime failure, 2 config, validation
@@ -34,55 +34,71 @@ or usage error, 3 partial success or orphans, 4 daemon unavailable.
 
 Usage: stems [OPTIONS] [COMMAND]
 
-Commands:
-  init           Scaffold a new integration repo in the current (or --workspace) directory
-  validate       Check the workspace config without starting anything
-  show           Print the resolved workspace config (or one stem's)
-  completions    Print a shell completion script
+Lifecycle:
   up             Start stems (and their dependencies), attached or detached
   down           Stop stems in reverse dependency order
   start          Start stems (and unstarted hard dependencies)
   stop           Stop stems
   restart        Restart stems (stop, then start)
-  attach         Open the dashboard (TUI) on the workspace daemon
+  build          Run build scripts (or docker builds)
+  pull           Pull the images of docker stems now (a moved tag such as `latest` included)
+  watch          Pause or resume watchdogs
+
+Inspect:
   status         Show the state of every stem
   logs           Show or follow stem and script logs
   events         Show or follow the event stream (NDJSON with --json)
   metrics        Show CPU, memory and disk usage per stem
   health         Show the last health probe results per stem, with latency
   graph          Draw the dependency graph
+
+Scripts & context:
   run            Run a stem or workspace script
   scripts        List scripts
   exec           Run an ad-hoc command in a stem's context (env, cwd or container)
   shell          Open an interactive shell in a stem's context
+  compose        Run `docker compose` in a compose stem's context (file, project, env)
   reset          Run a stem's `reset` script and clear its stamps
-  build          Run build scripts (or docker builds)
-  pull           Pull the images of docker stems now (a moved tag such as `latest` included)
   stamps         Show or clear setup/seed stamps
-  overlays       Show the overlays stems has written into codebases
-  doctor         Diagnose the environment: Docker, tool versions, ports, orphans
-  repos          Clone or update git codebases
-  watch          Pause or resume watchdogs
-  profiles       List profiles
-  outputs        Show values published by stems' `outputs:`
-  config         Read or change local config overrides
+  overlays       Show the overlays stems has written into codebases, or render a stem's overlays now
+                 (`stems overlays render <stem>`)
+
+Config:
+  init           Scaffold a new integration repo in the current (or --workspace) directory
+  validate       Check the workspace config without starting anything
+  show           Print the resolved workspace config (or one stem's)
   switch         Switch a stem to one of its variants (e.g. from a local process to a docker
                  container), or back to `local`
   configuration  List, select or save named configurations (overlays declared under
                  `configurations:` in stems.yaml)
+  profiles       List profiles
+  config         Read or change local config overrides
   add            Add a stem to stems.yaml
   remove         Remove a stem from stems.yaml
   edit           Open $EDITOR at a stem's block in stems.yaml
+
+Environment & ports:
+  env            Print the environment stems gives a stem
+  ports          List every stem's host ports and the variables that address them
+  outputs        Show values published by stems' `outputs:`
+
+Doctor & repos:
+  doctor         Diagnose the environment: Docker, tool versions, ports, orphans
+  repos          Clone, update or check out git codebases
+
+Dashboard & agents:
+  attach         Open the dashboard (TUI) on the workspace daemon
   mcp            Run the MCP server (agent interface)
-  upgrade        Upgrade stems (delegates to Homebrew when installed with brew)
+  features       List everything stems can do, by area, with commands, config keys and docs
+  docs           List the documentation pages, or print one
+
+Maintenance:
   daemon         Manage the workspace daemon
+  upgrade        Upgrade stems (delegates to Homebrew when installed with brew)
+  completions    Print a shell completion script
   help           Print this message or the help of the given subcommand(s)
 
 Options:
-  -h, --help
-          Print help (see a summary with '-h')
-
-Global options:
       --workspace <PATH>
           Workspace directory or stems.yaml path (default: $STEMS_WORKSPACE, else walk up from the
           current directory)
@@ -112,6 +128,15 @@ Global options:
 
   -V, --version
           Print version information (`--json` adds commit and build date)
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Where to look:
+  stems features [<area>]   everything stems can do, by area, with commands, config keys
+                            and docs (`--json` for agents; docs/features.md)
+  stems docs [<topic>]      list the reference pages, or print one
+  stems <command> --help    the details; ends with related commands and docs
 
 Lifecycle hooks (fixed `scripts:` names stems runs itself): setup, pre_start, start, health,
 post_start, seed, pre_stop, stop, post_stop, build, reset; workspace: bootstrap, teardown.
@@ -173,6 +198,9 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems validate`; docs/getting-started.md#1-create-an-integration-repo; `stems features
+config`.
 ```
 
 ### `stems validate`
@@ -219,6 +247,9 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems init`, `stems doctor`; docs/getting-started.md#1-create-an-integration-repo,
+docs/doctor.md#requires; `stems features config`.
 ```
 
 ### `stems show`
@@ -240,6 +271,14 @@ Arguments:
 Options:
       --effective
           Also print the table of defaults applied to unset fields
+
+      --variant <NAME>
+          Resolve the stem with this variant (or `local` for the base) active instead of the
+          selected one. Nothing is written: `stems switch` changes the selection. Needs a stem
+
+      --reveal
+          Show secret env values instead of `<redacted>` (human output on a terminal only; refused
+          with `--json`)
 
   -h, --help
           Print help (see a summary with '-h')
@@ -271,6 +310,9 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems env`, `stems logs`, `stems up`, `stems status`, `stems switch`; docs/config.md,
+docs/config.md#include--extends-fr-ws-9, docs/config.md#secrets; `stems features config`.
 ```
 
 ### `stems completions`
@@ -320,6 +362,8 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: docs/install.md; `stems features maintenance`.
 ```
 
 ### `stems up`
@@ -390,7 +434,7 @@ Options:
           Answer yes to the orphan prompt (same as --kill-orphans)
 
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -419,6 +463,10 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems down`, `stems start`, `stems stop`, `stems restart`, `stems show`;
+docs/lifecycle.md#commands, docs/getting-started.md#4-add-your-services, docs/recovery.md; `stems
+features lifecycle`.
 ```
 
 ### `stems down`
@@ -446,7 +494,7 @@ Options:
           Per-stem stop deadline override (e.g. 5s)
 
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -475,6 +523,9 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems up`, `stems start`, `stems stop`, `stems restart`, `stems doctor`;
+docs/lifecycle.md#commands, docs/recovery.md, docs/process-model.md; `stems features lifecycle`.
 ```
 
 ### `stems start`
@@ -503,7 +554,7 @@ Options:
           Deadline (e.g. 60s)
 
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -532,6 +583,9 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems up`, `stems down`, `stems stop`, `stems restart`; docs/lifecycle.md#commands;
+`stems features lifecycle`.
 ```
 
 ### `stems stop`
@@ -553,7 +607,7 @@ Options:
           Deadline (e.g. 10s)
 
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -582,6 +636,9 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems down`, `stems up`, `stems start`, `stems restart`; docs/process-model.md,
+docs/lifecycle.md#commands; `stems features lifecycle`.
 ```
 
 ### `stems restart`
@@ -618,7 +675,7 @@ Options:
           Restart only these stems, even if `restart.cascade` is set
 
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -647,6 +704,10 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems build`, `stems status`, `stems up`, `stems down`, `stems start`;
+docs/restart.md#cascading-restarts-fr-lc-9, docs/scripts.md#build-in-the-start-sequence-when,
+docs/restart.md#policies; `stems features lifecycle`.
 ```
 
 ### `stems attach`
@@ -713,6 +774,8 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems up`; docs/tui.md; `stems features observe`.
 ```
 
 ### `stems status`
@@ -732,8 +795,25 @@ Arguments:
           Only these stems
 
 Options:
+      --enabled
+          Hide disabled stems (`enabled: false`; listed last otherwise)
+
       --watch [<INTERVAL>]
           Redraw until Ctrl-C, every INTERVAL (seconds or a duration such as `500ms`; default 1s)
+
+      --expect <STATE>
+          Exit 0 when every named (else every enabled) stem is in STATE, else 1 (`STATUS_MISMATCH`,
+          `data.mismatch: [{stem, state}]`). `stopped` accepts `failed` too; `running` is setup,
+          starting, seeding, healthy or unhealthy. Without a daemon every stem is stopped
+
+          Possible values:
+          - healthy: Health check passing
+          - stopped: Not running (`stopped`, `failed` or `disabled`)
+          - failed:  Exited or could not be started
+          - running: Up or on its way: `setup`, `starting`, `seeding`, `healthy` or `unhealthy`
+
+      --timeout <DURATION>
+          With --expect: keep checking (every 200 ms) until this long has passed (e.g. `30s`)
 
   -h, --help
           Print help (see a summary with '-h')
@@ -765,6 +845,10 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems show`, `stems restart`, `stems health`; docs/config.md#enabled,
+docs/scripts.md#partial-installs-soft_fail,
+docs/lifecycle.md#checking-states-in-scripts-status---expect; `stems features lifecycle`.
 ```
 
 ### `stems logs`
@@ -842,6 +926,9 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems show`, `stems env`; docs/logs.md#stems-logs, docs/logs.md#export-bundle,
+docs/config.md#secrets; `stems features observe`.
 ```
 
 ### `stems events`
@@ -893,6 +980,8 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: docs/protocol.md#events; `stems features observe`.
 ```
 
 ### `stems metrics`
@@ -962,6 +1051,8 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: docs/metrics.md; `stems features observe`.
 ```
 
 ### `stems health`
@@ -1014,6 +1105,8 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems status`; docs/health.md#probe-types; `stems features supervision`.
 ```
 
 ### `stems graph`
@@ -1088,6 +1181,8 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems up`; docs/lifecycle.md#readiness; `stems features lifecycle`.
 ```
 
 ### `stems run`
@@ -1120,6 +1215,9 @@ Options:
 
       --start-deps
           Start the script's `requires:` stems if they are not healthy
+
+      --stop-deps
+          Stop the script's `requires_stopped:` stems if they run
 
       --wait <DURATION>
           How long to wait for the stem while it is still starting (default 30s)
@@ -1170,10 +1268,14 @@ Lifecycle hooks, in lifecycle order (every other `scripts:` name is a custom scr
   pre_stop    before every stop, before the process is signalled
   stop        how to stop the process (instead of SIGTERM), bounded by `stop_grace`
   post_stop   after every stop, once the process is gone
-  build       on `stems build` and `restart --build` (between stop and start); never automatic
+  build       on `stems build` and `restart --build` (between stop and start); with `when:
+  changed|always` also in every start, after `setup`
   reset       on `stems reset` and `up --fresh`, after the stop; its stamps are cleared
   teardown    (workspace) on `down --all`, after every stem stopped, before the daemon exits
 `stems scripts --lifecycle` prints this table with the stems that define each hook.
+
+See also: `stems scripts`; docs/scripts.md#custom-scripts-and-stems-run,
+docs/scripts.md#the-lifecycle-order; `stems features scripts`.
 ```
 
 ### `stems scripts`
@@ -1183,9 +1285,9 @@ List scripts.
 
 Workspace and stem scripts, lifecycle and custom, with their arguments. Reads the config locally (no
 daemon needed). `--json` prints the catalogue the TUI and MCP server use: `data: {scripts: [{stem,
-name, description, args, requires, kind, timeout, retries, concurrent, mcp_tool, input_schema}],
-lifecycle_hooks: [names]}`. `--lifecycle` lists every lifecycle hook instead, defined or not, in
-lifecycle order: `data: {lifecycle: [{name, scope, when, defined_by}]}`.
+name, description, args, requires, kind, timeout, retries, concurrent, inherit_env, mcp_tool,
+input_schema}], lifecycle_hooks: [names]}`. `--lifecycle` lists every lifecycle hook instead,
+defined or not, in lifecycle order: `data: {lifecycle: [{name, scope, when, defined_by}]}`.
 
 Usage: stems scripts [OPTIONS] [STEM]
 
@@ -1241,16 +1343,28 @@ Lifecycle hooks, in lifecycle order (every other `scripts:` name is a custom scr
   pre_stop    before every stop, before the process is signalled
   stop        how to stop the process (instead of SIGTERM), bounded by `stop_grace`
   post_stop   after every stop, once the process is gone
-  build       on `stems build` and `restart --build` (between stop and start); never automatic
+  build       on `stems build` and `restart --build` (between stop and start); with `when:
+  changed|always` also in every start, after `setup`
   reset       on `stems reset` and `up --fresh`, after the stop; its stamps are cleared
   teardown    (workspace) on `down --all`, after every stem stopped, before the daemon exits
 `stems scripts --lifecycle` prints this table with the stems that define each hook.
+
+See also: `stems run`; docs/scripts.md#the-lifecycle-order,
+docs/scripts.md#custom-scripts-and-stems-run; `stems features scripts`.
 ```
 
 ### `stems exec`
 
 ```text
-Run an ad-hoc command in a stem's context (env, cwd or container)
+Run an ad-hoc command in a stem's context (env, cwd or container).
+
+A process or external stem: the command runs here, in your terminal, with your environment plus what
+stems sets for the stem (`PORT`, `env`, `env_files`, `STEMS_*`, dependencies' ports and outputs), in
+its codebase (else its state directory). A running docker/compose stem: `docker exec` into its
+container (`--host` runs on the host instead). The exit code is the command's. Works without a
+daemon (from the config; auto ports then stay unresolved) and never starts one. `--json` prints
+`{stem, container, cwd, argv, exit}` after the command (its output still streams first). See
+docs/exec.md.
 
 Usage: stems exec [OPTIONS] <STEM> -- <COMMAND>...
 
@@ -1262,8 +1376,18 @@ Arguments:
           Command and arguments (after `--`)
 
 Options:
+      --host
+          Run on the host even for a docker/compose stem
+
+      --cwd <DIR>
+          Working directory (default: the stem's codebase, else its state directory). Host only
+
+      --fresh
+          Keep only PATH, HOME, USER, LOGNAME, SHELL, TMPDIR, TERM, LANG and LC_* of your
+          environment (like a script's `inherit_env: false`). Host only
+
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -1292,12 +1416,75 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems shell`, `stems env`; docs/exec.md; `stems features env`.
+```
+
+### `stems compose`
+
+```text
+Run `docker compose` in a compose stem's context (file, project, env).
+
+`stems compose <stem> [--service] -- <args…>` runs `docker compose -f <file> -p <project> --env-file
+<stem env> <args…>` here, in your terminal, in the compose file's directory (a one-off migration,
+`run --rm`, `config`, `ps`). `--service` appends the stem's service as the last argument. Works
+without a daemon (writes the env file itself) and never starts one. The exit code is compose's.
+`--json` prints `{stem, argv, exit}` after the command. See docs/compose.md.
+
+Usage: stems compose [OPTIONS] <STEM> -- <ARGS>...
+
+Arguments:
+  <STEM>
+          Compose stem whose file, project and env to use
+
+  <ARGS>...
+          Arguments for `docker compose` (after `--`)
+
+Options:
+      --service
+          Append the stem's compose service as the last argument
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Global options:
+      --workspace <PATH>
+          Workspace directory or stems.yaml path (default: $STEMS_WORKSPACE, else walk up from the
+          current directory)
+
+      --json
+          Emit the JSON envelope (the default when stdout is not a terminal)
+
+      --human
+          Emit human text even when stdout is not a terminal
+
+      --no-color
+          Disable colours in human output
+          
+          [env: STEMS_NO_COLOR]
+
+  -q, --quiet
+          Print only errors in human mode
+
+  -v, --verbose...
+          More detail (repeat for more: -vv)
+
+      --home <PATH>
+          Root for daemon state, sockets, locks and logs (default: ~/Library/Application
+          Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
+          
+          [env: STEMS_HOME]
+
+See also: docs/compose.md; `stems features containers`.
 ```
 
 ### `stems shell`
 
 ```text
-Open an interactive shell in a stem's context
+Open an interactive shell in a stem's context.
+
+`stems exec <stem> -- $SHELL -i` (your `SHELL`, else /bin/sh); in a running container `bash`, else
+`sh`. See docs/exec.md.
 
 Usage: stems shell [OPTIONS] <STEM>
 
@@ -1306,8 +1493,11 @@ Arguments:
           Stem whose context to use
 
 Options:
+      --host
+          Open the shell on the host even for a docker/compose stem
+
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -1336,6 +1526,8 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems exec`, `stems env`; docs/exec.md; `stems features env`.
 ```
 
 ### `stems reset`
@@ -1396,10 +1588,13 @@ Lifecycle hooks, in lifecycle order (every other `scripts:` name is a custom scr
   pre_stop    before every stop, before the process is signalled
   stop        how to stop the process (instead of SIGTERM), bounded by `stop_grace`
   post_stop   after every stop, once the process is gone
-  build       on `stems build` and `restart --build` (between stop and start); never automatic
+  build       on `stems build` and `restart --build` (between stop and start); with `when:
+  changed|always` also in every start, after `setup`
   reset       on `stems reset` and `up --fresh`, after the stop; its stamps are cleared
   teardown    (workspace) on `down --all`, after every stem stopped, before the daemon exits
 `stems scripts --lifecycle` prints this table with the stems that define each hook.
+
+See also: `stems stamps`; docs/scripts.md#stamps-fr-sc-5; `stems features scripts`.
 ```
 
 ### `stems build`
@@ -1456,10 +1651,14 @@ Lifecycle hooks, in lifecycle order (every other `scripts:` name is a custom scr
   pre_stop    before every stop, before the process is signalled
   stop        how to stop the process (instead of SIGTERM), bounded by `stop_grace`
   post_stop   after every stop, once the process is gone
-  build       on `stems build` and `restart --build` (between stop and start); never automatic
+  build       on `stems build` and `restart --build` (between stop and start); with `when:
+  changed|always` also in every start, after `setup`
   reset       on `stems reset` and `up --fresh`, after the stop; its stamps are cleared
   teardown    (workspace) on `down --all`, after every stem stopped, before the daemon exits
 `stems scripts --lifecycle` prints this table with the stems that define each hook.
+
+See also: `stems restart`; docs/scripts.md#build-in-the-start-sequence-when,
+docs/docker.md#build-secrets-and-paths-outside-the-context-buildx; `stems features scripts`.
 ```
 
 ### `stems pull`
@@ -1511,6 +1710,8 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems up`; docs/docker.md; `stems features containers`.
 ```
 
 ### `stems stamps`
@@ -1529,7 +1730,7 @@ Options:
           Clear the stamps so setup/seed run again
 
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -1558,14 +1759,23 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems reset`; docs/scripts.md#stamps-fr-sc-5; `stems features scripts`.
 ```
 
 ### `stems overlays`
 
 ```text
-Show the overlays stems has written into codebases
+Show the overlays stems has written into codebases, or render a stem's overlays now (`stems overlays
+render <stem>`)
 
 Usage: stems overlays [OPTIONS] [STEM]
+       stems overlays <COMMAND>
+
+Commands:
+  render  Render a stem's overlays now, without starting it, and write and record them like a start
+          does (a later `down` removes them)
+  help    Print this message or the help of the given subcommand(s)
 
 Arguments:
   [STEM]
@@ -1573,7 +1783,7 @@ Arguments:
 
 Options:
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -1602,6 +1812,61 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: docs/overlays.md; `stems features scripts`.
+```
+
+### `stems overlays render`
+
+```text
+Render a stem's overlays now, without starting it, and write and record them like a start does (a
+later `down` removes them).
+
+Uses the daemon when one runs, else renders locally (ports: as configured; `port: auto` ports need
+the daemon). An unresolvable reference is UNRESOLVED_VARIABLE (exit 2), listing every one.
+
+Usage: stems overlays render [OPTIONS] <STEM>
+
+Arguments:
+  <STEM>
+          The stem
+
+Options:
+      --dry-run
+          Print each rendered file instead of writing it (nothing is written or recorded)
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Global options:
+      --workspace <PATH>
+          Workspace directory or stems.yaml path (default: $STEMS_WORKSPACE, else walk up from the
+          current directory)
+
+      --json
+          Emit the JSON envelope (the default when stdout is not a terminal)
+
+      --human
+          Emit human text even when stdout is not a terminal
+
+      --no-color
+          Disable colours in human output
+          
+          [env: STEMS_NO_COLOR]
+
+  -q, --quiet
+          Print only errors in human mode
+
+  -v, --verbose...
+          More detail (repeat for more: -vv)
+
+      --home <PATH>
+          Root for daemon state, sockets, locks and logs (default: ~/Library/Application
+          Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
+          
+          [env: STEMS_HOME]
+
+See also: docs/overlays.md; `stems features scripts`.
 ```
 
 ### `stems doctor`
@@ -1628,7 +1893,7 @@ Options:
           Also kill processes stems did not start that hold declared ports
 
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -1657,23 +1922,27 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems validate`, `stems up`, `stems down`; docs/doctor.md#checks,
+docs/doctor.md#requires, docs/doctor.md#custom-checks; `stems features doctor`.
 ```
 
 ### `stems repos`
 
 ```text
-Clone or update git codebases
+Clone, update or check out git codebases
 
 Usage: stems repos [OPTIONS] <COMMAND>
 
 Commands:
-  sync    Clone missing git codebases and fetch/check out their refs
-  status  Show each git codebase's branch, commit and cleanliness
-  help    Print this message or the help of the given subcommand(s)
+  sync      Clone missing git codebases and fetch/check out their refs
+  status    Show each git codebase's branch, commit and cleanliness
+  checkout  Check out any branch, tag or sha of a stem's git codebase
+  help      Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -1702,12 +1971,18 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: docs/repos.md; `stems features repos`.
 ```
 
 ### `stems repos sync`
 
 ```text
-Clone missing git codebases and fetch/check out their refs
+Clone missing git codebases and fetch/check out their refs.
+
+A tree with local work (uncommitted changes, unpushed commits, or HEAD moved by you, e.g. with
+`repos checkout`) is left alone (`skipped_dirty`); `--reset` returns a moved tree to the declared
+ref (local work is still never touched).
 
 Usage: stems repos sync [OPTIONS] [STEMS]...
 
@@ -1719,8 +1994,11 @@ Options:
       --recurse-submodules
           (sync) Pass `--recurse-submodules` to git clone / checkout
 
+      --reset
+          (sync) Return trees you moved (another branch, `repos checkout`) to the declared ref
+
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -1749,12 +2027,17 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems repos status`; docs/repos.md; `stems features repos`.
 ```
 
 ### `stems repos status`
 
 ```text
-Show each git codebase's branch, commit and cleanliness
+Show each git codebase's branch, commit and cleanliness.
+
+`checked_out` is what HEAD is (branch, tag, `origin/<branch>` or sha); `drift: true` when it is not
+the declared `ref`.
 
 Usage: stems repos status [OPTIONS] [STEMS]...
 
@@ -1766,8 +2049,11 @@ Options:
       --recurse-submodules
           (sync) Pass `--recurse-submodules` to git clone / checkout
 
+      --reset
+          (sync) Return trees you moved (another branch, `repos checkout`) to the declared ref
+
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -1796,6 +2082,66 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems repos sync`; docs/repos.md; `stems features repos`.
+```
+
+### `stems repos checkout`
+
+```text
+Check out any branch, tag or sha of a stem's git codebase.
+
+Fetches, then checks out the ref detached (a branch as `origin/<branch>`). Refuses uncommitted
+changes (`REPO_DIRTY`) unless `--force`, which carries them over like `git checkout`. Nothing is
+recorded: `repos status` shows `drift: true`, `repos sync` leaves the tree alone, `repos sync
+--reset <stem>` goes back to the declared ref.
+
+Usage: stems repos checkout [OPTIONS] <STEM> <REF>
+
+Arguments:
+  <STEM>
+          Stem whose git codebase to move
+
+  <REF>
+          Branch, tag or sha
+
+Options:
+      --force
+          Check out even with uncommitted changes (they are carried over) or with commits on HEAD
+          that no remote branch or tag has (they stay reachable from the reflog only)
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Global options:
+      --workspace <PATH>
+          Workspace directory or stems.yaml path (default: $STEMS_WORKSPACE, else walk up from the
+          current directory)
+
+      --json
+          Emit the JSON envelope (the default when stdout is not a terminal)
+
+      --human
+          Emit human text even when stdout is not a terminal
+
+      --no-color
+          Disable colours in human output
+          
+          [env: STEMS_NO_COLOR]
+
+  -q, --quiet
+          Print only errors in human mode
+
+  -v, --verbose...
+          More detail (repeat for more: -vv)
+
+      --home <PATH>
+          Root for daemon state, sockets, locks and logs (default: ~/Library/Application
+          Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
+          
+          [env: STEMS_HOME]
+
+See also: docs/repos.md; `stems features repos`.
 ```
 
 ### `stems watch`
@@ -1813,7 +2159,7 @@ Commands:
 
 Options:
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -1842,6 +2188,8 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: docs/watchdogs.md; `stems features supervision`.
 ```
 
 ### `stems watch pause`
@@ -1857,7 +2205,7 @@ Arguments:
 
 Options:
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -1886,6 +2234,9 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems watch resume`, `stems watch status`; docs/watchdogs.md; `stems features
+supervision`.
 ```
 
 ### `stems watch resume`
@@ -1901,7 +2252,7 @@ Arguments:
 
 Options:
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -1930,6 +2281,9 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems watch pause`, `stems watch status`; docs/watchdogs.md; `stems features
+supervision`.
 ```
 
 ### `stems watch status`
@@ -1941,7 +2295,7 @@ Usage: stems watch status [OPTIONS]
 
 Options:
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -1970,6 +2324,9 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems watch pause`, `stems watch resume`; docs/watchdogs.md; `stems features
+supervision`.
 ```
 
 ### `stems profiles`
@@ -1981,7 +2338,7 @@ Usage: stems profiles [OPTIONS]
 
 Options:
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -2010,6 +2367,8 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems up`; docs/config.md#profiles-fr-ws-8; `stems features config`.
 ```
 
 ### `stems outputs`
@@ -2028,7 +2387,7 @@ Options:
           Show secret values (human output on a terminal only; JSON never reveals)
 
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -2057,6 +2416,137 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: docs/config.md#outputs-fr-st-6; `stems features env`.
+```
+
+### `stems env`
+
+```text
+Print the environment stems gives a stem.
+
+What stems sets (`PORT`, `env`, `env_files`, local env, `STEMS_*`, dependencies' ports and outputs)
+as dotenv `KEY=value` lines; `--format shell` prints `export KEY='value'` (`eval "$(stems env api
+--format shell)"`), `--format json` / `--json` gives `data: {stem, env, cwd, container,
+unresolved}`. `--all` adds your own environment underneath. Secret outputs are redacted. Works
+without a daemon (never starts one). See docs/exec.md.
+
+Usage: stems env [OPTIONS] <STEM>
+
+Arguments:
+  <STEM>
+          The stem
+
+Options:
+      --format <FORMAT>
+          Output format
+
+          Possible values:
+          - dotenv: `KEY=value` lines (quoted when needed)
+          - shell:  `export KEY='value'` lines, for `eval`
+          - json:   The JSON envelope
+          
+          [default: dotenv]
+
+      --all
+          Also print the inherited environment (yours) under the stem's
+
+      --reveal
+          Show secret values (human output on a terminal only)
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Global options:
+      --workspace <PATH>
+          Workspace directory or stems.yaml path (default: $STEMS_WORKSPACE, else walk up from the
+          current directory)
+
+      --json
+          Emit the JSON envelope (the default when stdout is not a terminal)
+
+      --human
+          Emit human text even when stdout is not a terminal
+
+      --no-color
+          Disable colours in human output
+          
+          [env: STEMS_NO_COLOR]
+
+  -q, --quiet
+          Print only errors in human mode
+
+  -v, --verbose...
+          More detail (repeat for more: -vv)
+
+      --home <PATH>
+          Root for daemon state, sockets, locks and logs (default: ~/Library/Application
+          Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
+          
+          [env: STEMS_HOME]
+
+See also: `stems show`, `stems logs`, `stems exec`, `stems shell`;
+docs/config.md#environment-fr-st-4, docs/config.md#secrets, docs/exec.md; `stems features env`.
+```
+
+### `stems ports`
+
+```text
+List every stem's host ports and the variables that address them
+
+Usage: stems ports [OPTIONS] [STEMS]...
+
+Arguments:
+  [STEMS]...
+          Only these stems (default: every enabled stem)
+
+Options:
+      --format <FORMAT>
+          Output format
+
+          Possible values:
+          - table:  Aligned table
+          - json:   JSON (the same as `--json`)
+          - dotenv: `NAME=value` lines
+          - shell:  `export NAME=value` lines
+          
+          [default: table]
+
+      --no-status
+          Config only: do not ask the daemon for `auto` allocations
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Global options:
+      --workspace <PATH>
+          Workspace directory or stems.yaml path (default: $STEMS_WORKSPACE, else walk up from the
+          current directory)
+
+      --json
+          Emit the JSON envelope (the default when stdout is not a terminal)
+
+      --human
+          Emit human text even when stdout is not a terminal
+
+      --no-color
+          Disable colours in human output
+          
+          [env: STEMS_NO_COLOR]
+
+  -q, --quiet
+          Print only errors in human mode
+
+  -v, --verbose...
+          More detail (repeat for more: -vv)
+
+      --home <PATH>
+          Root for daemon state, sockets, locks and logs (default: ~/Library/Application
+          Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
+          
+          [env: STEMS_HOME]
+
+See also: docs/ports.md; `stems features env`.
 ```
 
 ### `stems config`
@@ -2077,7 +2567,7 @@ Commands:
 
 Options:
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -2106,6 +2596,9 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: docs/config.md#stems-config-getsetunset-fr-cl-5, docs/config.md#reload-on-change-fr-wd-3;
+`stems features config`.
 ```
 
 ### `stems config get`
@@ -2121,7 +2614,7 @@ Arguments:
 
 Options:
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -2150,6 +2643,9 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems config set`, `stems config unset`; docs/config.md#stems-config-getsetunset-fr-cl-5;
+`stems features config`.
 ```
 
 ### `stems config set`
@@ -2168,7 +2664,7 @@ Arguments:
 
 Options:
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -2197,6 +2693,9 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems config get`, `stems config unset`; docs/config.md#stems-config-getsetunset-fr-cl-5;
+`stems features config`.
 ```
 
 ### `stems config unset`
@@ -2212,7 +2711,7 @@ Arguments:
 
 Options:
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -2241,6 +2740,9 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems config get`, `stems config set`; docs/config.md#stems-config-getsetunset-fr-cl-5;
+`stems features config`.
 ```
 
 ### `stems config diff`
@@ -2252,7 +2754,7 @@ Usage: stems config diff [OPTIONS]
 
 Options:
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -2281,6 +2783,8 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems config apply`; docs/config.md#reload-on-change-fr-wd-3; `stems features config`.
 ```
 
 ### `stems config apply`
@@ -2300,7 +2804,7 @@ Options:
           Do not ask for confirmation
 
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -2329,6 +2833,8 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems config diff`; docs/config.md#reload-on-change-fr-wd-3; `stems features config`.
 ```
 
 ### `stems switch`
@@ -2386,6 +2892,8 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems show`; docs/config.md#variants-fr-st-8; `stems features config`.
 ```
 
 ### `stems configuration`
@@ -2438,6 +2946,8 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: docs/config.md#configurations; `stems features config`.
 ```
 
 ### `stems configuration list`
@@ -2449,7 +2959,7 @@ Usage: stems configuration list [OPTIONS]
 
 Options:
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -2478,6 +2988,9 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems configuration use`, `stems configuration save`; docs/config.md#configurations;
+`stems features config`.
 ```
 
 ### `stems configuration use`
@@ -2530,6 +3043,9 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems configuration list`, `stems configuration save`; docs/config.md#configurations;
+`stems features config`.
 ```
 
 ### `stems configuration save`
@@ -2552,7 +3068,7 @@ Options:
           Overwrite an existing file or file-form configuration of that name
 
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -2581,6 +3097,9 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems configuration list`, `stems configuration use`; docs/config.md#configurations;
+`stems features config`.
 ```
 
 ### `stems add`
@@ -2785,6 +3304,8 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: docs/mcp.md; `stems features agents`.
 ```
 
 ### `stems upgrade`
@@ -2799,7 +3320,7 @@ Options:
           Print what would run without running it
 
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -2828,6 +3349,8 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: docs/install.md#upgrading; `stems features maintenance`.
 ```
 
 ### `stems daemon`
@@ -2848,7 +3371,7 @@ Options:
           Daemon log level (error, warn, info, debug, trace)
 
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -2877,6 +3400,8 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: docs/protocol.md; `stems features agents`.
 ```
 
 ### `stems daemon start`
@@ -2925,6 +3450,8 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems daemon stop`, `stems daemon status`; docs/protocol.md; `stems features agents`.
 ```
 
 ### `stems daemon stop`
@@ -2969,6 +3496,8 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems daemon start`, `stems daemon status`; docs/protocol.md; `stems features agents`.
 ```
 
 ### `stems daemon status`
@@ -3013,4 +3542,110 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems daemon start`, `stems daemon stop`; docs/protocol.md; `stems features agents`.
+```
+
+### `stems features`
+
+```text
+List everything stems can do, by area, with commands, config keys and docs.
+
+One entry per capability from the feature index: the same table as docs/features.md and the MCP
+resource `stems://features`. An area (`stems features scripts`) limits the list. --json gives the
+raw table: `data: {areas: [{id, title}], features: [{area, name, one_liner, commands, config_keys,
+doc}]}`. Needs no workspace.
+
+Usage: stems features [OPTIONS] [AREA]
+
+Arguments:
+  [AREA]
+          Only this area
+          
+          [possible values: lifecycle, config, env, scripts, containers, supervision, observe,
+          doctor, repos, agents, maintenance]
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+Global options:
+      --workspace <PATH>
+          Workspace directory or stems.yaml path (default: $STEMS_WORKSPACE, else walk up from the
+          current directory)
+
+      --json
+          Emit the JSON envelope (the default when stdout is not a terminal)
+
+      --human
+          Emit human text even when stdout is not a terminal
+
+      --no-color
+          Disable colours in human output
+          
+          [env: STEMS_NO_COLOR]
+
+  -q, --quiet
+          Print only errors in human mode
+
+  -v, --verbose...
+          More detail (repeat for more: -vv)
+
+      --home <PATH>
+          Root for daemon state, sockets, locks and logs (default: ~/Library/Application
+          Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
+          
+          [env: STEMS_HOME]
+
+See also: `stems docs`; docs/features.md; `stems features agents`.
+```
+
+### `stems docs`
+
+```text
+List the documentation pages, or print one.
+
+Without a topic, lists every page of docs/ (topic and title). With one (`stems docs exec`), prints
+that page's Markdown as of this build; --json gives `data: {topic, title, path, url, markdown}` (the
+list: `data: {topics: [{topic, title, path, url}]}`). Needs no workspace.
+
+Usage: stems docs [OPTIONS] [TOPIC]
+
+Arguments:
+  [TOPIC]
+          The page to print (`stems docs` lists them), e.g. `exec`, `config`
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+Global options:
+      --workspace <PATH>
+          Workspace directory or stems.yaml path (default: $STEMS_WORKSPACE, else walk up from the
+          current directory)
+
+      --json
+          Emit the JSON envelope (the default when stdout is not a terminal)
+
+      --human
+          Emit human text even when stdout is not a terminal
+
+      --no-color
+          Disable colours in human output
+          
+          [env: STEMS_NO_COLOR]
+
+  -q, --quiet
+          Print only errors in human mode
+
+  -v, --verbose...
+          More detail (repeat for more: -vv)
+
+      --home <PATH>
+          Root for daemon state, sockets, locks and logs (default: ~/Library/Application
+          Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
+          
+          [env: STEMS_HOME]
+
+See also: `stems features`; docs/features.md; `stems features agents`.
 ```

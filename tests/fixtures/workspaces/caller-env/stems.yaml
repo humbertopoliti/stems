@@ -1,0 +1,41 @@
+# caller-env — fixture for run/caller-env.feature (FR-SC-3), exec/*.feature
+# (FR-LC-7) and cli/env-command.feature (deliverable 37).
+#
+# `api` prints FOO (and BAR, MARK) when it starts (so the log shows the
+# environment of the `stems` command that started it), its `build` prints
+# FOO; `print-env` echoes FOO; `clean` is
+# `inherit_env: false` and shows what it still gets. `worker` has an auto
+# port (URL is unresolved until it runs) and no codebase; `client` depends on
+# it (its STEMS_WORKER_PORT and WORKER_URL are unresolved until then).
+schema_version: 1
+name: caller-env
+
+stems:
+  api:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    env: { GREETING: hello }
+    ports: [{ name: http, port: 18791 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts:
+      start: 'echo "started FOO=${FOO-unset} BAR=${BAR-unset} MARK=${MARK-unset}"; exec python3 app.py'
+      build: 'echo "build FOO=${FOO-unset}"'
+      print-env: 'echo "FOO=${FOO-unset}"'
+      clean:
+        command: 'echo "FOO=${FOO-unset} PATH=${PATH:+set} PORT=$PORT GREETING=$GREETING"'
+        inherit_env: false
+  worker:
+    type: process
+    env: { URL: "http://localhost:${stem.self.port}" }
+    ports: [{ name: http, port: auto }]
+    stop_grace: 1s
+    scripts:
+      start: 'exec sleep 300'
+  client:
+    type: process
+    depends_on: [worker]
+    env: { WORKER_URL: "http://localhost:${stem.worker.port}" }
+    stop_grace: 1s
+    scripts:
+      start: 'exec sleep 300'

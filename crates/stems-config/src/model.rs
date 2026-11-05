@@ -9,8 +9,9 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
 use crate::types::{
-    ArgType, AutoApply, ByteSize, Condition, Dur, FileMode, HealthType, Protocol, PullPolicy,
-    Requirement, RestartPolicy, Scalar, StemType, WatchAction, WatchRoot,
+    ArgType, AutoApply, BuildWhen, ByteSize, CheckSeverity, CheckWhen, Condition, Dur, FileMode,
+    HealthType, Protocol, PullPolicy, Requirement, RestartPolicy, Scalar, StemType, WatchAction,
+    WatchRoot,
 };
 
 /// A fully resolved workspace.
@@ -30,6 +31,9 @@ pub struct Workspace {
     pub env: IndexMap<String, String>,
     /// Tool requirements (checked by `validate` / `doctor`).
     pub requires: IndexMap<String, Requirement>,
+    /// User-defined checks (`doctor`, `up`, opt-in `validate`).
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub checks: IndexMap<String, CustomCheckSpec>,
     /// Profiles.
     pub profiles: IndexMap<String, Profile>,
     /// Default profile, if any.
@@ -62,6 +66,12 @@ pub struct Workspace {
     /// Desktop notification settings (34). Omitted from the JSON while default.
     #[serde(default, skip_serializing_if = "NotificationSettings::is_default")]
     pub notifications: NotificationSettings,
+    /// Secret env names (47): `NAME` adds, `!NAME` excepts. Omitted while empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<String>,
+    /// Secret name patterns (47). Omitted from the JSON while default.
+    #[serde(default, skip_serializing_if = "Redaction::is_default")]
+    pub redaction: Redaction,
     /// Managed clone directory for git codebases.
     pub repos_dir: PathBuf,
     /// Workspace-level scripts.
@@ -213,6 +223,31 @@ impl NotificationSettings {
     }
 }
 
+/// `redaction:` (47): which env names count as secret besides `secrets`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Redaction {
+    /// Extra name globs (case-insensitive).
+    pub patterns: Vec<String>,
+    /// Whether the built-in patterns apply.
+    pub builtin: bool,
+}
+
+impl Default for Redaction {
+    fn default() -> Self {
+        Self {
+            patterns: Vec::new(),
+            builtin: true,
+        }
+    }
+}
+
+impl Redaction {
+    /// Every value is the default.
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// A resolved stem.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Stem {
@@ -228,6 +263,12 @@ pub struct Stem {
     pub codebase: Option<Codebase>,
     /// `false` = listed but excluded from runs.
     pub enabled: bool,
+    /// `enabled` as written when it was a string (46), e.g.
+    /// `${env.WITH_SEARCH}`, with the environment variables it named that
+    /// were unset (they read as false). Not serialized: `status` uses it
+    /// for the reason of a disabled stem, `validate` for its note.
+    #[serde(skip)]
+    pub enabled_template: Option<EnabledTemplate>,
     /// Effective env: workspace `env` overlaid with the stem's `env`.
     pub env: IndexMap<String, String>,
     /// The subset of `env` whose keys were set by `stems.local.yaml`
@@ -237,7 +278,7 @@ pub struct Stem {
     #[serde(default)]
     pub local_env: BTreeMap<String, String>,
     /// Env files (absolute), applied by the runtime after `env`.
-    pub env_files: Vec<PathBuf>,
+    pub env_files: Vec<EnvFile>,
     /// Ports.
     pub ports: Vec<Port>,
     /// Dependencies.
@@ -258,8 +299,18 @@ pub struct Stem {
     pub overlays: Vec<Overlay>,
     /// Tags.
     pub tags: Vec<String>,
+    /// Secret env names of this stem (47): `NAME` adds, `!NAME` excepts.
+    /// Omitted while empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<String>,
     /// SIGTERM → SIGKILL grace.
     pub stop_grace: Dur,
+    /// Tool requirements of this stem (checked when it is enabled).
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub requires: IndexMap<String, Requirement>,
+    /// User-defined checks of this stem (while enabled).
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub checks: IndexMap<String, CustomCheckSpec>,
     /// Active variant (FR-ST-8): its name, or `local` when the base
     /// definition is active. Absent for a stem without `variants`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -267,6 +318,12 @@ pub struct Stem {
     /// Names of the declared variants (FR-ST-8), in declaration order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub variants: Vec<String>,
+    /// Where each field comes from (FR-ST-8): path (`type`, `env.<KEY>`,
+    /// `scripts.<name>`, `outputs.<NAME>`, …) -> `base`, `configuration`,
+    /// `variant`, `local` or `removed` (a `null` removed it). Only for a
+    /// stem with variants or a configuration/local override; empty otherwise.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub inherited_from: BTreeMap<String, String>,
 }
 
 impl Stem {
@@ -283,6 +340,16 @@ impl Stem {
     pub fn default_cwd<'a>(&'a self, ws_root: &'a Path) -> &'a Path {
         self.codebase.as_ref().map_or(ws_root, Codebase::path)
     }
+}
+
+/// A string `enabled:` (46): the text as written and the unset
+/// environment variables it named.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EnabledTemplate {
+    /// As written, e.g. `${env.WITH_SEARCH}`.
+    pub text: String,
+    /// `${env.X}` references that were unset (substituted as empty).
+    pub unset: Vec<String>,
 }
 
 /// A resolved codebase.
@@ -363,6 +430,10 @@ pub struct Dependency {
     pub condition: Condition,
     /// Soft edge.
     pub soft: bool,
+    /// What a hard edge does when `stem` is disabled (46); `skip` (the
+    /// default) is not serialized.
+    #[serde(default, skip_serializing_if = "crate::types::IfDisabled::is_skip")]
+    pub if_disabled: crate::types::IfDisabled,
     /// Protocol metadata.
     pub protocol: Option<Protocol>,
     /// Address metadata.
@@ -428,10 +499,19 @@ pub struct Script {
     pub inputs: Vec<String>,
     /// Stems that must be healthy first.
     pub requires: Vec<String>,
+    /// Stems that must not run (stopped, failed or disabled) first (49).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires_stopped: Vec<String>,
     /// Timeout; `None` = no timeout.
     pub timeout: Option<Dur>,
     /// Retries.
     pub retries: u32,
+    /// A failure degrades the stem instead of failing it (41).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub soft_fail: bool,
+    /// `build` only: when it runs besides on demand (45).
+    #[serde(default, skip_serializing_if = "BuildWhen::is_on_demand")]
+    pub when: BuildWhen,
     /// Concurrent execution allowed.
     pub concurrent: bool,
     /// Env var names hashed into stamps.
@@ -439,6 +519,10 @@ pub struct Script {
     /// Working directory (absolute). `cwd: workspace` resolves to the
     /// integration repo root.
     pub cwd: PathBuf,
+    /// Inherit the caller's environment (37); `false`: only a minimal
+    /// allowlist of it (`PATH`, `HOME`, ...) under what stems sets.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub inherit_env: bool,
     /// `cwd:` was given explicitly (`cwd: workspace` included). Scripts of a
     /// stem without a codebase run in its state directory unless this is set.
     #[serde(default, skip_serializing_if = "is_false")]
@@ -447,6 +531,14 @@ pub struct Script {
 
 fn is_false(b: &bool) -> bool {
     !*b
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
 }
 
 /// A resolved script argument.
@@ -677,6 +769,59 @@ pub struct DockerBuild {
     pub context: PathBuf,
     /// Dockerfile (absolute).
     pub dockerfile: PathBuf,
+    /// BuildKit secrets (44).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<BuildSecret>,
+    /// Paths outside the context the build may read (44): absolute after
+    /// substitution (`validate` rejects anything else).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow_read: Vec<PathBuf>,
+}
+
+/// One BuildKit secret (44): `RUN --mount=type=secret,id=<id>` reads it.
+/// Serialised as `{id, file}` or `{id, env}`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BuildSecret {
+    /// The id the Dockerfile mounts.
+    pub id: String,
+    /// Where the value comes from.
+    #[serde(flatten)]
+    pub source: SecretSource,
+}
+
+/// Where a build secret's value comes from.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SecretSource {
+    /// A file (absolute).
+    File(PathBuf),
+    /// An environment variable (the stem's env, else the daemon's).
+    Env(String),
+}
+
+/// The object form of a compose stem's `build:` (44). All defaults: the
+/// bool form.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ComposeBuild {
+    /// Services whose images are built; empty means the stem's service.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub services: Vec<String>,
+    /// Build before `setup` instead of at start.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub before_setup: bool,
+    /// BuildKit secrets, declared in the generated override file.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<BuildSecret>,
+    /// `--allow fs.read=<p>` for `docker buildx bake`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow_read: Vec<PathBuf>,
+}
+
+impl ComposeBuild {
+    /// Nothing beyond `build: true` (today's `compose up --build`).
+    pub fn is_plain(&self) -> bool {
+        self == &Self::default()
+    }
 }
 
 /// Docker healthcheck override (fields left unset keep the image's values).
@@ -709,4 +854,95 @@ pub struct ComposeSpec {
     pub adopt: bool,
     /// Rebuild the service's image on every start (`compose up --build`).
     pub build: bool,
+    /// The object form of `build:` (44): services, `before_setup`,
+    /// secrets, `allow_read`. Absent for the bool form.
+    #[serde(default, skip_serializing_if = "ComposeBuild::is_plain")]
+    pub build_options: ComposeBuild,
+    /// Put the stem's env into the container too (an `env_file:` override).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub inject_env: bool,
+}
+
+/// One resolved `env_files:` entry. Serialised as the plain path unless
+/// `required` is false (then `{path, required: false}`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EnvFile {
+    /// Absolute path.
+    pub path: PathBuf,
+    /// `false`: an absent file is skipped.
+    pub required: bool,
+}
+
+impl EnvFile {
+    /// A required env file.
+    pub fn required(path: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            required: true,
+        }
+    }
+}
+
+impl Serialize for EnvFile {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        if self.required {
+            return self.path.serialize(s);
+        }
+        let mut m = s.serialize_map(Some(2))?;
+        m.serialize_entry("path", &self.path)?;
+        m.serialize_entry("required", &false)?;
+        m.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for EnvFile {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Form {
+            Path(PathBuf),
+            Spec {
+                path: PathBuf,
+                #[serde(default = "yes")]
+                required: bool,
+            },
+        }
+        fn yes() -> bool {
+            true
+        }
+        Ok(match Form::deserialize(d)? {
+            Form::Path(path) => Self {
+                path,
+                required: true,
+            },
+            Form::Spec { path, required } => Self { path, required },
+        })
+    }
+}
+
+/// A resolved user-defined check.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CustomCheckSpec {
+    /// Shell command; exit 0 = ok.
+    pub command: String,
+    /// Shown on failure.
+    pub message: Option<String>,
+    /// What to do about a failure.
+    pub hint: Option<String>,
+    /// `fail` or `warn`.
+    pub severity: CheckSeverity,
+    /// Kill the command after this long.
+    pub timeout: Dur,
+    /// Command run by `doctor --fix`.
+    pub fix: Option<String>,
+    /// Where it runs.
+    pub when: Vec<CheckWhen>,
+}
+
+impl CustomCheckSpec {
+    /// Does this check run for `at`?
+    pub fn runs_on(&self, at: CheckWhen) -> bool {
+        self.when.contains(&at)
+    }
 }

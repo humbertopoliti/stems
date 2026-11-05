@@ -1,6 +1,8 @@
 //! Params and results of the lifecycle-script methods (`build`, `reset`,
 //! `stamps`), deliverable 16. See `docs/scripts.md`.
 
+use std::collections::BTreeMap;
+
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -13,6 +15,11 @@ pub struct BuildParams {
     /// Stems whose `build` script runs; empty = every enabled stem that has one.
     #[serde(default)]
     pub stems: Vec<String>,
+    /// The environment of the `stems` command (37): the base layer of the
+    /// `build` scripts, minus `STEMS_*`. Absent: the daemon's own environment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    pub caller_env: Option<BTreeMap<String, String>>,
 }
 
 /// One finished script run.
@@ -146,10 +153,20 @@ pub struct RunScriptParams {
     /// (otherwise `SCRIPT_REQUIRES_UNMET`).
     #[serde(default)]
     pub start_deps: bool,
+    /// Stop the script's `requires_stopped:` stems if they run (otherwise
+    /// `SCRIPT_REQUIRES_UNMET`), 49.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stop_deps: bool,
     /// How long to wait for the owning stem while it is starting
     /// (`setup`/`starting`/`seeding`); default 30 000.
     #[serde(default)]
     pub ready_timeout_ms: Option<u64>,
+    /// The environment of the `stems` command (37): the script's base
+    /// layer, minus `STEMS_*` (under the stem's own env). Absent: the
+    /// daemon's own environment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    pub caller_env: Option<BTreeMap<String, String>>,
 }
 
 impl RunScriptParams {
@@ -161,7 +178,9 @@ impl RunScriptParams {
             args: ScriptArgsInput::Argv(args),
             wait: true,
             start_deps: false,
+            stop_deps: false,
             ready_timeout_ms: None,
+            caller_env: None,
         }
     }
 }
@@ -206,6 +225,11 @@ pub struct RunScriptResult {
     pub tail: Vec<String>,
     /// The run waited for another run of a script of the same stem.
     pub queued: bool,
+    /// The script failed and is `soft_fail` (41): in the lifecycle it
+    /// would only have degraded its stem. `ok` is still false. Omitted
+    /// when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub soft: bool,
     /// `SCRIPT_FAILED` when `ok` is false.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<serde_json::Value>")]

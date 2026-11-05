@@ -1,0 +1,49 @@
+---
+source: crates/stems-cli/tests/help.rs
+expression: help
+---
+List the documentation pages, or print one.
+
+Without a topic, lists every page of docs/ (topic and title). With one (`stems docs exec`), prints
+that page's Markdown as of this build; --json gives `data: {topic, title, path, url, markdown}` (the
+list: `data: {topics: [{topic, title, path, url}]}`). Needs no workspace.
+
+Usage: stems docs [OPTIONS] [TOPIC]
+
+Arguments:
+  [TOPIC]
+          The page to print (`stems docs` lists them), e.g. `exec`, `config`
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+Global options:
+      --workspace <PATH>
+          Workspace directory or stems.yaml path (default: $STEMS_WORKSPACE, else walk up from the
+          current directory)
+
+      --json
+          Emit the JSON envelope (the default when stdout is not a terminal)
+
+      --human
+          Emit human text even when stdout is not a terminal
+
+      --no-color
+          Disable colours in human output
+          
+          [env: STEMS_NO_COLOR]
+
+  -q, --quiet
+          Print only errors in human mode
+
+  -v, --verbose...
+          More detail (repeat for more: -vv)
+
+      --home <PATH>
+          Root for daemon state, sockets, locks and logs (default: ~/Library/Application
+          Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
+          
+          [env: STEMS_HOME]
+
+See also: `stems features`; docs/features.md; `stems features agents`.

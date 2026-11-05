@@ -27,7 +27,7 @@
 //! dependants ([`super::cascade`], FR-LC-9); triggers of stems a cascade is
 //! restarting are dropped (loop guard #4).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
@@ -844,8 +844,7 @@ async fn recreate(
     {
         return Err(e);
     }
-    cell.start(ws.clone(), WATCHDOG_ACTOR, why, BTreeMap::new())
-        .await?;
+    cell.start(ws.clone(), WATCHDOG_ACTOR, why).await?;
     settled(&cell).await
 }
 
@@ -891,8 +890,10 @@ pub(crate) async fn run_rule_action(
                 cascading(sup, &ws, stem, why, cascade, origin).await
             }
             _ => {
+                // The environment of the stem's last user start (37).
+                let call = sup.cell(stem).info().restart.call_env();
                 let b = sup
-                    .build_stems(&ws, &[stem.to_string()], WATCHDOG_ACTOR)
+                    .build_stems(&ws, &[stem.to_string()], &call, WATCHDOG_ACTOR)
                     .await;
                 if let Some(f) = b.failed.into_iter().next() {
                     return Err(f.error);

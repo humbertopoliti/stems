@@ -67,7 +67,7 @@ Options:
           Answer yes to the orphan prompt (same as --kill-orphans)
 
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -96,3 +96,7 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems down`, `stems start`, `stems stop`, `stems restart`, `stems show`;
+docs/lifecycle.md#commands, docs/getting-started.md#4-add-your-services, docs/recovery.md; `stems
+features lifecycle`.

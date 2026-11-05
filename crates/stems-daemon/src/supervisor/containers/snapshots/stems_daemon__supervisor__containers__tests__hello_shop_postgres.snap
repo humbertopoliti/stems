@@ -1,5 +1,6 @@
 ---
 source: crates/stems-daemon/src/supervisor/containers/tests.rs
+assertion_line: 109
 expression: golden
 ---
 {
@@ -14,6 +15,7 @@ expression: golden
   ],
   "env": {
     "PORT": "5432",
+    "PORT_PG": "15432",
     "POSTGRES_DB": "shop",
     "POSTGRES_PASSWORD": "local",
     "POSTGRES_USER": "shop",

@@ -24,7 +24,7 @@ Options:
           Per-stem stop deadline override (e.g. 5s)
 
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -53,3 +53,6 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems up`, `stems start`, `stems stop`, `stems restart`, `stems doctor`;
+docs/lifecycle.md#commands, docs/recovery.md, docs/process-model.md; `stems features lifecycle`.

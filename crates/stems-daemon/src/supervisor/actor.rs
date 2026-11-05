@@ -29,7 +29,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::AbortHandle;
 
 use super::Core;
-use super::env::{EnvInputs, build_env, render_refs};
+use super::env::{CallEnv, EnvInputs, build_env, render_refs};
 use super::ports::check_free;
 use super::state;
 use super::waiter::WaitTarget;
@@ -55,7 +55,7 @@ pub(crate) enum Cmd {
         ws: Arc<Resolved>,
         actor: String,
         reason: String,
-        pass_env: BTreeMap<String, String>,
+        call: CallEnv,
         reply: oneshot::Sender<Result<(), Error>>,
     },
     /// Stop (SIGTERM → grace → SIGKILL). Replies when stopped.
@@ -118,6 +118,9 @@ pub(crate) struct StemInfo {
     pub output_since: Option<DateTime<Utc>>,
     pub restarts: u32,
     pub env: BTreeMap<String, String>,
+    /// Layer 1 of the current start's environment: the caller's (37);
+    /// `None`: the daemon's own. Command health probes use it.
+    pub base_env: Option<Arc<BTreeMap<String, String>>>,
     pub error: Option<Error>,
     pub generation: u64,
     pub grace: Duration,
@@ -128,6 +131,17 @@ pub(crate) struct StemInfo {
     pub seeded: bool,
     /// `post_start`/`seed` still to run (mirrored into [`Phase::pending`]).
     pub pending: bool,
+    /// `soft_fail` scripts that failed in this run (41): a healthy stem
+    /// with warnings is degraded. Cleared by a stop or a new start.
+    pub warnings: Vec<stems_api::ScriptWarning>,
+    /// The `build` warning belongs to the next start: its soft-failed
+    /// `build` ran in the same `restart --build` (41). Taken by that start.
+    pub keep_build_warning: bool,
+    /// `restart --build` already ran this stem's `build` in this request:
+    /// the start that follows skips its in-sequence `build` step (45), so a
+    /// `when: always` build does not run twice. Taken by that start, and
+    /// cleared when the request ends.
+    pub built_in_request: bool,
     /// Cancels the script currently running for this stem (a stop kills it).
     pub script_cancel: Option<tokio_util::sync::CancellationToken>,
     /// Probe history, failure streak, health transitions (21).
@@ -163,6 +177,7 @@ impl StemCell {
                 output_since: None,
                 restarts: 0,
                 env: BTreeMap::new(),
+                base_env: None,
                 error: None,
                 generation: 0,
                 grace: Duration::from_secs(10),
@@ -170,6 +185,9 @@ impl StemCell {
                 launch: None,
                 seeded: false,
                 pending: false,
+                warnings: Vec::new(),
+                keep_build_warning: false,
+                built_in_request: false,
                 script_cancel: None,
                 health: Default::default(),
                 outputs_ctx: None,
@@ -205,20 +223,33 @@ impl StemCell {
         self.phase.subscribe()
     }
 
-    /// Ask the actor to start the stem.
+    /// Ask the actor to start the stem, in the caller environment and with
+    /// the `--pass-env` of its last user start (a start stems performs on
+    /// its own: watchdogs, config apply), so `restart.begin` keeps both.
     pub(crate) async fn start(
         &self,
         ws: Arc<Resolved>,
         actor: &str,
         reason: &str,
-        pass_env: BTreeMap<String, String>,
+    ) -> Result<(), Error> {
+        let call = self.info().restart.call_env();
+        self.start_with(ws, actor, reason, call).await
+    }
+
+    /// Ask the actor to start the stem in `call`'s environment (37).
+    pub(crate) async fn start_with(
+        &self,
+        ws: Arc<Resolved>,
+        actor: &str,
+        reason: &str,
+        call: CallEnv,
     ) -> Result<(), Error> {
         let (reply, rx) = oneshot::channel();
         self.send(Cmd::Start {
             ws,
             actor: actor.into(),
             reason: reason.into(),
-            pass_env,
+            call,
             reply,
         });
         rx.await
@@ -330,6 +361,10 @@ impl StemCell {
             }
             info.state = to;
             info.reason = Some(reason.clone());
+            // A stop ends the run its soft-failure warnings belong to (41).
+            if to == StemState::Stopped {
+                info.warnings.clear();
+            }
             // Outputs live only while the stem runs (26).
             super::outputs::on_transition(core, &self.name, to);
             // Watchdogs stop with the stem (24).
@@ -436,8 +471,15 @@ impl StemCell {
         }
     }
 
-    /// The `status` view of this stem.
-    pub fn status(&self, stem: &Stem, core: &Core, verbose: bool) -> StemStatus {
+    /// The `status` view of this stem; `verbose` (`status -v`) adds the
+    /// env, redacted by the workspace's [`Redactor`](stems_core::redact::Redactor)
+    /// and for secret outputs (47).
+    pub fn status(
+        &self,
+        stem: &Stem,
+        core: &Core,
+        verbose: Option<&stems_core::redact::Redactor>,
+    ) -> StemStatus {
         let info = self.info();
         let running = info.handle.is_some();
         let ports = stem
@@ -467,6 +509,7 @@ impl StemCell {
             state: info.state,
             glyph: info.state.glyph(false),
             reason: info.reason.clone(),
+            enabled: true,
             pid: info.handle.as_ref().map(Handle::pid),
             pgid: info.handle.as_ref().map(Handle::pgid),
             ports,
@@ -476,12 +519,13 @@ impl StemCell {
             restarts_in_window: info.restart.in_window(Instant::now()),
             seeded: info.seeded,
             degraded: false,
+            warnings: info.warnings.clone(),
             health: info.health.status(Instant::now()),
             metrics: None,
             error: info.error.clone(),
-            env: (verbose && running).then(|| {
+            env: verbose.filter(|_| running).map(|names| {
                 let mut env = info.env.clone();
-                super::outputs::redact_env(core, stem, &mut env);
+                super::outputs::redact_env_with(core, stem, &mut env, Some(names));
                 env
             }),
             outputs: super::outputs::shown(core, &stem.name),
@@ -500,10 +544,10 @@ async fn run(core: Arc<Core>, cell: Arc<StemCell>, mut rx: mpsc::UnboundedReceiv
                 ws,
                 actor,
                 reason,
-                pass_env,
+                call,
                 reply,
             } => {
-                let r = start(&core, &cell, &ws, &actor, &reason, &pass_env).await;
+                let r = start(&core, &cell, &ws, &actor, &reason, &call).await;
                 let _ = reply.send(r);
             }
             Cmd::Stop {
@@ -548,7 +592,7 @@ async fn start(
     ws: &Arc<Resolved>,
     actor: &str,
     reason: &str,
-    pass_env: &BTreeMap<String, String>,
+    call: &CallEnv,
 ) -> Result<(), Error> {
     let Some(stem) = ws.workspace.stem(&cell.name) else {
         return Err(Error::new(
@@ -589,7 +633,7 @@ async fn start(
     }
     cell.info().grace = stem.stop_grace.as_duration();
     // A user start: fresh restart window and backoff (22).
-    cell.info().restart.begin(ws, stem, pass_env);
+    cell.info().restart.begin(ws, stem, call);
     // A git codebase whose managed clone is missing is cloned first (20).
     let repo_ctx = crate::repos::RepoCtx::for_core(core, actor);
     if let Err(e) =
@@ -602,9 +646,9 @@ async fn start(
     // edits during a slow start count (24).
     super::watch::on_start(core, ws, stem);
     // setup (when its stamp changed) and pre_start (16).
-    super::hooks::before_start(core, cell, ws, stem, actor, pass_env).await?;
+    super::hooks::before_start(core, cell, ws, stem, actor, call).await?;
     cell.transition(core, StemState::Starting, reason, actor, json!({}));
-    match spawn(core, cell, ws, stem, pass_env).await {
+    match spawn(core, cell, ws, stem, call).await {
         Ok(()) => Ok(()),
         Err(e) => {
             cell.fail(core, e.clone(), actor);
@@ -653,7 +697,7 @@ pub(crate) async fn spawn(
     cell: &Arc<StemCell>,
     ws: &Arc<Resolved>,
     stem: &Stem,
-    pass_env: &BTreeMap<String, String>,
+    call: &CallEnv,
 ) -> Result<(), Error> {
     let runtime = core.runtimes.get(stem.kind())?;
     let workspace = &ws.workspace;
@@ -682,8 +726,8 @@ pub(crate) async fn spawn(
         workspace,
         stem,
         &EnvInputs {
-            base: &core.base_env,
-            pass_env,
+            base: call.base(&core.base_env),
+            pass_env: &call.pass,
             run_id: &core.run_id,
             ports: &core.ports,
             outputs: Some(&core.outputs),
@@ -733,7 +777,8 @@ pub(crate) async fn spawn(
     cell.info().output_since = Some(Utc::now());
     let handle = if matches!(stem.kind(), StemType::Docker | StemType::Compose) {
         // Containers (14/15): spec from config, errors mapped to §7.5.
-        let spec = super::containers::start_spec(core, workspace, stem, &env.own, &ports)?;
+        let spec =
+            super::containers::start_spec(core, workspace, stem, &env.own, &env.full, &ports)?;
         super::containers::start(core, &stem.name, stem.kind(), &runtime, &spec).await?
     } else {
         let (shell, script, cwd) = start_script(stem)?;
@@ -763,6 +808,7 @@ pub(crate) async fn spawn(
         info.ports = ports;
         info.started_at = Some((Instant::now(), Utc::now()));
         info.env = env.own;
+        info.base_env = call.caller.clone();
         info.error = None;
         info.outputs_ctx = (!stem.outputs.is_empty()).then_some(outputs_ctx);
         info.generation

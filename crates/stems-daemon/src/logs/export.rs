@@ -13,58 +13,28 @@
 
 use std::io::Write;
 use std::path::Path;
-use std::sync::LazyLock;
 
 use chrono::{DateTime, Utc};
 use flate2::Compression;
 use flate2::write::GzEncoder;
-use regex::Regex;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
 use stems_api::{Event, ExportLogsParams, ExportLogsResult};
 use stems_core::Error;
+use stems_core::redact::Redactor;
 
 use super::{LogHub, list_log_files};
 
-/// Env keys whose values are replaced by [`REDACTED`] in `config.json`.
-pub const REDACT_KEY_PATTERN: &str = r"(?i)(secret|token|password|passwd|key)";
 /// The replacement value.
-pub const REDACTED: &str = "<redacted>";
-
-static REDACT_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(REDACT_KEY_PATTERN).expect("valid redaction regex"));
+pub use stems_core::redact::REDACTED;
 
 /// Redact the resolved config for sharing: in every environment map (`env`,
-/// `local_env`, any `*_env`, `environment`; workspace and stems) values whose key matches [`REDACT_KEY_PATTERN`] or one of `extra`
-/// (the hook for later secrets work) become [`REDACTED`].
-pub fn redact(v: &mut Value, extra: &[Regex]) {
-    let hit = |k: &str| REDACT_RE.is_match(k) || extra.iter().any(|r| r.is_match(k));
-    match v {
-        Value::Object(m) => {
-            for (k, child) in m.iter_mut() {
-                if is_env_key(k)
-                    && let Value::Object(env) = child
-                {
-                    for (ek, ev) in env.iter_mut() {
-                        if hit(ek) && !ev.is_null() {
-                            *ev = Value::String(REDACTED.to_string());
-                        }
-                    }
-                    continue;
-                }
-                redact(child, extra);
-            }
-        }
-        Value::Array(a) => a.iter_mut().for_each(|c| redact(c, extra)),
-        _ => {}
-    }
-}
-
-/// `env`, `local_env`, `base_env`, `environment`: maps of environment variables.
-fn is_env_key(k: &str) -> bool {
-    let k = k.to_ascii_lowercase();
-    k == "env" || k == "environment" || k.ends_with("_env")
+/// `local_env`, any `*_env`, `environment`; workspace and stems) values of
+/// the names `redactor` calls secret become [`REDACTED`] (47: the shared
+/// [`Redactor`], `docs/config.md#secrets`).
+pub fn redact(v: &mut Value, redactor: &Redactor) {
+    redactor.redact_json(v, None);
 }
 
 /// Everything the bundle holds besides the log files (gathered by the
@@ -185,11 +155,14 @@ pub async fn rpc_export(
             "the CLI resolves -o against its working directory",
         ));
     }
-    let mut config = match &ws {
-        Some(r) => json!({ "sources": r.sources, "workspace": r.workspace }),
-        None => Value::Null,
+    let (mut config, redactor) = match &ws {
+        Some(r) => (
+            json!({ "sources": r.sources, "workspace": r.workspace }),
+            Redactor::new(&r.workspace),
+        ),
+        None => (Value::Null, Redactor::default()),
     };
-    redact(&mut config, &[]);
+    redact(&mut config, &redactor);
     hub.flush_all().await;
     let inputs = BundleInputs {
         status,
@@ -223,7 +196,7 @@ mod tests {
             "stems": {"a": {"env": {"DB_PASSWORD": "p", "Secret_Thing": "s", "api_key": "k", "HOST": "h"},
                              "keep": 3}},
         });
-        redact(&mut v, &[Regex::new("^HOST$").unwrap()]);
+        redact(&mut v, &Redactor::default());
         assert_eq!(v["env"]["API_TOKEN"], REDACTED);
         assert_eq!(v["env"]["PORT"], "1");
         assert_eq!(v["local_env"]["API_TOKEN"], REDACTED);
@@ -231,7 +204,7 @@ mod tests {
         assert_eq!(a["DB_PASSWORD"], REDACTED);
         assert_eq!(a["Secret_Thing"], REDACTED);
         assert_eq!(a["api_key"], REDACTED);
-        assert_eq!(a["HOST"], REDACTED);
+        assert_eq!(a["HOST"], "h");
         assert_eq!(v["stems"]["a"]["keep"], 3);
     }
 }

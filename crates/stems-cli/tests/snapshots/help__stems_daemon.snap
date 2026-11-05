@@ -17,7 +17,7 @@ Options:
           Daemon log level (error, warn, info, debug, trace)
 
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -46,3 +46,5 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: docs/protocol.md; `stems features agents`.

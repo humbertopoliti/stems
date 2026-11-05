@@ -13,6 +13,9 @@ use stems_core::{Error, ErrorCode};
 #[derive(Default, Debug)]
 pub struct PortBook {
     auto: Mutex<HashMap<String, IndexMap<String, u16>>>,
+    /// Never allocates: an `auto` port without an allocation stays
+    /// unresolved ([`PortBook::frozen`], `stems exec`/`stems env`, 37).
+    frozen: bool,
 }
 
 /// Outcome of [`PortBook::host_port`].
@@ -32,6 +35,15 @@ impl PortBook {
     /// The allocated `auto` port of `stem`/`name`, if any.
     pub fn allocated(&self, stem: &str, name: &str) -> Option<u16> {
         self.lock().get(stem).and_then(|m| m.get(name)).copied()
+    }
+
+    /// A copy of the current allocations that never allocates (a lookup
+    /// that must not change the daemon's book).
+    pub fn frozen(&self) -> PortBook {
+        PortBook {
+            auto: Mutex::new(self.lock().clone()),
+            frozen: true,
+        }
     }
 
     /// Restore a sticky `auto` allocation (crash recovery, 11).
@@ -59,6 +71,12 @@ impl PortBook {
                         port: *p,
                         newly_allocated: false,
                     });
+                }
+                if self.frozen {
+                    return Err(Error::internal(format!(
+                        "auto port `{}` of `{stem}` is not allocated",
+                        port.name
+                    )));
                 }
                 let p = free_port(&taken)?;
                 entry.insert(port.name.clone(), p);
@@ -91,6 +109,34 @@ impl PortBook {
         }
         Some(hp.port)
     }
+}
+
+/// Upper-case a stem or port name for a variable: non-alphanumerics become `_`.
+pub fn var_segment(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// `STEMS_<STEM>_PORT_<NAME>`: a dependency's named port.
+pub fn named_port_var(stem: &str, port: &str) -> String {
+    format!("STEMS_{}_PORT_{}", var_segment(stem), var_segment(port))
+}
+
+/// `PORT_<NAME>`: one of the stem's own named ports.
+pub fn own_port_var(port: &str) -> String {
+    format!("PORT_{}", var_segment(port))
+}
+
+/// The port at index `i` has an explicit name (not the default `port<i>`).
+pub fn is_named(i: usize, port: &Port) -> bool {
+    port.name != stems_config::defaults::port_name(i)
 }
 
 /// An ephemeral port nobody listens on (bind `127.0.0.1:0`), not in `taken`.
@@ -191,5 +237,27 @@ mod tests {
         assert_eq!(e.details["pid"], std::process::id() as i64);
         drop(l);
         check_free("api", "http", port).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod named_var_tests {
+    use super::*;
+
+    #[test]
+    fn names() {
+        assert_eq!(
+            named_port_var("shop-api", "http"),
+            "STEMS_SHOP_API_PORT_HTTP"
+        );
+        assert_eq!(own_port_var("grpc.web"), "PORT_GRPC_WEB");
+        let p = |name: &str| Port {
+            name: name.into(),
+            port: PortRef::Fixed(1),
+            container_port: None,
+        };
+        assert!(!is_named(1, &p("port1")));
+        assert!(is_named(1, &p("http")));
+        assert!(is_named(0, &p("port1")));
     }
 }

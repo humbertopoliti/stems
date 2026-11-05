@@ -19,6 +19,16 @@
 //!   (branches only fast-forward) → `checked_out` / `fetched` / `up_to_date`;
 //! * a local path (e.g. a `stems.local.yaml` override) → `skipped_local`.
 //!
+//! `reset` (`repos sync --reset`, 49) drops the "HEAD moved" rule, so a
+//! tree moved by the developer (or by [`checkout`]) returns to the declared
+//! ref; uncommitted changes and unpushed commits are still left alone.
+//!
+//! [`checkout`] (`repos checkout <stem> <ref>`, 49) fetches and checks out
+//! any branch (as `origin/<branch>`), tag or sha, detached, and records
+//! nothing: to `sync` the tree has been moved by the developer. [`status`]
+//! reports what is `checked_out` and whether it `drift`s from the declared
+//! ref.
+//!
 //! git output of the mutating commands goes to the stem's log as `stream:
 //! script, tag: git` when a sink is given. Events: `repo.cloned`,
 //! `repo.fetched`, `repo.checked_out`, `repo.skipped_dirty`, `repo.failed`.
@@ -54,6 +64,8 @@ pub struct SyncOptions {
     pub force_fetch: bool,
     /// Pass `--recurse-submodules` to clone and checkout.
     pub recurse_submodules: bool,
+    /// Return a tree the developer moved to the declared ref (49).
+    pub reset: bool,
 }
 
 /// Where events and git output go, and which `git` to run.
@@ -556,24 +568,30 @@ async fn update(
         )
         .await;
     }
-    // 2. HEAD moved away from what stems checked out.
+    // 2. HEAD moved away from what stems checked out (another branch, or
+    // another commit of a detached HEAD: `repos checkout`), unless `reset`.
     let marker = read_marker(git, path).await;
-    if let Some((mb, _)) = &marker
-        && *mb != branch0
+    if let Some((mb, msha)) = &marker
+        && !opts.reset
+        && (*mb != branch0 || (mb.is_none() && sha0.as_deref() != Some(msha.as_str())))
     {
-        let now = branch0
-            .as_deref()
-            .map_or("a detached HEAD".to_string(), |b| format!("branch `{b}`"));
-        let was = mb
-            .as_deref()
-            .map_or("a detached HEAD".to_string(), |b| format!("branch `{b}`"));
+        let at = |b: Option<&str>, sha: Option<&str>| match (b, sha) {
+            (Some(b), _) => format!("branch `{b}`"),
+            (None, Some(s)) => format!("a detached HEAD at {}", &s[..s.len().min(12)]),
+            (None, None) => "a detached HEAD".to_string(),
+        };
+        let now = at(branch0.as_deref(), sha0.as_deref());
+        let was = at(mb.as_deref(), Some(msha.as_str()));
         return skipped(
             git,
             url,
             base,
             sha0,
             "moved",
-            format!("{shown} is on {now}, not on {was} that stems checked out; left alone"),
+            format!(
+                "{shown} is on {now}, not on {was} that stems checked out; left alone (`stems repos sync --reset {stem}` returns it to {})",
+                describe(git_ref)
+            ),
         )
         .await;
     }
@@ -592,37 +610,21 @@ async fn update(
 
     // 4. Commits that exist nowhere else.
     let stems_sha = marker.as_ref().map(|(_, s)| s.as_str());
-    if sha0.as_deref() != stems_sha {
-        let containing = git
-            .query(
-                path,
-                &[
-                    "for-each-ref",
-                    "--contains",
-                    "HEAD",
-                    "--count=1",
-                    "refs/remotes",
-                    "refs/tags",
-                ],
-            )
-            .await?
-            .unwrap_or_default();
-        if containing.is_empty() {
-            git.ctx.emit(
-                EventKind::REPO_FETCHED,
-                stem,
-                json!({ "url": url, "ref": git_ref, "sha": sha0, "updated": false }),
-            );
-            return skipped(
-                git,
-                url,
-                base,
-                sha0,
-                "unpushed_commits",
-                format!("HEAD of {shown} has commits on no remote branch or tag; left alone (push them first)"),
-            )
-            .await;
-        }
+    if sha0.as_deref() != stems_sha && head_unreachable(git, path).await? {
+        git.ctx.emit(
+            EventKind::REPO_FETCHED,
+            stem,
+            json!({ "url": url, "ref": git_ref, "sha": sha0, "updated": false }),
+        );
+        return skipped(
+            git,
+            url,
+            base,
+            sha0,
+            "unpushed_commits",
+            format!("HEAD of {shown} has commits on no remote branch or tag; left alone (push them first)"),
+        )
+        .await;
     }
 
     // 5. Check out the ref.
@@ -806,6 +808,8 @@ pub async fn status(
             ahead: None,
             behind: None,
             exists,
+            checked_out: None,
+            drift: false,
         };
         if exists && path.join(".git").exists() {
             st.sha = git.query(&path, &["rev-parse", "HEAD"]).await?;
@@ -829,10 +833,276 @@ pub async fn status(
                 st.ahead = it.next().flatten();
                 st.behind = it.next().flatten();
             }
+            st.checked_out =
+                checked_out(&git, &path, st.branch.as_deref(), st.sha.as_deref()).await?;
+            if source == RepoSource::Git {
+                st.drift = drift(
+                    &git,
+                    &path,
+                    st.git_ref.as_deref(),
+                    st.branch.as_deref(),
+                    st.sha.as_deref(),
+                )
+                .await?;
+            }
         }
         repos.push(st);
     }
     Ok(ReposStatusResult { repos })
+}
+
+/// What is checked out: the branch, else a tag at HEAD, else a remote
+/// branch at HEAD (`origin/x`), else the sha.
+async fn checked_out(
+    git: &Git<'_>,
+    path: &Path,
+    branch: Option<&str>,
+    sha: Option<&str>,
+) -> Result<Option<String>, Error> {
+    if let Some(b) = branch {
+        return Ok(Some(b.to_string()));
+    }
+    let Some(sha) = sha else {
+        return Ok(None);
+    };
+    if let Some(tag) = git
+        .query(path, &["describe", "--tags", "--exact-match", "HEAD"])
+        .await?
+        .filter(|t| !t.is_empty())
+    {
+        return Ok(Some(tag));
+    }
+    let remotes = git
+        .query(
+            path,
+            &[
+                "for-each-ref",
+                "--points-at",
+                "HEAD",
+                "--format=%(refname:short)",
+                "refs/remotes",
+            ],
+        )
+        .await?
+        .unwrap_or_default();
+    if let Some(r) = remotes
+        .lines()
+        .map(str::trim)
+        .find(|r| r.contains('/') && !r.ends_with("/HEAD"))
+    {
+        return Ok(Some(r.to_string()));
+    }
+    Ok(Some(sha.to_string()))
+}
+
+/// HEAD is not the declared ref: for a branch, another branch or a detached
+/// HEAD; for a tag or sha, another commit; for the default branch, a
+/// detached HEAD or a branch other than `origin/HEAD`'s.
+async fn drift(
+    git: &Git<'_>,
+    path: &Path,
+    git_ref: Option<&str>,
+    branch: Option<&str>,
+    sha: Option<&str>,
+) -> Result<bool, Error> {
+    let Some(sha) = sha else {
+        return Ok(false);
+    };
+    Ok(match (ref_kind(git_ref), git_ref) {
+        (RefKind::Sha, Some(r)) => !sha.starts_with(r),
+        (RefKind::Name, Some(r)) => {
+            let remote_branch = format!("refs/remotes/origin/{r}");
+            if git
+                .query(path, &["rev-parse", "-q", "--verify", &remote_branch])
+                .await?
+                .is_some()
+            {
+                branch != Some(r)
+            } else {
+                let target = format!("{r}^{{commit}}");
+                match git
+                    .query(path, &["rev-parse", "-q", "--verify", &target])
+                    .await?
+                {
+                    Some(t) => t != sha,
+                    None => false,
+                }
+            }
+        }
+        _ => match branch {
+            None => true,
+            Some(b) => git
+                .query(
+                    path,
+                    &["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"],
+                )
+                .await?
+                .and_then(|d| d.strip_prefix("origin/").map(str::to_string))
+                .is_some_and(|d| d != b),
+        },
+    })
+}
+
+/// HEAD has commits on no remote branch or tag (after a fetch): moving it
+/// would leave them reachable only from the reflog.
+async fn head_unreachable(git: &Git<'_>, path: &Path) -> Result<bool, Error> {
+    let containing = git
+        .query(
+            path,
+            &[
+                "for-each-ref",
+                "--contains",
+                "HEAD",
+                "--count=1",
+                "refs/remotes",
+                "refs/tags",
+            ],
+        )
+        .await?
+        .unwrap_or_default();
+    Ok(containing.is_empty())
+}
+
+// ---------------------------------------------------------------------------
+// checkout
+// ---------------------------------------------------------------------------
+
+/// `repos checkout <stem> <ref>` (49): clone the codebase if missing,
+/// refuse uncommitted changes unless `force` (`REPO_DIRTY`; with `force`
+/// they are carried over as `git checkout` does), fetch, then check out
+/// `git_ref` detached: a branch as `origin/<branch>`, a tag, or a sha.
+/// Nothing is recorded, so `sync` leaves the tree alone until `sync
+/// --reset`. Event `repo.checked_out`.
+pub async fn checkout(
+    ws: &Workspace,
+    name: &str,
+    git_ref: &str,
+    force: bool,
+    ctx: &RepoCtx,
+) -> Result<RepoSyncResult, Error> {
+    // Never an option to git (`--orphan=…`, `-b`): a ref, tag or sha only.
+    if git_ref.starts_with('-') || git_ref.trim().is_empty() {
+        return Err(Error::usage(
+            format!("`{git_ref}` is not a git ref"),
+            "give a branch, tag or commit (it cannot start with `-`)",
+        )
+        .with_details(json!({ "stem": name, "ref": git_ref })));
+    }
+    let stem = select(ws, &[name.to_string()])?
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            Error::usage(
+                format!("stem `{name}` has no codebase"),
+                "`stems repos checkout` moves a git codebase (`codebase: { git: <url> }`)",
+            )
+            .with_details(json!({ "stem": name }))
+        })?;
+    let (url, declared, path) = match &stem.codebase {
+        Some(Codebase::Git { url, git_ref, path }) => (url.as_str(), git_ref.clone(), path.clone()),
+        _ => {
+            return Err(Error::usage(
+                format!("the codebase of `{name}` is a local path, not managed by stems"),
+                "check out the ref with git in that directory; `stems repos checkout` moves git codebases (`codebase: { git: <url> }`)",
+            )
+            .with_details(json!({ "stem": name })));
+        }
+    };
+    if !is_populated(&path) {
+        let r = sync_stem(stem, &SyncOptions::default(), ctx).await;
+        if let Some(e) = r.error {
+            return Err(e);
+        }
+    }
+    let git = Git { ctx, stem: name };
+    let shown = path.display().to_string();
+    let sha0 = git.query(&path, &["rev-parse", "HEAD"]).await?;
+    let porcelain = git
+        .query(&path, &["status", "--porcelain"])
+        .await?
+        .unwrap_or_default();
+    if !porcelain.is_empty() && !force {
+        let n = porcelain.lines().count();
+        return Err(Error::new(
+            ErrorCode::RepoDirty,
+            format!("the codebase of `{name}` ({shown}) has {n} uncommitted change(s); `{git_ref}` was not checked out"),
+        )
+        .with_hint(format!(
+            "commit, stash or discard them, or rerun with `--force` to carry them over (`stems repos checkout {name} {git_ref} --force`)"
+        ))
+        .with_details(json!({ "stem": name, "path": path, "ref": git_ref, "changes": n })));
+    }
+    let o = git
+        .run(
+            &path,
+            &["fetch", "--tags", "--force", "--prune", "origin"],
+            true,
+        )
+        .await?;
+    if !o.ok {
+        return Err(git_failed(name, url, Some(git_ref), "git fetch", o.tail));
+    }
+    // Commits on HEAD that no remote branch or tag has would be lost from
+    // sight (only the reflog would still reach them).
+    if !force && sha0.is_some() && head_unreachable(&git, &path).await? {
+        return Err(Error::new(
+            ErrorCode::RepoDirty,
+            format!(
+                "HEAD of the codebase of `{name}` ({shown}) has commits on no remote branch or tag; `{git_ref}` was not checked out"
+            ),
+        )
+        .with_hint(format!(
+            "push them (or create a branch for them) first: after the checkout they would only be reachable from the reflog; or rerun with `--force` (`stems repos checkout {name} {git_ref} --force`)"
+        ))
+        .with_details(json!({ "stem": name, "path": path, "ref": git_ref, "sha": sha0, "unpushed_commits": true })));
+    }
+    let remote_branch = format!("refs/remotes/origin/{git_ref}");
+    let tag = format!("refs/tags/{git_ref}");
+    let target = if git
+        .query(&path, &["rev-parse", "-q", "--verify", &remote_branch])
+        .await?
+        .is_some()
+    {
+        format!("origin/{git_ref}")
+    } else if git
+        .query(&path, &["rev-parse", "-q", "--verify", &tag])
+        .await?
+        .is_some()
+    {
+        tag
+    } else {
+        git_ref.to_string()
+    };
+    let o = git
+        .run(&path, &["checkout", "--detach", &target], true)
+        .await?;
+    if !o.ok {
+        return Err(git_failed(
+            name,
+            url,
+            Some(git_ref),
+            &format!("checking out `{git_ref}` (no such branch, tag or commit on the remote?)"),
+            o.tail,
+        ));
+    }
+    let sha = git.query(&path, &["rev-parse", "HEAD"]).await?;
+    ctx.emit(
+        EventKind::REPO_CHECKED_OUT,
+        name,
+        json!({ "url": url, "ref": git_ref, "sha": sha, "from": sha0, "path": path, "declared": declared }),
+    );
+    Ok(RepoSyncResult {
+        stem: name.to_string(),
+        path,
+        action: RepoAction::CheckedOut,
+        git_ref: Some(git_ref.to_string()),
+        sha,
+        message: format!(
+            "checked out `{git_ref}` (detached); `stems repos sync --reset {name}` returns to {}",
+            describe(declared.as_deref())
+        ),
+        error: None,
+    })
 }
 
 #[cfg(test)]
@@ -980,6 +1250,81 @@ mod tests {
         let r = sync_stem(&s3, &force, &ctx).await;
         assert_eq!(r.action, RepoAction::Cloned, "{r:?}");
         assert_eq!(r.sha.as_deref(), Some(one.as_str()));
+    }
+
+    #[tokio::test]
+    async fn checkout_drift_and_reset() {
+        let d = tempfile::tempdir().unwrap();
+        let d = d.path().canonicalize().unwrap();
+        let url = origin(&d);
+        let path = d.join("clone");
+        let ctx = RepoCtx::offline("test");
+        let force = SyncOptions {
+            force_fetch: true,
+            ..SyncOptions::default()
+        };
+        let s = stem(&url, Some("main"), &path);
+        let ws = stems_config::load(stems_config::LoadOptions {
+            workspace: Some(d.join("ws")),
+            cwd: d.join("ws"),
+            env: Default::default(),
+            skip_local: true,
+        })
+        .unwrap()
+        .workspace;
+        // Clones a missing codebase first, then checks out the branch.
+        sh(
+            &d,
+            "cd src && git checkout -q -b feature && echo f > g && git add g && git commit -qm f \
+             && git push -q ../origin.git feature && git checkout -q main",
+        );
+        let feature = sh(&d, "cd src && git rev-parse feature");
+        let r = checkout(&ws, "api", "feature", false, &ctx).await.unwrap();
+        assert_eq!(r.action, RepoAction::CheckedOut);
+        assert_eq!(r.sha.as_deref(), Some(feature.as_str()));
+        let st = status(&ws, &[], &ctx).await.unwrap();
+        assert!(st.repos[0].drift);
+        assert_eq!(st.repos[0].checked_out.as_deref(), Some("origin/feature"));
+        assert_eq!(st.repos[0].branch, None);
+
+        // Sync leaves the moved tree alone; --reset brings it back.
+        let r = sync_stem(&s, &force, &ctx).await;
+        assert_eq!(r.action, RepoAction::SkippedDirty, "{r:?}");
+        assert!(r.message.contains("--reset"), "{}", r.message);
+        let reset = SyncOptions {
+            reset: true,
+            ..force.clone()
+        };
+        let r = sync_stem(&s, &reset, &ctx).await;
+        assert_eq!(r.action, RepoAction::CheckedOut, "{r:?}");
+        let st = status(&ws, &[], &ctx).await.unwrap();
+        assert!(!st.repos[0].drift);
+        assert_eq!(st.repos[0].checked_out.as_deref(), Some("main"));
+
+        // Dirty: refused without force, carried over with it.
+        std::fs::write(path.join("f"), "mine").unwrap();
+        let e = checkout(&ws, "api", "feature", false, &ctx)
+            .await
+            .unwrap_err();
+        assert_eq!(e.code, ErrorCode::RepoDirty);
+        let r = checkout(&ws, "api", &feature[..10], true, &ctx)
+            .await
+            .unwrap();
+        assert_eq!(r.sha.as_deref(), Some(feature.as_str()));
+        assert_eq!(std::fs::read_to_string(path.join("f")).unwrap(), "mine");
+
+        // A detached tree moved to another commit is `moved` too (tag ref).
+        sh(&path, "git checkout -q -- f");
+        sh(
+            &d,
+            "cd src && git tag v1 main && git push -q ../origin.git v1",
+        );
+        let t = stem(&url, Some("v1"), &d.join("bytag"));
+        assert_eq!(sync_stem(&t, &force, &ctx).await.action, RepoAction::Cloned);
+        sh(&d.join("bytag"), "git checkout -q --detach origin/feature");
+        let r = sync_stem(&t, &force, &ctx).await;
+        assert_eq!(r.action, RepoAction::SkippedDirty, "{r:?}");
+        assert!(r.message.contains("detached HEAD at"), "{}", r.message);
     }
 
     #[tokio::test]

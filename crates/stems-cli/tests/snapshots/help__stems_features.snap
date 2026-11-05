@@ -1,0 +1,53 @@
+---
+source: crates/stems-cli/tests/help.rs
+expression: help
+---
+List everything stems can do, by area, with commands, config keys and docs.
+
+One entry per capability from the feature index: the same table as docs/features.md and the MCP
+resource `stems://features`. An area (`stems features scripts`) limits the list. --json gives the
+raw table: `data: {areas: [{id, title}], features: [{area, name, one_liner, commands, config_keys,
+doc}]}`. Needs no workspace.
+
+Usage: stems features [OPTIONS] [AREA]
+
+Arguments:
+  [AREA]
+          Only this area
+          
+          [possible values: lifecycle, config, env, scripts, containers, supervision, observe,
+          doctor, repos, agents, maintenance]
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+Global options:
+      --workspace <PATH>
+          Workspace directory or stems.yaml path (default: $STEMS_WORKSPACE, else walk up from the
+          current directory)
+
+      --json
+          Emit the JSON envelope (the default when stdout is not a terminal)
+
+      --human
+          Emit human text even when stdout is not a terminal
+
+      --no-color
+          Disable colours in human output
+          
+          [env: STEMS_NO_COLOR]
+
+  -q, --quiet
+          Print only errors in human mode
+
+  -v, --verbose...
+          More detail (repeat for more: -vv)
+
+      --home <PATH>
+          Root for daemon state, sockets, locks and logs (default: ~/Library/Application
+          Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
+          
+          [env: STEMS_HOME]
+
+See also: `stems docs`; docs/features.md; `stems features agents`.

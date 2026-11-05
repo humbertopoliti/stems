@@ -1,0 +1,36 @@
+# scripts-build-when — fixture for scripts/build-when.feature (FR-SC-1, 45):
+# `changed`: setup -> build (stamped on VERSION) -> pre_start -> start.
+# `always`: build on every start. `plain`: build is on demand (default).
+schema_version: 1
+name: scripts-build-when
+
+stems:
+  changed:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    ports: [{ name: http, port: 18781 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts:
+      start: python3 app.py
+      setup: { command: "echo setup", inputs: [VERSION] }
+      build: { command: "echo built", when: changed, inputs: [VERSION] }
+      pre_start: echo pre
+  always:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    ports: [{ name: http, port: 18782 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts:
+      start: python3 app.py
+      build: { command: "echo built", when: always }
+  plain:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    ports: [{ name: http, port: 18783 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 1s
+    scripts:
+      start: python3 app.py
+      build: echo built

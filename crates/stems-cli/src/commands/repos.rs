@@ -5,8 +5,14 @@
 //!   working tree with local work (`skipped_dirty`). `data = { ok, repos:
 //!   [{stem, path, action, ref, sha, message, error?}] }`; a failed entry is
 //!   also in `errors` (`GIT_CLONE_FAILED` / `GIT_NOT_INSTALLED`, exit 1).
+//!   `--reset` returns trees the developer moved to the declared ref (49).
 //! * **`repos status [stems…]`** reports per stem `{stem, source: git|local,
-//!   path, url, ref, branch, sha, dirty, ahead, behind, exists}`.
+//!   path, url, ref, branch, sha, dirty, ahead, behind, exists, checked_out,
+//!   drift}`.
+//! * **`repos checkout <stem> <ref> [--force]`** (49) fetches and checks out
+//!   any branch/tag/sha detached; `data = {stem, path, action: checked_out,
+//!   ref, sha, message}`; uncommitted changes without `--force` are
+//!   `REPO_DIRTY` (exit 1).
 //!
 //! Both go through the daemon when one runs (so `repo.*` events are
 //! emitted and git output lands in the stem's log), else run in-process.
@@ -16,15 +22,15 @@ use std::time::Duration;
 use serde::Serialize;
 use serde_json::Value;
 use stems_api::{
-    Method, RepoAction, RepoSource, ReposStatusParams, ReposStatusResult, ReposSyncParams,
-    ReposSyncResult,
+    Method, RepoAction, RepoSource, RepoSyncResult, ReposCheckoutParams, ReposStatusParams,
+    ReposStatusResult, ReposSyncParams, ReposSyncResult,
 };
 use stems_config::Workspace;
 use stems_core::validate::ValidateOptions;
 use stems_core::{Error, ErrorCode, Errors};
 use stems_daemon::repos::{self, RepoCtx, SyncOptions};
 
-use crate::cli::ReposArgs;
+use crate::cli::{ReposArgs, ReposCheckoutArgs};
 use crate::client::{self, block_on, connect_to};
 use crate::commands::Ctx;
 use crate::output::CommandOutput;
@@ -114,11 +120,14 @@ fn status_human(r: &ReposStatusResult) -> String {
             RepoSource::Git => "git",
             RepoSource::Local => "local",
         };
-        let r = x
-            .git_ref
-            .clone()
-            .or_else(|| x.branch.clone())
-            .unwrap_or_else(|| "-".into());
+        let declared = x.git_ref.clone().or_else(|| x.branch.clone());
+        // A drifted tree (49): what is checked out, then the declared ref.
+        let r = match (x.drift, &x.checked_out) {
+            (true, Some(now)) => {
+                format!("{now} (ref {})", x.git_ref.as_deref().unwrap_or("default"))
+            }
+            _ => declared.unwrap_or_else(|| "-".into()),
+        };
         let ab = match (x.ahead, x.behind) {
             (Some(a), Some(b)) => format!("{a}/{b}"),
             _ => "-".into(),
@@ -149,6 +158,7 @@ pub fn sync(ctx: &Ctx, args: &ReposArgs) -> CommandOutput {
             stems: args.stems.clone(),
             force_fetch: true,
             recurse_submodules: args.recurse_submodules,
+            reset: args.reset,
         };
         let r: ReposSyncResult = match via_daemon(ctx, Method::REPOS_SYNC, &p).await? {
             Some(r) => r,
@@ -157,6 +167,7 @@ pub fn sync(ctx: &Ctx, args: &ReposArgs) -> CommandOutput {
                 let opts = SyncOptions {
                     force_fetch: true,
                     recurse_submodules: args.recurse_submodules,
+                    reset: args.reset,
                 };
                 repos::sync(&ws, &p.stems, &opts, &RepoCtx::offline(client::actor(ctx))).await?
             }
@@ -190,6 +201,34 @@ pub fn status(ctx: &Ctx, args: &ReposArgs) -> CommandOutput {
             }
         };
         Ok::<_, Errors>(CommandOutput::data(to_value(&r)).with_human(status_human(&r)))
+    })
+    .unwrap_or_else(CommandOutput::failed)
+}
+
+/// `stems repos checkout` (49).
+pub fn checkout(ctx: &Ctx, args: &ReposCheckoutArgs) -> CommandOutput {
+    block_on(async {
+        let p = ReposCheckoutParams {
+            stem: args.stem.clone(),
+            git_ref: args.git_ref.clone(),
+            force: args.force,
+        };
+        let r: RepoSyncResult = match via_daemon(ctx, Method::REPOS_CHECKOUT, &p).await? {
+            Some(r) => r,
+            None => {
+                let ws = workspace(ctx)?;
+                repos::checkout(
+                    &ws,
+                    &p.stem,
+                    &p.git_ref,
+                    p.force,
+                    &RepoCtx::offline(client::actor(ctx)),
+                )
+                .await?
+            }
+        };
+        let human = format!("{}  {}  {}\n", r.stem, short(r.sha.as_deref()), r.message);
+        Ok::<_, Errors>(CommandOutput::data(to_value(&r)).with_human(human))
     })
     .unwrap_or_else(CommandOutput::failed)
 }

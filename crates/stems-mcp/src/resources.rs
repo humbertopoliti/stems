@@ -6,9 +6,10 @@
 //! | `stems://graph` | the dependency graph (JSON, live glyphs when the daemon runs) |
 //! | `stems://<stem>/config` | one stem's resolved config (JSON, redacted) |
 //! | `stems://<stem>/logs?tail=N` | the stem's last N log lines (text; default 200, at most 500) |
+//! | `stems://features` | the feature index (JSON, `stems features --json`; no daemon needed) |
 //!
-//! `resources/list` enumerates the workspace, the graph and every stem's
-//! config and logs; `resources/templates/list` gives the two per-stem
+//! `resources/list` enumerates the workspace, the graph, the feature index
+//! and every stem's config and logs; `resources/templates/list` gives the two per-stem
 //! templates.
 
 use rmcp::model::{Resource, ResourceContents, ResourceTemplate};
@@ -30,6 +31,8 @@ pub enum Uri {
     Workspace,
     /// `stems://graph`.
     Graph,
+    /// `stems://features`.
+    Features,
     /// `stems://<stem>/config`.
     StemConfig(String),
     /// `stems://<stem>/logs?tail=N`.
@@ -39,7 +42,7 @@ pub enum Uri {
 fn not_found(uri: &str) -> Error {
     Error::usage(
         format!("unknown resource `{uri}`"),
-        "resources: stems://workspace, stems://graph, stems://<stem>/config, stems://<stem>/logs?tail=200 (see resources/list)",
+        "resources: stems://workspace, stems://graph, stems://features, stems://<stem>/config, stems://<stem>/logs?tail=200 (see resources/list)",
     )
 }
 
@@ -50,6 +53,7 @@ pub fn parse(uri: &str) -> Result<Uri, Error> {
     match path {
         "workspace" => return Ok(Uri::Workspace),
         "graph" => return Ok(Uri::Graph),
+        "features" => return Ok(Uri::Features),
         _ => {}
     }
     let (stem, what) = path.split_once('/').ok_or_else(|| not_found(uri))?;
@@ -76,7 +80,8 @@ pub fn parse(uri: &str) -> Result<Uri, Error> {
     }
 }
 
-/// `resources/list`: the workspace, the graph, and each stem's config and logs.
+/// `resources/list`: the workspace, the graph, the feature index, and each
+/// stem's config and logs.
 pub fn list(b: &Backend) -> Vec<Resource> {
     let mut out = vec![
         Resource::new("stems://workspace", "workspace")
@@ -84,6 +89,11 @@ pub fn list(b: &Backend) -> Vec<Resource> {
             .with_mime_type("application/json"),
         Resource::new("stems://graph", "graph")
             .with_description("The dependency graph with live status")
+            .with_mime_type("application/json"),
+        Resource::new("stems://features", "features")
+            .with_description(
+                "Everything stems can do: each capability with its commands, config keys and doc page",
+            )
             .with_mime_type("application/json"),
     ];
     if let Ok(r) = b.load_config() {
@@ -155,6 +165,7 @@ pub async fn read(b: &Backend, actor: &str, uri: &str) -> Result<ResourceContent
         Uri::Graph => Ok(json(
             tools::get_graph(b, actor, GetGraphArgs::default()).await?,
         )),
+        Uri::Features => Ok(json(stems_config::features::to_json(None))),
         Uri::StemConfig(stem) => Ok(json(tools::get_config(
             b,
             &GetConfigArgs {
@@ -192,6 +203,7 @@ mod tests {
     fn uris() {
         assert_eq!(parse("stems://workspace").unwrap(), Uri::Workspace);
         assert_eq!(parse("stems://graph").unwrap(), Uri::Graph);
+        assert_eq!(parse("stems://features").unwrap(), Uri::Features);
         assert_eq!(
             parse("stems://echo-svc/config").unwrap(),
             Uri::StemConfig("echo-svc".into())

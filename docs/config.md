@@ -9,7 +9,8 @@ include / extends error cases (FR-WS-9), and stem outputs (FR-ST-6, part B,
 [Variants](#variants-fr-st-8) (FR-ST-8, `stems switch`) came later: one
 stem, several forms, e.g. a local process or a docker container; and
 [configurations](#configurations) (`stems configuration`): named,
-selectable bundles of such choices.
+selectable bundles of such choices. Port declarations and the variables
+that address them are in [ports.md](ports.md).
 
 ## Profiles (FR-WS-8)
 
@@ -29,8 +30,56 @@ and, in `stems.local.yaml` only for your machine:
 profile: web-only            # wins over default_profile
 stems:
   shop-worker:
-    enabled: false           # removed from every profile and from the graph
+    enabled: false           # removed from every profile; `status` shows it as disabled
 ```
+
+### `enabled`
+
+`enabled` is a bool or a **string rendered by substitution**, so a stem can
+be switched on from the environment:
+
+```yaml
+stems:
+  search:
+    enabled: "${env.WITH_SEARCH}"   # on with WITH_SEARCH=1, off when unset
+  api:
+    depends_on:
+      - search                       # api is skipped while search is disabled
+      - { stem: search, if_disabled: start }   # ... or: start api anyway
+```
+
+* Truthy: `true|1|yes|on`; falsy: `false|0|no|off|""` (case-insensitive).
+  Anything else is `SCHEMA_INVALID` at `stems.<n>.enabled`.
+* For `enabled` only, an unset `${env.X}` is empty, so **false** (never
+  `UNRESOLVED_VARIABLE`); `stems validate` adds the info note
+  `ENABLED_VAR_UNSET` ("search disabled: WITH_SEARCH is unset"). Like every
+  `${env.X}`, it is read when the daemon (re)loads the config, from the
+  environment of the `stems` command that made it reload over the daemon's
+  own (see [`${env.X}`](#envx-whose-environment) below). So "unset ⇒
+  false" holds only while the daemon has never seen the variable: once the
+  daemon itself was started with `WITH_SEARCH=1`, a later shell without it
+  does not turn the stem off. Set it to `0` (or empty) to disable it.
+* A disabled stem never starts. `stems status` lists it **last** with state
+  and glyph `disabled` (`-`; ASCII `OFF`), `enabled: false` and a `reason`
+  (`enabled: false in stems.local.yaml`, `enabled: ${env.WITH_SEARCH} →
+  false`); `summary.disabled` counts them and `status --enabled` hides
+  them. `up`'s result lists the disabled stems it left out in
+  `data.disabled` (omitted when empty).
+* **Dependants are skipped.** A stem with a hard edge to a disabled stem is
+  not started by `up`/`start`: it is in `skipped` with
+  `skipped_reasons.<stem> == "dependency_disabled:<dep>"`, and so are its
+  own hard dependants (same reason, naming the disabled stem). These skips
+  do not make `up` fail (`ok` stays true, exit 0): they are the
+  configuration's intent. Afterwards `status` shows such a stem `stopped`
+  with `reason: "skipped: dependency <dep> is disabled"`. `stems validate`
+  warns `DEPENDENCY_DISABLED` (`details {stem, dependency}`) for each such
+  edge.
+* `if_disabled: start` on an edge (`skip` is the default) starts the
+  dependant anyway: the edge is dropped, and `STEMS_<DEP>_PORT` (and the
+  dependency's named-port variables) are not set. A soft edge never blocks
+  either way.
+* A config reload that flips the outcome is an `added`/`removed` stem (see
+  *Config reload*).
 
 ### Selection rules (`stems_core::selection::Selection::resolve`)
 
@@ -52,9 +101,10 @@ their stem set the same way:
    silently (`stems profiles` lists them under `disabled`). Listing a stem
    that does not exist is `UNKNOWN_STEM` (validation).
 5. The **closure** adds hard `depends_on` targets transitively. Soft edges
-   never pull a stem in. A hard edge to a disabled stem is
-   `DEPENDENCY_DISABLED` at validation (so `up` never gets that far); a soft
-   edge to one is fine.
+   never pull a stem in. A hard edge to a disabled stem skips the dependant
+   (`dependency_disabled:<dep>`, a `DEPENDENCY_DISABLED` validation warning)
+   unless the edge says `if_disabled: start` (see *`enabled`*); a soft edge
+   to one is fine.
 6. The stems the closure added to a profile's own list are `expanded`: `up`
    emits `profile.expanded {profile, added, requested}` before `up.started`
    (whose data now carries `profile`) so the addition is visible.
@@ -67,9 +117,10 @@ their stem set the same way:
 Unknown profile: `UNKNOWN_PROFILE` (exit 2) with a "did you mean" hint and
 `details.known`.
 
-The daemon has no access to the client's environment: the CLI resolves
-`--profile` / `STEMS_PROFILE` into `UpParams.profile`; `None` makes the
-daemon apply rules 2–7 with the workspace default.
+The CLI resolves `--profile` / `STEMS_PROFILE` into `UpParams.profile`
+(the daemon does not read `STEMS_*` of the client's environment, which it
+receives only as the base layer of what the request starts); `None` makes
+the daemon apply rules 2–7 with the workspace default.
 
 ### `stems profiles [--json]`
 
@@ -184,7 +235,7 @@ out of a partial apply stays pending until it restarts).
 | a `${stem.x.port}` target's `ports` (`port: auto` references) | `restart_required` (`stem.x.ports`) | no | restart |
 | `outputs` | `outputs_changed` | no | restart (outputs are evaluated at start) |
 | new stem, or `enabled: true` again | `added` | no | start it if the last `up` covers it (every stem, or its profile/stems); otherwise just register it |
-| stem gone, or `enabled: false` | `removed` | no | stop it, clean its overlays, drop its state entry; it leaves `status` |
+| stem gone, or `enabled: false` | `removed` | no | stop it, clean its overlays, drop its state entry; a gone stem leaves `status`, a disabled one is listed as `disabled` |
 | `health` | `health_changed` | yes | restart the prober (a stem still `starting` keeps its readiness probe until its next start; an external stem is re-monitored) |
 | `watch` | `watch_changed` | yes | reconfigure the watchdog in place (`watch.reconfigured {rules}`) |
 | `scripts` (not `start`) | `scripts_changed` | yes | swap the definitions (the next run uses them) |
@@ -277,6 +328,64 @@ respawns a crashed stem with the config it runs with, which `config apply`
 rebases onto the latest applied config: *policy restarts use the latest
 applied config*.
 
+`stems restart <stems>` is the exception for its own stems: a difference
+that would restart only (some of) them is applied first, since they
+restart anyway (`config.applied {implicit: true}`, `result: restarted`);
+a difference that would also restart another running stem stays pending as
+above.
+
+#### `${env.X}`: whose environment
+
+`${env.X}` is substituted when the config is loaded. `up`, `start`,
+`restart`, `run` and `build` send the environment of the `stems` command
+(and the TUI its own), so the daemon reloads the config with *that*
+environment over its own: `TOKEN=new stems restart api` restarts `api`
+with `${env.TOKEN}` = `new` even though the daemon was started with
+`TOKEN=old`. A variable the command does not set falls back to the
+daemon's environment (from when it started). The latest command's
+environment stays in use for later loads (the file watcher, `config
+diff`/`apply`, MCP requests, which send none), so a running stem is not
+reported as changed merely because the next command comes from another
+shell — only when its `${env.X}` values really differ.
+
+What this means in practice:
+
+* The daemon's environment is **overlaid by the most recent request's**
+  environment; each request loads with its own (the overlay and the load
+  happen together, so concurrent commands do not mix environments).
+* A later shell cannot **unset** a variable the daemon itself has (it was
+  started with it): leaving it out falls back to the daemon's value. Set it
+  to `0` or empty instead.
+* Two shells with different values for the same variable make `config
+  diff` (and the watcher's pending changes) flap between them, one command
+  at a time. Values that belong to the machine rather than to one command
+  go in `stems.local.yaml` or an env file (`env_files`), not the shell.
+
+## Codebase paths in one place
+
+Where each developer keeps the sibling repositories differs; declare the
+root once as a variable and override only that in `stems.local.yaml`
+(`vars` is deep-merged like everything else):
+
+```yaml
+# stems.yaml
+vars: { root: ../repos }
+stems:
+  api: { codebase: "${var.root}/api", ... }
+  web: { codebase: "${var.root}/web", ... }
+```
+
+```yaml
+# stems.local.yaml (not committed)
+vars: { root: /Users/me/src/acme }
+```
+
+Scripts get the resolved paths without reading `stems show --json`:
+`STEMS_CODEBASE` for the stem's own and `STEMS_<DEP>_CODEBASE` for each
+dependency with a codebase ([scripts.md](scripts.md#environment-fr-sc-3)).
+Git codebases have a managed location instead; see
+[repos.md](repos.md#codebase-paths-in-one-place).
+
 ## include / extends (FR-WS-9)
 
 Merge order and rules are in `crates/stems-config/README.md`. Paths in
@@ -294,6 +403,101 @@ order, the including file, `stems.local.yaml`.
 | a stem of an `extends` base redefined by the child | allowed: merged (bases exist to be overridden) |
 | a stem redefined in `stems.local.yaml` | allowed: merged (the local overlay) |
 | the same file included twice | allowed (not a duplicate) |
+
+## Environment (FR-ST-4)
+
+A stem's environment is built in layers; **later wins**:
+
+| # | layer | notes |
+|---|---|---|
+| 1 | the environment of the `stems` command (else the daemon's), minus `STEMS_*` | see [lifecycle.md](lifecycle.md#a-stems-environment-fr-st-4) |
+| 2 | `PORT` = the stem's first host port | when it declares ports |
+| 3 | workspace `env:`, then the stem's `env:` | |
+| 4 | `env_files`, in list order | **an env file beats `env:`** |
+| 5 | `stems.local.yaml` `env:` (workspace-level and the stem's) | your machine's overrides beat every file |
+| 6 | `stems up --pass-env VAR,…` | |
+| 7 | `STEMS_STEM`, `STEMS_WORKSPACE`, `STEMS_CODEBASE`, `STEMS_RUN_ID`, `STEMS_<DEP>_PORT`, … | always set by stems |
+
+`stems status -v` shows layers 2–7 for each running stem.
+
+### Secrets
+
+Env values whose **name** is secret are shown as `<redacted>` by `stems show`
+(human and `--json`), `stems env`, `stems status -v`, the MCP server and the
+`stems logs --export` bundle, and each secret **value** of at least 6
+characters is replaced by `<redacted:KEY>` in the stem's log lines before
+they are stored ([logs.md](logs.md#secret-redaction)). A name is secret by
+the built-in patterns (case-insensitive globs, `-` read as `_`: `*TOKEN*`,
+`*SECRET*`, `*PASSWORD*`, `*PASSWD*`, `*CREDENTIAL*`, `*_KEY`, `*_KEY_*`,
+`*APIKEY*`), or by a `secrets:` list (workspace or stem; entries are globs;
+`!NAME` is an exception that is never redacted; the stem's list is
+consulted first, then the workspace's, then the patterns). `redaction:
+{patterns: [glob…], builtin: true|false}` adds patterns or turns the
+built-in ones off. `stems show --reveal` and `stems env --reveal` show the
+values in human output on a terminal (`--reveal` with `--json` is a
+`USAGE` error for `show`).
+
+```yaml
+secrets: [SENTRY_DSN, "!PUBLIC_KEY"]   # workspace-wide
+redaction: { patterns: ["*_DSN"] }     # builtin: true by default
+stems:
+  api:
+    secrets: [PLAIN]                    # only api's PLAIN
+```
+
+### `env_files`
+
+```yaml
+stems:
+  api:
+    env: { API_URL: http://localhost:8080 }
+    env_files:
+      - env/api.env                                    # must exist
+      - { path: env/api.local.env, required: false }   # skipped when absent
+```
+
+Paths are relative to the integration repo. An entry is a path (the file
+must exist) or `{path, required}`; `required: false` makes an absent file a
+no-op (like compose's `env_file: {path, required: false}`). A file that
+exists but cannot be read (permissions, a directory) is always an error.
+`stems show` prints a required entry as its plain path and an optional one
+in the object form.
+
+| case | `validate` | `doctor` (`env.<stem>`) | start |
+|---|---|---|---|
+| required file missing | `ENV_FILE_NOT_FOUND` (exit 2), path `stems.<stem>.env_files[i]`, `details {stem, file}` | `fail` | `ENV_FILE_NOT_FOUND`, the stem does not start |
+| `required: false` file missing | ok | `ok` (`env/api.local.env optional, absent`) | skipped |
+| file unreadable | `CONFIG_READ_FAILED` | `fail` | `CONFIG_READ_FAILED` |
+| a file sets a key that `env:` (or an earlier file) sets to a **different** value | warning `ENV_SHADOWED` (exit 0) | `warn` | the file's value is used |
+
+Dotenv grammar: one `KEY=value` per line; blank lines and lines starting
+with `#` are ignored; an optional `export ` prefix; key and value are
+trimmed; one pair of matching `'…'` or `"…"` around the value is removed.
+There are no escapes, no `${VAR}` interpolation and no multi-line values; a
+`#` after a value is part of the value.
+
+### The shadow warning
+
+`ENV_SHADOWED` is a warning of `stems validate` (`data.warnings[]`) and of
+`stems doctor` (`env.<stem>` → `warn`), never an error:
+
+```text
+warning: ENV_SHADOWED: `API_URL` of `api` from env/api.env shadows the value set in `stems.api.env`
+```
+
+`details {stem, key, file, shadows}`: `shadows` is `"env"` (the `env:`
+layer, workspace `env` included) or the earlier env file. An equal value is
+not reported, nor is a key that `stems.local.yaml` sets (the local value
+wins over both). The fix: keep the value in one place, or move a
+per-machine value into `stems.local.yaml`.
+
+### Compose stems
+
+For a `type: compose` stem the environment above is compose's
+**interpolation input** (`${VAR}` in the compose file), not the
+container's environment: a variable reaches the container only when the
+compose file names it, unless the stem sets `inject_env: true`. See
+[compose.md](compose.md#env-overrides-and-precedence).
 
 ## Outputs (FR-ST-6)
 
@@ -438,6 +642,82 @@ local override still wins over a variant.
   `SCHEMA_INVALID` at its path, e.g. `stems.api.variants.docker.imag`.
   Variant names `local` and `base` are reserved, and a variant cannot set
   `variant` / `variants` itself (`SCHEMA_INVALID`).
+
+### Dropping what a variant inherits
+
+`null` (`~`) in a later layer — a variant, a configuration,
+`stems.local.yaml` — **removes** the key, so the default applies. A docker
+variant that should not run the base's host-side `setup`, nor get one of
+its variables:
+
+```yaml
+    variants:
+      docker:
+        type: docker
+        build: { context: "${codebase}" }
+        scripts: { setup: ~ }      # no setup in this variant
+        env: { SHOP_PSQL: ~ }      # not set at all (`""` sets it empty)
+```
+
+`health: ~` gives the type's default check, `watch: ~` no watchdogs.
+`stems.<n>.variant: null` in `stems.local.yaml` still means "the base".
+
+A `null` removes the key from the YAML layers only. `env_files` are read
+when the stem starts, *after* those layers merged, and beat `env:`
+([precedence](#environment-fr-st-4)): `env: { API_URL: ~ }` in
+`stems.local.yaml` drops `API_URL` from `env:`, but an env file that sets
+`API_URL` adds it back. To override such a key, remove (or override) the
+`env_files` entry, or give the key a value in `stems.local.yaml`'s `env:`
+(the local layer beats env files).
+
+To start from scratch instead, `inherit: false` merges the variant over an
+**empty** stem: nothing of the base is kept except `enabled` (and the
+variant selection), so the variant must be a complete definition, `type`
+included (otherwise `SCHEMA_INVALID` at `stems.<n>.type`). `stems.local.yaml`
+still applies on top. `inherit` is only valid inside a variant
+(`SCHEMA_INVALID` at `stems.<n>.inherit` on a stem).
+
+```yaml
+    variants:
+      published:
+        inherit: false
+        type: docker
+        image: ghcr.io/acme/api:main
+        ports: [{ name: http, port: 18080, container_port: 8080 }]
+```
+
+### Where a field comes from: `stems show <stem> --variant <name>`
+
+`stems show <stem> --variant <name> --json` resolves the stem with that
+variant active (`local` or `base` for the base definition) without changing
+anything — `stems switch` is what changes the selection. A name the stem
+does not declare is `UNKNOWN_VARIANT` (exit 2, `details.known`);
+`--variant` without a stem is a `USAGE` error.
+
+A stem with variants, or with fields set by a configuration or
+`stems.local.yaml`, has `inherited_from` in `stems show --json` (and in the
+MCP `stems://<stem>/config` resource): each top-level field, and each key
+of `env`, `scripts` and `outputs`, mapped to the last layer that set it —
+`base` (`stems.yaml` and its includes/extends), `configuration`, `variant`,
+`local` — or `removed` when a `null` removed a value a lower layer set.
+Fields dropped by a type change or `inherit: false`, defaults no layer
+sets, and a `null` with nothing below it (`health: ~` in `stems.yaml`
+alone: the default applies) are not listed.
+
+```console
+$ stems show api --variant docker --json | jq .data.inherited_from
+{
+  "build": "variant",
+  "codebase": "base",
+  "env.SHOP_CHAOS": "base",
+  "health": "base",
+  "ports": "local",
+  "scripts.setup": "base",
+  "type": "variant"
+}
+```
+
+A configuration value equal to the base's is reported as `base`.
 
 ### A published image instead of a local build
 
@@ -714,3 +994,5 @@ Scenarios: `tests/features/config/configurations.feature` (fixture
 `tests/fixtures/workspaces/configurations-demo`). Example:
 `examples/workspaces/hello-shop` declares a `docker` configuration
 (`stems configuration use docker` runs shop-api as a container).
+
+See also: [Ports](ports.md) · [Compose](compose.md) · [Exec and env](exec.md) · [Lifecycle](lifecycle.md) · [What stems can do](features.md)

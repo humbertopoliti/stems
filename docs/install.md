@@ -165,3 +165,5 @@ download URLs (those are exercised by the first real `brew install`).
 
 Run it yourself: `make smoke` (builds `target/release/stems`), or
 `make smoke BIN=$(brew --prefix)/bin/stems SMOKE_BREW=1` after a brew install.
+
+See also: [Getting started](getting-started.md) · [What stems can do](features.md) · [CLI reference](cli.md)

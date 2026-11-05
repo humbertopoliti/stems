@@ -2,7 +2,11 @@
 source: crates/stems-cli/tests/help.rs
 expression: help
 ---
-Clone missing git codebases and fetch/check out their refs
+Clone missing git codebases and fetch/check out their refs.
+
+A tree with local work (uncommitted changes, unpushed commits, or HEAD moved by you, e.g. with
+`repos checkout`) is left alone (`skipped_dirty`); `--reset` returns a moved tree to the declared
+ref (local work is still never touched).
 
 Usage: stems repos sync [OPTIONS] [STEMS]...
 
@@ -14,8 +18,11 @@ Options:
       --recurse-submodules
           (sync) Pass `--recurse-submodules` to git clone / checkout
 
+      --reset
+          (sync) Return trees you moved (another branch, `repos checkout`) to the declared ref
+
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
 Global options:
       --workspace <PATH>
@@ -44,3 +51,5 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems repos status`; docs/repos.md; `stems features repos`.

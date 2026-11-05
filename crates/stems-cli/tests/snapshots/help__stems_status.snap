@@ -16,8 +16,25 @@ Arguments:
           Only these stems
 
 Options:
+      --enabled
+          Hide disabled stems (`enabled: false`; listed last otherwise)
+
       --watch [<INTERVAL>]
           Redraw until Ctrl-C, every INTERVAL (seconds or a duration such as `500ms`; default 1s)
+
+      --expect <STATE>
+          Exit 0 when every named (else every enabled) stem is in STATE, else 1 (`STATUS_MISMATCH`,
+          `data.mismatch: [{stem, state}]`). `stopped` accepts `failed` too; `running` is setup,
+          starting, seeding, healthy or unhealthy. Without a daemon every stem is stopped
+
+          Possible values:
+          - healthy: Health check passing
+          - stopped: Not running (`stopped`, `failed` or `disabled`)
+          - failed:  Exited or could not be started
+          - running: Up or on its way: `setup`, `starting`, `seeding`, `healthy` or `unhealthy`
+
+      --timeout <DURATION>
+          With --expect: keep checking (every 200 ms) until this long has passed (e.g. `30s`)
 
   -h, --help
           Print help (see a summary with '-h')
@@ -49,3 +66,7 @@ Global options:
           Support/stems on macOS, $XDG_STATE_HOME/stems or ~/.local/state/stems on Linux)
           
           [env: STEMS_HOME]
+
+See also: `stems show`, `stems restart`, `stems health`; docs/config.md#enabled,
+docs/scripts.md#partial-installs-soft_fail,
+docs/lifecycle.md#checking-states-in-scripts-status---expect; `stems features lifecycle`.
