@@ -49,7 +49,7 @@ ends with a "See also" line drawn from it.
 
 | Feature | What it does | Commands | Config keys |
 |---|---|---|---|
-| [Environment and env files](config.md#environment-fr-st-4) | Workspace and stem `env`, `env_files` (optional with `required: false`), a documented precedence and a warning when a value is shadowed. | `stems env`, `stems show` | `env`, `stems.*.env`, `stems.*.env_files`, `stems.*.env_files.*.required` |
+| [Environment and env files](config.md#environment-fr-st-4) | Workspace and stem `env`, `env_files` (optional with `required: false`; `override: false` or `env_files_override: false` lets `env:` win), a documented precedence and a warning when a value is shadowed. | `stems env`, `stems show` | `env`, `stems.*.env`, `stems.*.env_files`, `stems.*.env_files.*.required`, `stems.*.env_files.*.override`, `env_files_override` |
 | [Secrets and redaction](config.md#secrets) | Secret env values are redacted in `show`, `env`, logs, exports and MCP; name patterns are adjustable. | `stems show`, `stems env`, `stems logs` | `secrets`, `redaction`, `stems.*.secrets` |
 | [Ports](ports.md) | Named host ports, `auto` allocation, conflict checks and `${stem.<name>.port.<port>}` variables; `stems ports` lists them all. | `stems ports` | `stems.*.ports`, `stems.*.ports.*.name` |
 | [Outputs](config.md#outputs-fr-st-6) | Values a stem publishes (static templates or commands, optionally secret) for other stems to consume. | `stems outputs` | `stems.*.outputs` |
@@ -120,7 +120,7 @@ ends with a "See also" line drawn from it.
 | Feature | What it does | Commands | Config keys |
 |---|---|---|---|
 | [Git codebases](repos.md) | A `codebase:` can be a git URL: stems clones and fetches it; `stems repos status` shows where each one is. | `stems repos sync`, `stems repos status` | `repos_dir`, `stems.*.codebase` |
-| [Checking out a ref](repos.md) | `stems repos checkout <stem> <ref>` switches a stem's codebase to a branch, tag or commit. | `stems repos checkout` | - |
+| [Checking out a ref](repos.md) | `stems repos checkout <stem> <ref>` switches a stem's codebase (cloned or a local git path) to a branch, tag or commit. | `stems repos checkout` | - |
 
 ## Agents and automation
 
@@ -130,7 +130,7 @@ ends with a "See also" line drawn from it.
 |---|---|---|---|
 | [MCP server](mcp.md) | Agents start, stop, inspect and script the environment over MCP; custom scripts become tools, destructive calls are gated. | `stems mcp` | `agent` |
 | [JSON everywhere](cli.md) | Every command takes `--json` (one envelope, stable error codes and exit codes). | - | - |
-| [Daemon protocol](protocol.md) | One daemon per workspace owns the stems; its local JSON-RPC socket is documented for your own tools. | `stems daemon`, `stems daemon start`, `stems daemon stop`, `stems daemon status` | - |
+| [Daemon protocol](protocol.md) | One daemon per workspace owns the stems; its local JSON-RPC socket is documented for your own tools. | `stems daemon`, `stems daemon start`, `stems daemon stop`, `stems daemon status` | `daemon` |
 | [Feature index](features.md) | This table: `stems features [--json] [<area>]`; `stems docs [<topic>]` prints the reference pages. | `stems features`, `stems docs` | - |
 
 ## Install and maintenance
@@ -157,12 +157,14 @@ The comment block of a `stems init` template lists the same keys.
 | `profiles` | named subsets of stems (`stems up --profile <name>`) |
 | `default_profile` | profile `up` uses when none is given |
 | `strict_profiles` | never start stems outside the selected profile |
+| `env_files_override` | default `override` of every `env_files` entry (`false`: `env:` wins) |
 | `profile` | this machine's profile (stems.local.yaml) |
 | `agent` | guard rails for MCP clients (`stems mcp`) |
 | `logs` | log rotation and retention |
 | `metrics` | metrics sampling |
 | `config` | how the daemon handles config edits (`config.reload`) |
 | `notifications` | desktop notifications when stems fail for good |
+| `daemon` | the daemon's own settings (`daemon.shutdown_timeout`) |
 | `secrets` | env names whose values are secret (redacted) |
 | `redaction` | adjust the built-in secret name patterns |
 | `repos_dir` | where git codebases are cloned |

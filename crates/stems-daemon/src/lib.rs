@@ -14,11 +14,13 @@
 //! * [`scripts`] — the lifecycle/workspace script runner (deliverable 16).
 //! * [`doctor`] — `stems doctor` checks, report and fixes (deliverable 19).
 //! * [`repos`] — git codebases: clone / fetch / checkout / status (deliverable 20).
+//! * [`shutdown`] — the shutdown budget (`daemon.shutdown_timeout`).
 //!
 //! Lifecycle of [`Daemon::run`]: take the lock (reclaiming a stale one), log
 //! to `stemsd.log`, optionally load the workspace, bind the socket (0600),
 //! emit `daemon.started`, serve until a `shutdown` RPC or SIGTERM/SIGINT/SIGHUP,
-//! then: `daemon.stopping` → supervisor shutdown hook → stop debug processes →
+//! then: `daemon.stopping` → supervisor shutdown hook (bounded by the
+//! [`shutdown`] budget) → stop debug processes →
 //! close the listener → remove socket and lock → `daemon.stopped` → exit.
 
 mod daemon;
@@ -35,6 +37,7 @@ pub mod paths;
 pub mod repos;
 pub mod scripts;
 pub mod server;
+pub mod shutdown;
 mod spawn;
 pub mod state;
 pub mod supervisor;

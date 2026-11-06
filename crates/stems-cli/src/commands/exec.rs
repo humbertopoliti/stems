@@ -35,10 +35,10 @@ use crate::commands::Ctx;
 use crate::output::CommandOutput;
 
 /// The caller's environment for a request (37): this process's, minus
-/// `STEMS_*` (they configure the CLI, not the stems).
+/// stems-injected `STEMS_*` (the CLI's own `STEMS_HOME` etc. pass through).
 pub fn caller_env(env: &HashMap<String, String>) -> BTreeMap<String, String> {
     env.iter()
-        .filter(|(k, _)| !k.starts_with("STEMS_"))
+        .filter(|(k, _)| !stems_core::callerenv::is_stems_injected(k))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect()
 }
@@ -97,6 +97,7 @@ fn local_context(
         state: stems_core::StemState::Stopped,
         running: false,
         unresolved,
+        warnings: Vec::new(),
     })
 }
 
@@ -334,6 +335,7 @@ mod tests {
             state: stems_core::StemState::Stopped,
             running: false,
             unresolved: vec!["PORT".into(), "PORT_HTTP".into(), "URL".into()],
+            warnings: Vec::new(),
         };
         insta::assert_snapshot!(unresolved_warning(&r).unwrap(), @"warning: PORT, PORT_HTTP, URL unresolved: an unallocated port or an unevaluated output (`worker` is not running); port variables are not set, references are kept as `${stem...}`");
     }
@@ -357,6 +359,7 @@ mod tests {
             ("FOO", "mine"),
             ("PATH", "/bin"),
             ("STEMS_HOME", "/h"),
+            ("STEMS_STEM", "leaked"),
             ("PORT", "1"),
         ]
         .map(|(a, b)| (a.to_string(), b.to_string()))
@@ -368,7 +371,8 @@ mod tests {
         assert_eq!(env["FOO"], "mine");
         assert_eq!(env["PORT"], "8080");
         assert_eq!(env["STEMS_STEM"], "api");
-        assert!(!env.contains_key("STEMS_HOME"));
+        // The CLI's own configuration passes through (a nested `stems`).
+        assert_eq!(env["STEMS_HOME"], "/h");
         let fresh = host_env(&caller, &stem, true);
         assert!(!fresh.contains_key("FOO"));
         assert_eq!(fresh["PATH"], "/bin");

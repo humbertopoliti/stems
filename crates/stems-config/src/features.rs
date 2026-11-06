@@ -235,13 +235,15 @@ pub const FEATURES: &[Feature] = &[
     Feature {
         area: "env",
         name: "Environment and env files",
-        one_liner: "Workspace and stem `env`, `env_files` (optional with `required: false`), a documented precedence and a warning when a value is shadowed.",
+        one_liner: "Workspace and stem `env`, `env_files` (optional with `required: false`; `override: false` or `env_files_override: false` lets `env:` win), a documented precedence and a warning when a value is shadowed.",
         commands: &["stems env", "stems show"],
         config_keys: &[
             "env",
             "stems.*.env",
             "stems.*.env_files",
             "stems.*.env_files.*.required",
+            "stems.*.env_files.*.override",
+            "env_files_override",
         ],
         doc: "docs/config.md#environment-fr-st-4",
     },
@@ -507,7 +509,7 @@ pub const FEATURES: &[Feature] = &[
     Feature {
         area: "repos",
         name: "Checking out a ref",
-        one_liner: "`stems repos checkout <stem> <ref>` switches a stem's codebase to a branch, tag or commit.",
+        one_liner: "`stems repos checkout <stem> <ref>` switches a stem's codebase (cloned or a local git path) to a branch, tag or commit.",
         commands: &["stems repos checkout"],
         config_keys: &[],
         doc: "docs/repos.md",
@@ -539,7 +541,7 @@ pub const FEATURES: &[Feature] = &[
             "stems daemon stop",
             "stems daemon status",
         ],
-        config_keys: &[],
+        config_keys: &["daemon"],
         doc: "docs/protocol.md",
     },
     Feature {
@@ -594,6 +596,10 @@ pub const CONFIG_KEYS: &[(&str, &str)] = &[
         "strict_profiles",
         "never start stems outside the selected profile",
     ),
+    (
+        "env_files_override",
+        "default `override` of every `env_files` entry (`false`: `env:` wins)",
+    ),
     ("profile", "this machine's profile (stems.local.yaml)"),
     ("agent", "guard rails for MCP clients (`stems mcp`)"),
     ("logs", "log rotation and retention"),
@@ -605,6 +611,10 @@ pub const CONFIG_KEYS: &[(&str, &str)] = &[
     (
         "notifications",
         "desktop notifications when stems fail for good",
+    ),
+    (
+        "daemon",
+        "the daemon's own settings (`daemon.shutdown_timeout`)",
     ),
     ("secrets", "env names whose values are secret (redacted)"),
     ("redaction", "adjust the built-in secret name patterns"),

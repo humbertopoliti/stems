@@ -1,0 +1,15 @@
+# nested-stems — fixture for scripts/nested-stems.feature: a script that runs
+# `stems` itself must see the caller's STEMS_HOME.
+schema_version: 1
+name: nested-stems
+
+stems:
+  api:
+    type: process
+    codebase: ../../../../examples/repos/shop-api
+    ports: [{ name: http, port: auto }]
+    stop_grace: 1s
+    scripts:
+      start: 'exec sleep 300'
+      nested: 'stems status --json'
+      home: 'echo "home=$STEMS_HOME stem=$STEMS_STEM"'

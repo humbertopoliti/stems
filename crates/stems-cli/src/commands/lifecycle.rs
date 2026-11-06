@@ -38,7 +38,7 @@ use stems_daemon::{daemon_args, spawn_detached, wait_for_socket};
 use crate::cli::{AttachArgs, DownArgs, RestartArgs, StartArgs, StopArgs, UpArgs};
 use crate::client::{self, Target, block_on, connect_to};
 use crate::commands::Ctx;
-use crate::commands::daemon::WAIT;
+use crate::commands::daemon::{STOP_SLACK, WAIT, local_budget, still_stopping};
 use crate::commands::orphans;
 use crate::output::{CommandOutput, Mode};
 
@@ -334,6 +334,25 @@ async fn wait_daemon_gone(t: &Target, bound: Duration) -> bool {
     }
 }
 
+/// Ask the daemon to shut down and wait for it to be gone: its shutdown
+/// budget (`fallback` when it reported none) plus [`STOP_SLACK`], like
+/// `stems daemon stop`. `DAEMON_STILL_STOPPING` when it outlasts that.
+async fn shutdown_and_wait(t: &Target, c: &Client, fallback: Duration) -> Result<(), Error> {
+    let pid = c.info().pid as i32;
+    let budget = c
+        .shutdown()
+        .await
+        .ok()
+        .and_then(|r| r.budget_ms)
+        .map_or(fallback, Duration::from_millis);
+    let wait = budget + STOP_SLACK;
+    if wait_daemon_gone(t, wait).await {
+        Ok(())
+    } else {
+        Err(still_stopping(t, pid, wait, budget))
+    }
+}
+
 // --------------------------------------------------------------------------
 // Signals and stdin EOF (attached mode)
 // --------------------------------------------------------------------------
@@ -542,8 +561,8 @@ async fn up_async(
     // A failed `up` RPC (nothing was started): no daemon is left behind.
     let failed = |e: Error| async {
         if auto_started && !args.detach {
-            let _ = c.shutdown().await;
-            wait_daemon_gone(&t, WAIT).await;
+            // Best effort: the `up` error is what the user gets.
+            let _ = shutdown_and_wait(&t, &c, local_budget(ctx)).await;
         }
         Errors::from(e)
     };
@@ -714,8 +733,7 @@ pub(crate) async fn shutdown_if_idle(t: &Target, c: &Client) {
         .await;
     let idle = st.is_ok_and(|s| s.stems.iter().all(|x| !x.state.is_running()));
     if idle {
-        let _ = c.shutdown().await;
-        wait_daemon_gone(t, WAIT).await;
+        let _ = shutdown_and_wait(t, c, WAIT).await;
     }
 }
 
@@ -749,16 +767,26 @@ async fn teardown(
     let _ = c;
     match r {
         Ok(res) => {
-            wait_daemon_gone(t, WAIT).await;
+            if res.daemon_stopping {
+                let budget = local_budget(ctx);
+                let wait = budget + STOP_SLACK;
+                if !wait_daemon_gone(t, wait).await {
+                    let pid = c.info().pid as i32;
+                    return CommandOutput::failed(still_stopping(t, pid, wait, budget)).compact();
+                }
+            }
             down_output(&res).compact().with_exit(0)
         }
         Err(e) => {
             // Last resort: ask the daemon to shut down (its exit path stops stems).
-            if let Ok(fc) = &fresh {
-                let _ = fc.shutdown().await;
-            }
-            wait_daemon_gone(t, WAIT).await;
-            CommandOutput::failed(e).compact()
+            let stopped = match &fresh {
+                Ok(fc) => shutdown_and_wait(t, fc, local_budget(ctx)).await,
+                Err(_) => {
+                    wait_daemon_gone(t, WAIT).await;
+                    Ok(())
+                }
+            };
+            CommandOutput::failed(stopped.err().unwrap_or(e)).compact()
         }
     }
 }
@@ -802,11 +830,15 @@ pub fn down(ctx: &Ctx, args: &DownArgs, mode: Mode) -> CommandOutput {
         let bound = grace_sum(ctx) + Duration::from_secs(10);
         let res: DownResult = c.call_with_timeout(Method::DOWN, &params, bound).await?;
         if temporary && !res.daemon_stopping {
-            let _ = c.shutdown().await;
-            wait_daemon_gone(&t, WAIT).await;
+            shutdown_and_wait(&t, &c, local_budget(ctx)).await?;
         }
         if res.daemon_stopping {
-            wait_daemon_gone(&t, WAIT).await;
+            // `down` already stopped everything: the daemon only has to exit.
+            let pid = c.info().pid as i32;
+            let wait = local_budget(ctx) + STOP_SLACK;
+            if !wait_daemon_gone(&t, wait).await {
+                return Err(still_stopping(&t, pid, wait, local_budget(ctx)).into());
+            }
         }
         let mut out = down_output(&res);
         if recovered {

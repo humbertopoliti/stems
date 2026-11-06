@@ -1,0 +1,11 @@
+# slow-stop — fixture for daemon/stop-budget.feature: `stubborn` ignores
+# SIGTERM, so stopping it takes its whole `stop_grace` (4s) before the
+# SIGKILL. The daemon's default shutdown budget is then 4s + 30s.
+schema_version: 1
+name: slow-stop
+
+stems:
+  stubborn:
+    type: process
+    command: "trap '' TERM; while true; do sleep 0.2; done"
+    stop_grace: 4s

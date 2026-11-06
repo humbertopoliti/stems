@@ -133,7 +133,7 @@ pub(crate) fn workspace_env(core: &Core, ws: &Workspace, call: &CallEnv) -> Stem
     let mut full: BTreeMap<String, String> = call
         .base(&core.base_env)
         .iter()
-        .filter(|(k, _)| !k.starts_with("STEMS_"))
+        .filter(|(k, _)| !stems_core::callerenv::is_stems_injected(k))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     full.extend(own.clone());

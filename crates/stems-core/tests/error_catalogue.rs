@@ -283,8 +283,13 @@ fn sample(code: ErrorCode) -> Error {
             code,
             "stems.shop-api.env_files[0]",
             13,
-            "`API_URL` of `shop-api` from env/shop-api.env shadows the value set in `stems.shop-api.env`",
-            "remove one, or move the value into stems.local.yaml if it is a local override",
+            "`API_URL` of `shop-api` from env/shop-api.env shadows env: API_URL (`stems.shop-api.env`)",
+            "remove one, set `override: false` on the entry (`- { path: env/shop-api.env, override: false }`) to keep the env: value, or move the value into stems.local.yaml if it is a local override",
+        ),
+        EnvStale => rt(
+            code,
+            "`shop-api` runs with an environment that differs from its config now: API_URL, LEGACY_FLAG (changed, added or removed since it started)",
+            "restart it to apply: `stems restart shop-api`",
         ),
         RequiresNotChecked => cfg(
             code,
@@ -360,6 +365,11 @@ fn sample(code: ErrorCode) -> Error {
             "the codebase of `shop-api` has 2 uncommitted change(s); not checked out",
             "commit, stash or discard them, or rerun with `--force` to carry them over",
         ),
+        RepoNotGit => rt(
+            code,
+            "the codebase of `web` (/ws/web) is not a git repository",
+            "run `git init` there, or check out the ref yourself",
+        ),
         StatusMismatch => rt(
             code,
             "1 of 2 stems is not healthy: shop-api (starting)",
@@ -380,6 +390,11 @@ fn sample(code: ErrorCode) -> Error {
             "check `registry-login` failed: not logged in to ghcr.io",
             "run `docker login ghcr.io`",
         ),
+        DaemonStillStopping => rt(
+            code,
+            "the daemon (pid 4242) is still stopping after 95s",
+            "it keeps shutting down in the background (stopping its stems); its log is /home/dev/.local/state/stems/3f2a9c1e/stemsd.log; run `stems daemon stop` again to keep waiting",
+        ),
         NotImplemented => rt(
             code,
             "`stems graph` is not implemented until deliverable 23",
@@ -399,6 +414,11 @@ fn sample(code: ErrorCode) -> Error {
             code,
             "no stems daemon is running for this workspace",
             "start one with `stems up` (or `stems daemon start`)",
+        ),
+        SocketPathTooLong => rt(
+            code,
+            "the daemon socket path /very/long/stems-home/0123456789ab/stemsd.sock is 120 bytes, over the 104-byte Unix socket limit (STEMS_HOME is too long)",
+            "set a shorter STEMS_HOME (or pass --home), e.g. STEMS_HOME=/tmp/stems",
         ),
         DaemonVersionMismatch => rt(
             code,

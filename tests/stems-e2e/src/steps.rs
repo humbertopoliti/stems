@@ -1715,6 +1715,17 @@ step!(given_fake_tool(w, m) {
         .unwrap_or_else(|e| panic!("chmod {}: {e}", file.display()));
 });
 
+step!(given_stems_on_path(w, _m) {
+    let bin = w.root.join("bin");
+    std::fs::create_dir_all(&bin).unwrap_or_else(|e| panic!("creating {}: {e}", bin.display()));
+    let file = bin.join("stems");
+    std::fs::write(&file, format!("#!/bin/sh\nexec '{}' \"$@\"\n", crate::world::stems_bin().display()))
+        .unwrap_or_else(|e| panic!("writing {}: {e}", file.display()));
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755))
+        .unwrap_or_else(|e| panic!("chmod {}: {e}", file.display()));
+});
+
 step!(given_state_records_overlay(w, m) {
     let stem = m[1].clone();
     let dest = ws_file(w, &m[2]);
@@ -2384,6 +2395,7 @@ pub const STEPS: &[(&str, Step<E2eWorld>)] = &[
         r#"^a fake tool "([\w.-]+)" on PATH that runs "(.*)"$"#,
         given_fake_tool,
     ),
+    (r#"^the stems binary is on PATH$"#, given_stems_on_path),
     (
         r#"^the state file records an overlay for stem "([^"]+)" at "([^"]+)"$"#,
         given_state_records_overlay,
@@ -2654,6 +2666,7 @@ mod tests {
             r#"the repo copy is a git repository with "shop-api/config/local.ini" committed"#,
             r#"a bare git repository "shop" made from "examples/repos/shop-api""#,
             r#"a fake tool "vite" on PATH that runs "echo fake vite""#,
+            r#"the stems binary is on PATH"#,
             r#"notifications go to a fake notifier"#,
             r#"no notification backend is on PATH"#,
             r#"the state file records an overlay for stem "shop-api" at "config/local.ini""#,

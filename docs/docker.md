@@ -218,6 +218,14 @@ stems:
   what it points to) as `SCHEMA_INVALID` at `stems.<n>.build.allow_read[i]`.
   The build context, the Dockerfile's directory and every secret file are
   granted already; there is no wildcard and no "disable the checks" option.
+  For **compose** stems (built with Bake, which enforces `fs.read` relative
+  to the compose file's directory) the **workspace root is granted by
+  default** too: a service with `context: ..` that points at a parent of the
+  compose file, anywhere inside the workspace, builds without `allow_read`.
+  An explicit entry is still needed only for a context or file outside the
+  workspace root, and it stays an exact path (no globs, no implicit parents).
+  Paths are compared canonically, so a symlinked workspace root
+  (`/tmp` -> `/private/tmp` on macOS) is fine.
 - With `secrets` or `allow_read`, the image is built with the docker CLI
   instead of the Engine API: `docker buildx build --load --progress plain
   -t stems/<ws>/<stem>:<run_id> --label stems.workspace=<ws> --label
@@ -252,6 +260,10 @@ stems:
     scripts:
       setup: docker run --rm "$STEMS_IMAGE" python3 manage.py migrate
 ```
+
+`stems show` (and `--json`, and the MCP `get_config`) prints `build` as
+configured: the object for the object form, `true`/`false` for a bool (compose
+stems included: `build: { services, before_setup, secrets, allow_read }`).
 
 - **`before_setup: true`** moves the build to the front of the start
   sequence: `[build image] → setup → pre_start → start` (the `docker.build`

@@ -4,13 +4,24 @@ expression: help
 ---
 Stop the workspace daemon.
 
-Asks it to shut down (the same orderly path as SIGTERM) and waits up to 5 s for its socket and lock
-to disappear. Exits 4 (DAEMON_NOT_RUNNING) when none is running; a stale lock left by a crashed
-daemon is removed.
+Asks it to shut down (the same orderly path as SIGTERM: every running stem is stopped first) and
+waits for its socket and lock to disappear: as long as the daemon's shutdown budget
+(`daemon.shutdown_timeout`, by default derived from the running stems' stop graces; the `shutdown`
+reply carries it) plus 5 s, unless `--timeout` or `--no-wait`. A daemon still stopping when the wait
+ends is DAEMON_STILL_STOPPING (exit 1; it keeps stopping, run the command again to keep waiting).
+Exits 4 (DAEMON_NOT_RUNNING) when none is running; a stale lock left by a crashed daemon is removed.
 
 Usage: stems daemon stop [OPTIONS]
 
 Options:
+      --timeout <DURATION>
+          How long to wait for the daemon to exit (e.g. 120s) instead of its shutdown budget plus 5
+          s
+
+      --no-wait
+          Return as soon as the daemon accepted the shutdown (`data.stopping: true`); it keeps
+          stopping in the background
+
   -h, --help
           Print help (see a summary with '-h')
 

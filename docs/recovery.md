@@ -107,8 +107,18 @@ daemon runs.
 ## Orphans
 
 An **orphan** is a process listening on a port declared by an enabled
-`process` stem (fixed ports, plus `auto` ports recorded in state) that is not
-part of a recorded stem's process group and is not the daemon. Typical
+`process` stem (fixed ports, plus `auto` ports recorded in state) that does
+not belong to a recorded stem and is not the daemon. A listener belongs to a
+stem when it, or any process on its parent chain up to pid 1 (at most 64
+steps), is the stem's recorded pid or in its process group: a dev server that
+a launcher script moved into its own process group (`setsid`) is still its
+stem's child, so `up`, `doctor` and `doctor --orphans` never report it and
+`--yes` / `--kill-orphans` never kill it. Only records whose pid is still the
+recorded process count: it must be alive with the recorded start time. After
+a daemon crash a recorded pid may have been reused by an unrelated long-lived
+process (a login shell, tmux, an IDE); such a record contributes nothing, or
+every listener under that process would pass for the stem's child and hide
+real orphans. Typical
 causes: a service started by hand, a stem of a run whose state was lost, an
 unrelated program on the same port. Containers labelled for the workspace
 (and containers of stems-owned compose projects) missing from state are

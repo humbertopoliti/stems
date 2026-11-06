@@ -1,0 +1,33 @@
+# env-stale-deps — fixture for config/env-files-reread.feature (FR-ST-4,
+# ENV_STALE).
+#
+# `auth` publishes STAMP (the content of stamp.txt; a name that is never
+# redacted) and takes ~2 s to become healthy, so a scenario can look at
+# `api` while `auth` restarts. `api`
+# refers to the stamp and the port in `env:`; its edge to `auth` is soft so
+# restarting `auth` does not restart `api` (no cascade): `api` keeps running
+# with the values of its start. Start `auth` first (outputs come only from a
+# healthy dependency).
+schema_version: 1
+name: env-stale-deps
+
+stems:
+  auth:
+    type: process
+    ports: [{ name: http, port: 18496 }]
+    scripts:
+      start: sleep 2 && exec python3 -m http.server ${stem.self.port} --bind 127.0.0.1
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 15s }
+    outputs:
+      STAMP: { command: "cat '${workspace.root}/stamp.txt'" }
+    stop_grace: 1s
+  api:
+    type: process
+    depends_on: [{ stem: auth, soft: true }]
+    command: exec sleep 300
+    env:
+      AUTH_STAMP: "${stem.auth.outputs.STAMP}"
+      AUTH_URL: "http://localhost:${stem.auth.port}/v1"
+    env_files: [api.env]
+    health: { type: process, interval: 200ms }
+    stop_grace: 1s

@@ -1201,6 +1201,7 @@ impl Check for EnvFilesCheck {
                 "key": w.details["key"],
                 "file": w.details["file"],
                 "shadows": w.details["shadows"],
+                "winner": w.details["winner"],
                 "keys": keys,
                 "files": files,
             }));

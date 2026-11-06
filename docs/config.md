@@ -314,8 +314,8 @@ The setting of the *new* config counts (turning it on applies that edit).
 
 ### Workspace-level settings that reload
 
-`logs`, `metrics`, `agent`, `requires`, workspace `scripts`, `config` and
-`notifications` are hot, workspace-level changes (`<key>_changed` in the
+`logs`, `metrics`, `agent`, `requires`, workspace `scripts`, `config`,
+`notifications` and `daemon` are hot, workspace-level changes (`<key>_changed` in the
 plan, never a restart). Desktop notifications
 ([notifications.md](notifications.md)) read the applied config at every
 notification, so `notifications.enabled`, `debounce`, `cooldown` and
@@ -419,12 +419,22 @@ A stem's environment is built in layers; **later wins**:
 | 1 | the environment of the `stems` command (else the daemon's), minus `STEMS_*` | see [lifecycle.md](lifecycle.md#a-stems-environment-fr-st-4) |
 | 2 | `PORT` = the stem's first host port | when it declares ports |
 | 3 | workspace `env:`, then the stem's `env:` | |
-| 4 | `env_files`, in list order | **an env file beats `env:`** |
+| 4 | `env_files`, in list order | **an env file beats `env:`**, unless the entry has `override: false` (or the workspace sets `env_files_override: false`): then keys `env:` sets keep their `env:` value |
 | 5 | `stems.local.yaml` `env:` (workspace-level and the stem's) | your machine's overrides beat every file |
 | 6 | `stems up --pass-env VAR,…` | |
 | 7 | `STEMS_STEM`, `STEMS_WORKSPACE`, `STEMS_CODEBASE`, `STEMS_RUN_ID`, `STEMS_<DEP>_PORT`, … | always set by stems |
 
 `stems status -v` shows layers 2–7 for each running stem.
+
+Env files are read again every time the environment is computed: every
+start and `restart`, `stems env`, `stems exec`/`shell`, `stems compose` and
+the `stem_env` RPC. Nothing is cached, so a key removed from a file is gone
+from all of them at once. A **running** stem keeps the environment it was
+started with until it is restarted: when that differs from what the config
+and files yield now, `stems env` (which prints the config's values) warns
+`ENV_STALE` naming the keys (`data.warnings[]`), and `stems status` adds
+`env_stale: [KEY…]` to the stem's row and a `warning <stem>: ENV_STALE: …`
+line. `stems restart <stem>` applies the change.
 
 ### Secrets
 
@@ -463,18 +473,40 @@ stems:
 ```
 
 Paths are relative to the integration repo. An entry is a path (the file
-must exist) or `{path, required}`; `required: false` makes an absent file a
-no-op (like compose's `env_file: {path, required: false}`). A file that
-exists but cannot be read (permissions, a directory) is always an error.
-`stems show` prints a required entry as its plain path and an optional one
-in the object form.
+must exist) or `{path, required, override}`; `required: false` makes an
+absent file a no-op (like compose's `env_file: {path, required: false}`). A
+file that exists but cannot be read (permissions, a directory) is always an
+error. `stems show` prints an entry with the defaults as its plain path and
+any other in the object form.
+
+#### `override`: who wins between `env:` and a file
+
+By default (`override: true`) an env file beats `env:`. With
+`override: false` the keys `env:` sets (workspace `env` included) keep their
+`env:` value and the file only adds the keys `env:` does not set. This lets
+you declare a value once in `stems.yaml` even when a shared `.env` also
+sets it:
+
+```yaml
+env_files_override: false         # workspace default for every entry (default true)
+stems:
+  web:
+    ports: [{ name: http, port: auto }]
+    env: { PORT: "${stem.self.ports.http}" }
+    env_files:
+      - { path: .env, override: false }   # .env's PORT is ignored, the rest is used
+      - { path: .env.ci, override: true } # an entry's own `override` beats the default
+```
+
+`override: false` only protects keys of `env:`: between two files the later
+one still wins, and `stems.local.yaml` and `--pass-env` still beat both.
 
 | case | `validate` | `doctor` (`env.<stem>`) | start |
 |---|---|---|---|
 | required file missing | `ENV_FILE_NOT_FOUND` (exit 2), path `stems.<stem>.env_files[i]`, `details {stem, file}` | `fail` | `ENV_FILE_NOT_FOUND`, the stem does not start |
 | `required: false` file missing | ok | `ok` (`env/api.local.env optional, absent`) | skipped |
 | file unreadable | `CONFIG_READ_FAILED` | `fail` | `CONFIG_READ_FAILED` |
-| a file sets a key that `env:` (or an earlier file) sets to a **different** value | warning `ENV_SHADOWED` (exit 0) | `warn` | the file's value is used |
+| a file sets a key that `env:` (or an earlier file) sets to a **different** value | warning `ENV_SHADOWED` (exit 0) | `warn` | the file's value is used (`env:`'s with `override: false`); when the file wins, warning `ENV_SHADOWED` on the `up`/`start`/`restart` result and in the daemon log (an `override: false` entry is your choice: `validate` and `doctor` report it, a start does not) |
 
 Dotenv grammar: one `KEY=value` per line; blank lines and lines starting
 with `#` are ignored; an optional `export ` prefix; key and value are
@@ -484,18 +516,24 @@ There are no escapes, no `${VAR}` interpolation and no multi-line values; a
 
 ### The shadow warning
 
-`ENV_SHADOWED` is a warning of `stems validate` (`data.warnings[]`) and of
-`stems doctor` (`env.<stem>` → `warn`), never an error:
+`ENV_SHADOWED` is a warning of `stems validate` (`data.warnings[]`), of
+`stems doctor` (`env.<stem>` → `warn`) and of every start: `stems up`,
+`stems start` and `stems restart` list it with the result's warnings
+(`data.warnings[]`, a `warning <stem>: …` line), once per started stem, and
+the daemon logs it once. It is never an error. The message says which side
+won:
 
 ```text
-warning: ENV_SHADOWED: `API_URL` of `api` from env/api.env shadows the value set in `stems.api.env`
+warning: ENV_SHADOWED: `API_URL` of `api` from env/api.env shadows env: API_URL (`stems.api.env`)
+warning: ENV_SHADOWED: env: PORT of `web` keeps its value; .env's PORT is ignored (override: false)
 ```
 
-`details {stem, key, file, shadows}`: `shadows` is `"env"` (the `env:`
-layer, workspace `env` included) or the earlier env file. An equal value is
-not reported, nor is a key that `stems.local.yaml` sets (the local value
-wins over both). The fix: keep the value in one place, or move a
-per-machine value into `stems.local.yaml`.
+`details {stem, key, file, shadows, winner}`: `shadows` is `"env"` (the
+`env:` layer, workspace `env` included) or the earlier env file; `winner`
+is `"file"` or `"env"` (`override: false`). An equal value is not reported,
+nor is a key that `stems.local.yaml` sets (the local value wins over both).
+The fix: keep the value in one place, set `override: false` when `env:`
+should win, or move a per-machine value into `stems.local.yaml`.
 
 ### Compose stems
 

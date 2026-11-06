@@ -167,13 +167,36 @@ pub fn exec_env(
     run_id: Option<&str>,
     state_dir: &std::path::Path,
 ) -> Result<(BTreeMap<String, String>, Vec<String>), Error> {
+    exec_env_with(
+        ws,
+        stem,
+        ports,
+        outputs,
+        run_id,
+        state_dir,
+        &BTreeMap::new(),
+    )
+}
+
+/// [`exec_env`] with the `--pass-env` values `pass` as layer 6, applied
+/// exactly like a start's ([`build_env`]): `STEMS_*` names included, under
+/// the layer-7 markers.
+fn exec_env_with(
+    ws: &Workspace,
+    stem: &Stem,
+    ports: &PortBook,
+    outputs: Option<&OutputStore>,
+    run_id: Option<&str>,
+    state_dir: &std::path::Path,
+    pass: &BTreeMap<String, String>,
+) -> Result<(BTreeMap<String, String>, Vec<String>), Error> {
     let none = BTreeMap::new();
     let mut env = build_env(
         ws,
         stem,
         &EnvInputs {
             base: &none,
-            pass_env: &none,
+            pass_env: pass,
             run_id: run_id.unwrap_or_default(),
             ports,
             outputs,
@@ -382,7 +405,17 @@ impl Job {
 
 impl Supervisor {
     /// `stem_env` (37): `stem`'s context for `exec`/`shell`/`env`. Never
-    /// allocates a port; the env of a running stem is the one it got.
+    /// allocates a port. Computed from the config and the env files as they
+    /// are now (plus the `--pass-env` of the stem's last start), so a key
+    /// removed from a file is gone. For a running stem, a key with no value
+    /// now (a `${stem...}` reference left unresolved, a dependency port or
+    /// output variable absent: the dependency is restarting or down) keeps
+    /// the value the stem got at its start, per key ([`keep_live`]); a
+    /// start-time environment whose config layers differ gets an
+    /// `ENV_STALE` warning naming the keys ([`drift`]).
+    ///
+    /// [`keep_live`]: super::env::keep_live
+    /// [`drift`]: super::env::drift
     pub fn stem_env(&self, p: &StemEnvParams, actor: &str) -> Result<StemEnvResult, Error> {
         let ws = self.workspace(false, actor)?;
         schedule::plan(&ws, std::slice::from_ref(&p.stem), true)?;
@@ -392,23 +425,31 @@ impl Supervisor {
             .ok_or_else(|| Error::internal(format!("stem `{}` vanished", p.stem)))?;
         let state_dir = self.core.scripts.state_dir(Some(&stem.name));
         let _ = std::fs::create_dir_all(&state_dir);
-        let (state, handle, live) = {
+        let (state, handle, live, pass) = {
             let cell = self.cell(&stem.name);
             let info = cell.info();
-            (info.state, info.handle.clone(), info.env.clone())
+            (
+                info.state,
+                info.handle.clone(),
+                info.env.clone(),
+                info.restart.call_env().pass,
+            )
         };
         let running = state.is_running();
-        let ports = self.core.ports.frozen();
-        let (mut env, _) = exec_env(
-            &ws.workspace,
-            stem,
-            &ports,
-            Some(&self.core.outputs),
-            Some(&self.core.run_id),
-            &state_dir,
-        )?;
+        let mut env = self.config_env(&ws.workspace, stem, &pass, &state_dir)?;
+        let mut warnings = Vec::new();
         if running && !live.is_empty() {
-            env.extend(live);
+            let config = super::env::config_layers(
+                &ws.workspace,
+                stem,
+                &pass,
+                &mut super::env::parse_env_file,
+            )?;
+            let keys = super::env::drift(&ws.workspace, stem, &live, &config);
+            if !keys.is_empty() {
+                warnings.push(super::env::stale_warning(&stem.name, &keys));
+            }
+            super::env::keep_live(&ws.workspace, stem, &mut env, &live);
         }
         if !p.reveal {
             super::outputs::redact_env(&self.core, stem, &mut env);
@@ -433,7 +474,63 @@ impl Supervisor {
             state,
             running,
             unresolved,
+            warnings,
         })
+    }
+
+    /// What `stem`'s config yields now for `exec`/`env` (env files re-read):
+    /// [`exec_env`] with the `--pass-env` values `pass` of its last start
+    /// (layer 6, applied like the start applied them).
+    fn config_env(
+        &self,
+        ws: &stems_config::Workspace,
+        stem: &stems_config::Stem,
+        pass: &BTreeMap<String, String>,
+        state_dir: &std::path::Path,
+    ) -> Result<BTreeMap<String, String>, Error> {
+        let ports = self.core.ports.frozen();
+        let (env, _) = exec_env_with(
+            ws,
+            stem,
+            &ports,
+            Some(&self.core.outputs),
+            Some(&self.core.run_id),
+            state_dir,
+            pass,
+        )?;
+        Ok(env)
+    }
+
+    /// `ENV_STALE` keys of running `stem` for `status` ([`drift`]): where
+    /// the config layers of the env it got at its start differ from its
+    /// config, env files and `--pass-env` now. Dependency ports and outputs
+    /// never count. Empty when it is not running, was adopted (its start env
+    /// is unknown) or the env cannot be computed (a missing env file: the
+    /// start would fail, not drift). Env files come from the
+    /// [`EnvFileCache`](super::env::EnvFileCache) (one `stat` per file per
+    /// call; re-read when the mtime or length changes): `status` is polled.
+    ///
+    /// [`drift`]: super::env::drift
+    pub(crate) fn env_drift(
+        &self,
+        ws: &stems_config::Workspace,
+        stem: &stems_config::Stem,
+    ) -> Vec<String> {
+        let (live, pass) = {
+            let cell = self.cell(&stem.name);
+            let info = cell.info();
+            if !info.state.is_running() || info.env.is_empty() {
+                return Vec::new();
+            }
+            (info.env.clone(), info.restart.call_env().pass)
+        };
+        let mut read = |r: &std::path::Path, s: &str, i: usize, f: &stems_config::EnvFile| {
+            self.env_files.read(r, s, i, f)
+        };
+        match super::env::config_layers(ws, stem, &pass, &mut read) {
+            Ok(config) => super::env::drift(ws, stem, &live, &config),
+            Err(_) => Vec::new(),
+        }
     }
 
     /// `script_catalog`.

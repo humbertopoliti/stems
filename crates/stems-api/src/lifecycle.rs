@@ -427,6 +427,11 @@ pub struct StemStatus {
     /// inherited daemon environment is not shown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env: Option<BTreeMap<String, String>>,
+    /// `ENV_STALE`: env keys whose value the running stem got at its start
+    /// differs from what its config and env files yield now (changed, added
+    /// or removed); a restart applies them. Omitted when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env_stale: Vec<String>,
     /// Evaluated outputs (FR-ST-6, 26) of the current start; secret ones
     /// are `"<redacted>"`. Empty (omitted) until the stem is healthy.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -469,6 +474,7 @@ impl StemStatus {
             metrics: None,
             error: None,
             env: None,
+            env_stale: Vec::new(),
             outputs: BTreeMap::new(),
             watch: None,
             variant: None,
@@ -726,6 +732,7 @@ mod tests {
             metrics: None,
             error: None,
             env: None,
+            env_stale: Vec::new(),
             outputs: BTreeMap::new(),
             watch: None,
             variant: None,

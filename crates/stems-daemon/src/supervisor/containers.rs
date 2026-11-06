@@ -492,6 +492,7 @@ pub fn compose_spec(
         secrets: c.build_options.secrets.iter().map(runtime_secret).collect(),
         allow_read: c.build_options.allow_read.clone(),
     };
+    spec.workspace_root = Some(ws.root.clone());
     spec.inject_env = c.inject_env;
     spec.container_port = stem.primary_port().and_then(|p| p.container_port);
     Ok(spec)

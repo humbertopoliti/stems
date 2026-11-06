@@ -128,6 +128,7 @@ pub fn run(ctx: &Ctx, args: &StatusArgs, mode: Mode, stdout: &mut dyn Write) -> 
         }
         let data = serde_json::to_value(&st).unwrap_or_default();
         let mut human = table(&st, &style);
+        human.push_str(&env_stale(&st));
         if verbose {
             human.push_str(&warnings(&st));
         }
@@ -564,6 +565,21 @@ fn tails(st: &StatusResult) -> String {
     out
 }
 
+/// `warning <stem>: ENV_STALE: env changed since it started (A, B); restart
+/// it to apply` for each running stem whose config env drifted.
+pub fn env_stale(st: &StatusResult) -> String {
+    let mut out = String::new();
+    for s in st.stems.iter().filter(|s| !s.env_stale.is_empty()) {
+        out.push_str(&format!(
+            "\nwarning {}: ENV_STALE: env changed since it started ({}); `stems restart {}` to apply\n",
+            s.name,
+            s.env_stale.join(", "),
+            s.name
+        ));
+    }
+    out
+}
+
 /// `status -v`: a `warning <stem>: <script> exited 3 (soft_fail)` block
 /// with the output tail for each failed `soft_fail` script (41).
 pub fn warnings(st: &StatusResult) -> String {
@@ -682,6 +698,7 @@ mod tests {
             metrics: None,
             error: None,
             env: None,
+            env_stale: Vec::new(),
             outputs: Default::default(),
             watch: None,
             variant: None,
@@ -737,6 +754,7 @@ mod tests {
             metrics: None,
             error: None,
             env: None,
+            env_stale: Vec::new(),
             outputs: Default::default(),
             watch: None,
             variant: None,

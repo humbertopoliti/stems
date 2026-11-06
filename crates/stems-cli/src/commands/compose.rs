@@ -3,9 +3,12 @@
 //!
 //! Like `exec` the CLI runs the command itself (terminal, stdin, exit
 //! code); the daemon is never started. The context is [`exec::context`]
-//! (live from the daemon, else computed from the config); the env file
-//! (and the `inject_env` override) are written here when missing, or, with
-//! no daemon, when they differ from what the config yields.
+//! (the config and env files as they are now, with the daemon's ports and
+//! outputs when it runs, else computed from the config); the env file (and
+//! the `inject_env` override) are regenerated here whenever they differ
+//! from what that yields, so a key removed from an env file is gone —
+//! except for a running stem whose env still has unresolved values (a
+//! dependency restarting): the files on disk are its live start's, kept.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -43,11 +46,13 @@ pub fn argv(t: &ComposeTarget, args: &[String], with_service: bool) -> Vec<OsStr
     v
 }
 
-fn write_if_needed(path: &Path, content: &str, daemon_up: bool) -> std::io::Result<()> {
+/// Write `content` to `path` when it differs; `keep`: only when `path` does
+/// not exist (never replace the file on disk).
+fn write_if_needed(path: &Path, content: &str, keep: bool) -> std::io::Result<()> {
     let current = std::fs::read_to_string(path).ok();
     let write = match current {
         None => true,
-        Some(c) => !daemon_up && c != content,
+        Some(c) => !keep && c != content,
     };
     if write {
         stems_runtime::compose::command::write_private(path, content)?;
@@ -61,20 +66,24 @@ fn fail(msg: String) -> Error {
 
 /// Write `spec`'s env file and, whenever `-f <override>` is passed
 /// (`inject_env` or build secrets), its override file with the runtime's
-/// exact content (secrets and build services included). With a daemon up,
-/// its files are only created when absent, never replaced.
+/// exact content (secrets and build services included), whenever they
+/// differ from what is on disk: never a stale file from an earlier start.
+/// `keep` (a running stem whose env has unresolved values): existing files
+/// are left alone, so a `${stem...}` placeholder never replaces the value
+/// the running service was created with (a later `up -d` would recreate it
+/// with the placeholder).
 fn write_inputs(
     spec: &stems_runtime::compose::ComposeSpec,
     dir: &Path,
-    daemon_up: bool,
+    keep: bool,
 ) -> Result<(), stems_core::Errors> {
     let env_file = env_file_path(dir, &spec.stem);
     let content = render_env_file(&spec.env).map_err(fail)?;
-    write_if_needed(&env_file, &content, daemon_up)
+    write_if_needed(&env_file, &content, keep)
         .map_err(|e| fail(format!("cannot write {}: {e}", env_file.display())))?;
     if let Some(body) = spec.override_body(&env_file) {
         let o = override_file_path(dir, &spec.stem);
-        write_if_needed(&o, &body, daemon_up)
+        write_if_needed(&o, &body, keep)
             .map_err(|e| fail(format!("cannot write {}: {e}", o.display())))?;
     }
     Ok(())
@@ -101,13 +110,23 @@ fn prepare(
         .workspace
         .stem(&r.stem)
         .ok_or_else(|| Error::internal(format!("stem `{}` vanished", r.stem)))?;
-    let spec = stems_daemon::supervisor::containers::compose_spec(&ws.workspace, st, "", &r.env)?;
+    // The env a start writes (layers 2–7): `STEMS_STATE_DIR` is exec-only,
+    // so the files match the daemon's and a running service is not
+    // recreated for it.
+    let mut env = r.env.clone();
+    env.remove("STEMS_STATE_DIR");
+    let spec = stems_daemon::supervisor::containers::compose_spec(&ws.workspace, st, "", &env)?;
     let target = client_paths(ctx)?;
     let t = ComposeTarget::for_spec(&spec, &target);
-    // Without a daemon nothing keeps the files fresh; with one they are
-    // its (possibly port-allocated) files and are only created if absent.
-    let daemon_up = r.running || r.state != stems_core::StemState::Stopped;
-    write_inputs(&spec, &target, daemon_up)?;
+    // A running stem whose env still holds `${stem...}` placeholders (a
+    // dependency restarting or down) keeps the files of its start.
+    let keep = r.running && !r.unresolved.is_empty();
+    write_inputs(&spec, &target, keep)?;
+    if !ctx.global.json {
+        for w in &r.warnings {
+            eprintln!("warning: {}: {}", w.code, w.message);
+        }
+    }
     let host = stems_runtime::docker::resolve_host(
         None,
         ctx.env.get("DOCKER_HOST").map(String::as_str),
@@ -218,10 +237,34 @@ mod tests {
         );
         insta::assert_snapshot!("compose_override_secrets", body);
 
-        // A daemon's file is never replaced.
-        std::fs::write(&o, "daemon's\n").unwrap();
+        // A stale file (an earlier start's) is regenerated, the env file
+        // too: a key removed from the config is gone (never kept).
+        std::fs::write(&o, "stale\n").unwrap();
+        let env_file = d.path().join("api.env");
+        std::fs::write(&env_file, "REMOVED='x'\n").unwrap();
+        spec.env.insert("KEPT".into(), "y".into());
+        write_inputs(&spec, d.path(), false).unwrap();
+        assert_eq!(Some(std::fs::read_to_string(&o).unwrap()), Some(body));
+        let env_text = std::fs::read_to_string(&env_file).unwrap();
+        assert!(!env_text.contains("REMOVED"), "{env_text}");
+        assert!(env_text.contains("KEPT='y'"), "{env_text}");
+
+        // A running stem with unresolved values: the files on disk (its
+        // start's) are kept, never replaced by a placeholder.
+        std::fs::write(&env_file, "TOKEN='live'\n").unwrap();
+        std::fs::write(&o, "live\n").unwrap();
+        spec.env
+            .insert("TOKEN".into(), "${stem.auth.outputs.token}".into());
         write_inputs(&spec, d.path(), true).unwrap();
-        assert_eq!(std::fs::read_to_string(&o).unwrap(), "daemon's\n");
+        assert_eq!(
+            std::fs::read_to_string(&env_file).unwrap(),
+            "TOKEN='live'\n"
+        );
+        assert_eq!(std::fs::read_to_string(&o).unwrap(), "live\n");
+        // A missing one is still written.
+        std::fs::remove_file(&o).unwrap();
+        write_inputs(&spec, d.path(), true).unwrap();
+        assert!(o.exists());
 
         // Plain stem: no override passed, none written.
         let plain = ComposeSpec::new("w", "db", "", "/w/compose.yml", "db");

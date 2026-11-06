@@ -1625,8 +1625,9 @@ fn build_secrets_allow_read_and_the_compose_object_form() {
     // `show`: the bool form serialises as before; a secret as `{id, file}`.
     let v = serde_json::to_value(&r.workspace).unwrap();
     assert!(v["stems"]["plain"].get("build_options").is_none());
+    assert!(v["stems"]["plain"]["build"].is_boolean());
     assert_eq!(v["stems"]["d"]["build"]["secrets"][1]["env"], "NPM_TOKEN");
-    assert_eq!(v["stems"]["c"]["build_options"]["before_setup"], true);
+    assert_eq!(v["stems"]["c"]["build"]["before_setup"], true);
     let json = serde_json::to_string(&r.workspace).unwrap();
     let back: Workspace = serde_json::from_str(&json).unwrap();
     assert_eq!(back, r.workspace);

@@ -753,6 +753,11 @@ pub struct WorkspaceLoaded {
 pub struct ShutdownResult {
     /// Always true: the orderly shutdown path has been triggered.
     pub stopping: bool,
+    /// How long the daemon gives itself to stop its stems before it exits
+    /// anyway (`daemon.shutdown_timeout`, else derived from the running
+    /// stems' stop graces), in ms. Absent from older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_ms: Option<u64>,
 }
 
 /// `DAEMON_VERSION_MISMATCH` error for the given versions.

@@ -364,6 +364,9 @@ pub struct Supervisor {
     /// Held while a request notes its caller env and loads the config with
     /// it (49), so a concurrent request cannot swap the env in between.
     env_load: Mutex<()>,
+    /// Env files parsed for `status`'s `env_stale` (keyed by mtime and
+    /// length; `run::env_drift`).
+    env_files: env::EnvFileCache,
 }
 
 /// Why `stem` is disabled, for `status` (46): `enabled: ${env.X} → false`
@@ -475,6 +478,7 @@ impl Supervisor {
             runs: run::ScriptRuns::default(),
             reload: reload::ReloadState::default(),
             disabled_skips: Mutex::new(BTreeMap::new()),
+            env_files: env::EnvFileCache::default(),
         });
         // Watchdog actions run through the supervisor (24).
         sup.core.watch.bind(&sup);
@@ -1158,6 +1162,7 @@ impl Supervisor {
             .filter(|s| p.stems.is_empty() || p.stems.contains(&s.name))
             .map(|s| {
                 let mut st = self.cell(&s.name).status(s, &self.core, names.as_ref());
+                st.env_stale = self.env_drift(&ws.workspace, s);
                 containers::decorate_status(
                     self.core.runtimes.containers().map(|c| &**c),
                     s.kind(),
@@ -1904,6 +1909,14 @@ impl SupervisorHooks for Supervisor {
 
     async fn recover(&self, previous: Option<StateFile>) {
         Supervisor::recover(self, previous, stems_api::DAEMON_ACTOR).await;
+    }
+
+    fn running_stems(&self) -> Vec<String> {
+        self.existing_cells()
+            .iter()
+            .filter(|c| c.state().is_running())
+            .map(|c| c.name.clone())
+            .collect()
     }
 }
 

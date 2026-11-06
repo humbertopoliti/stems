@@ -1380,10 +1380,16 @@ pub enum DaemonCommand {
     Start(DaemonStartArgs),
     /// Stop the workspace daemon.
     ///
-    /// Asks it to shut down (the same orderly path as SIGTERM) and waits up to
-    /// 5 s for its socket and lock to disappear. Exits 4 (DAEMON_NOT_RUNNING)
-    /// when none is running; a stale lock left by a crashed daemon is removed.
-    Stop,
+    /// Asks it to shut down (the same orderly path as SIGTERM: every running
+    /// stem is stopped first) and waits for its socket and lock to disappear:
+    /// as long as the daemon's shutdown budget (`daemon.shutdown_timeout`,
+    /// by default derived from the running stems' stop graces; the
+    /// `shutdown` reply carries it) plus 5 s, unless `--timeout` or
+    /// `--no-wait`. A daemon still stopping when the wait ends is
+    /// DAEMON_STILL_STOPPING (exit 1; it keeps stopping, run the command again
+    /// to keep waiting). Exits 4 (DAEMON_NOT_RUNNING) when none is running; a
+    /// stale lock left by a crashed daemon is removed.
+    Stop(DaemonStopArgs),
     /// Show the daemon's pid, version, socket and uptime.
     ///
     /// `data`: `{ running, pid, version, api_version, workspace, uptime_s,
@@ -1400,6 +1406,19 @@ pub struct DaemonStartArgs {
     /// detaching; Ctrl-C stops it.
     #[arg(long)]
     pub foreground: bool,
+}
+
+/// `stems daemon stop`.
+#[derive(Debug, Args)]
+pub struct DaemonStopArgs {
+    /// How long to wait for the daemon to exit (e.g. 120s) instead of its
+    /// shutdown budget plus 5 s.
+    #[arg(long, value_name = "DURATION", conflicts_with = "no_wait")]
+    pub timeout: Option<String>,
+    /// Return as soon as the daemon accepted the shutdown (`data.stopping:
+    /// true`); it keeps stopping in the background.
+    #[arg(long)]
+    pub no_wait: bool,
 }
 
 /// The clap `Command` for the whole tree (built: usage strings are final).

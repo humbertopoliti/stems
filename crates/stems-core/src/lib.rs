@@ -16,6 +16,7 @@
 //! - [`overlays`]: overlay rendering, ownership decisions, atomic writes.
 //! - [`selection`]: profiles and the stem selection closure of `up`/`start`.
 
+pub mod callerenv;
 pub mod checks;
 pub mod envfiles;
 mod error;

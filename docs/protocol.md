@@ -85,10 +85,47 @@ stems events --json --since 0    # NDJSON: one Event per line, no envelope
 stems events -f --json           # the same replay, then live events until the daemon
                                  # stops (after daemon.stopped) or Ctrl-C; exit 0
 
-stems daemon stop --json         # `shutdown`, then wait ≤ 5 s for socket + lock to go
-# data: {stopped: true, pid, via: "rpc"|"signal"}; stale lock: {stopped: false,
-#        stale_lock_removed: true, pid}; nothing at all: exit 4 DAEMON_NOT_RUNNING
+stems daemon stop --json         # `shutdown`, then wait budget + 5 s for socket + lock to go
+# data: {stopped: true, pid, via: "rpc"|"signal", budget_ms}; stale lock:
+#        {stopped: false, stale_lock_removed: true, pid}; nothing at all: exit 4
+#        DAEMON_NOT_RUNNING; still stopping when the wait ends: exit 1
+#        DAEMON_STILL_STOPPING (details: pid, waited_ms, budget_ms, log)
+stems daemon stop --timeout 2m   # wait 2 minutes instead
+stems daemon stop --no-wait      # data: {stopped: false, stopping: true, pid, via, budget_ms, log}
 ```
+
+### Shutdown budget
+
+The daemon's shutdown stops every running stem (dependents before their
+dependencies, like `down`) before it removes its socket and lock. It gives
+itself a **shutdown budget** for that: `daemon.shutdown_timeout` in
+`stems.yaml` (or `stems.local.yaml`) when set, e.g.
+
+```yaml
+daemon:
+  shutdown_timeout: 2m
+```
+
+otherwise one derived when the shutdown starts: **30 s plus, for each stop
+layer, the longest `pre_stop` timeout + `stop_grace` + `post_stop` timeout
+among its running stems** (a hook without a `timeout` counts 0, the 30 s
+cover it; a stem the daemon has no config for counts 10 s). So the deadline is
+never shorter than the stop grace of a stem it still has to stop, and no
+container is abandoned by it. While anything runs the result is **at least
+120 s** (Docker stops many containers slower than one, and a budget longer
+than the shutdown costs nothing: the wait ends when the stems do), so 50
+independent stems with the default 10 s `stop_grace` get 120 s, and a deep
+chain whose layered sum exceeds that gets the sum. If the budget runs out anyway the daemon logs which stems were still running and
+exits.
+
+The `shutdown` reply carries the budget (`budget_ms`), and `stems daemon
+stop` waits that long plus 5 s (a daemon only reachable by SIGTERM: the
+budget computed from the config with every enabled stem counted as running).
+`--timeout <dur>` replaces the wait, `--no-wait` returns once the shutdown is
+accepted. When the wait ends first, the command fails with
+`DAEMON_STILL_STOPPING` (exit 1, not `INTERNAL`): the daemon keeps shutting
+down in the background; its log says what it is doing, and `stems daemon
+stop` again keeps waiting (the `shutdown` request is idempotent).
 
 `stems daemon status` and `stems daemon stop` accept a daemon of another stems
 version (same API version) so that the `DAEMON_VERSION_MISMATCH` hint
@@ -124,7 +161,7 @@ the connection stays usable. For a stream:
 | `events` | `{since_seq?, limit?, kinds?, actor?}` | `{events: [Event], last_seq}` — buffered events with `seq > since_seq`, oldest first; `kinds` (exact, or a prefix ending in `*`) and `actor` filter before `limit` applies (31) |
 | `subscribe_events` | `{since_seq?}` | ack `{subscribed: true, last_seq}`, then `event` notifications (see below) |
 | `load_workspace` | `{path}` | `{root, name, stems: [name], sources: [path]}`; emits `workspace.loaded` (`data: {root, name, stems, configuration}`); config errors are returned as the first error with all of them in `details.errors` |
-| `shutdown` | `{}` | `{stopping: true}`, then the orderly shutdown path runs |
+| `shutdown` | `{}` | `ShutdownResult {stopping: true, budget_ms}`, then the orderly shutdown path runs; `budget_ms` is the [shutdown budget](#shutdown-budget) (absent from daemons before it existed); idempotent |
 | `up` | `UpParams {stems?, profile?, detach?, timeout_ms?, fail_fast? (true), max_parallel? (4), pass_env? {K: V}, caller_env? {K: V}, daemon_auto_started?, fresh?, force_overlays?, sync?, no_watch?}` | `UpResult {ok, requested, ready: [stem], failed: [{stem, error}], skipped: [stem], skipped_reasons?, degraded?: [{stem, script, exit, timed_out?}], disabled?: [stem]}` (`degraded`: ready stems whose `soft_fail` script failed, 41; `skipped_reasons.<stem>`: `seed_degraded` or `dependency_disabled:<dep>`; `disabled`: disabled stems the selection covered, 46) — long-running; progress is the event stream (see [lifecycle.md](lifecycle.md)) |
 | `down` | `DownParams {stems?, all?, timeout_ms?, volumes?}` | `DownResult {ok, stopped, skipped, failed: [{stem, error}], daemon_stopping, volumes_removed?}`; with `daemon_stopping` the daemon shuts down right after replying; `volumes` removes the selected docker stems' named volumes (14) |
 | `start` | `StartParams {stems, no_deps?, timeout_ms?, caller_env?}` | `UpResult`; external stems: `NOT_MANAGED` |
@@ -151,7 +188,7 @@ the connection stays usable. For a stream:
 | `stamps` | `StampsParams {stem?, clear?}` | `StampsResult {stamps: [{stem, script, hash, computed_at, inputs}], cleared}` |
 | `run_script` | `RunScriptParams {stem? (null: workspace script), name, args? ([argv] \| {name: value}), wait? (true), start_deps?, stop_deps?, ready_timeout_ms? (30000), caller_env?}` | `RunScriptResult {run_id, stem, script, ok, exit, signal, duration_ms, timed_out, attempts, argv, tail, queued, soft?, error?}` (`soft: true`: a failed `soft_fail` script, still `ok: false`); with `wait: false` at once `RunScriptAccepted {run_id, stem, script}` (follow the `script.*` events with that `data.run_id`). A failed script is a successful call with `ok: false` and `error` (`SCRIPT_FAILED`); bad args: `SCRIPT_ARGS_INVALID` (`details {arg, reason, stem, script}`); unhealthy `requires` or running `requires_stopped`: `SCRIPT_REQUIRES_UNMET` (`details {requires, unmet: [{stem, state}], start_error, requires_stopped, unmet_stopped: [{stem, state}], stop_error}`); stem still starting past the bound: `START_TIMEOUT` ([scripts.md](scripts.md#custom-scripts-and-stems-run)) |
 | `script_catalog` | `ScriptCatalogParams {stem?}` | `ScriptCatalogResult {scripts: [{stem, name, description, args: [{name, type, default, required, description, values}], requires, kind: lifecycle\|custom, timeout, retries, concurrent, mcp_tool, input_schema}], lifecycle_hooks: [names]}` — what the TUI (30) and MCP (31) consume |
-| `stem_env` | `StemEnvParams {stem, reveal?}` | `StemEnvResult {stem, type, cwd, env, container, state, running, unresolved}` — a stem's context for `stems exec`/`shell`/`env` (37): `env` = what stems sets (layers 2–7 + `STEMS_STATE_DIR`, never the base; the live env of a running stem; secret outputs redacted unless `reveal`), `cwd` its codebase else its state dir, `container` the container id of a running docker/compose stem, `unresolved` the variables still holding a `${stem...}` reference (auto port not allocated: never allocates). `UNKNOWN_STEM` ([exec.md](exec.md)) |
+| `stem_env` | `StemEnvParams {stem, reveal?}` | `StemEnvResult {stem, type, cwd, env, container, state, running, unresolved, warnings?}` — a stem's context for `stems exec`/`shell`/`env` (37): `env` = what stems sets (layers 2–7 + `STEMS_STATE_DIR`, never the base; computed from the config and env files as they are now, with the `--pass-env` of the stem's last start; secret outputs redacted unless `reveal`); `warnings` holds `ENV_STALE` (`details {stem, keys}`) when a running stem got a different environment at its start, `cwd` its codebase else its state dir, `container` the container id of a running docker/compose stem, `unresolved` the variables still holding a `${stem...}` reference (auto port not allocated: never allocates). `UNKNOWN_STEM` ([exec.md](exec.md)) |
 | `stem_config` | `{stem}` | the stem's resolved config (`stems_config::Stem` JSON: `type`, `env`, `ports`, `scripts`, `health`, ...; `UNKNOWN_STEM` otherwise) — the TUI detail view (27) |
 | `overlays` | `OverlaysParams {stem?}` | `OverlaysResult {overlays: [{stem, dest, status: present\|modified\|missing, keep, sha256, run_id}]}` ([overlays.md](overlays.md)) |
 | `overlays_render` | `OverlaysRenderParams {stem, dry_run?}` | `OverlaysRenderResult {stem, dry_run, files: [{dest, mode, keep, content, written}]}` — renders the stem's overlays now (47) and, unless `dry_run`, writes and records them like a start. `UNRESOLVED_VARIABLE` lists every unresolved reference; `OVERLAY_CONFLICT`, `UNKNOWN_STEM` ([overlays.md](overlays.md#rendering-on-demand)) |
@@ -163,7 +200,7 @@ the connection stays usable. For a stream:
 | `_debug.describe` | `{handle}` | `RuntimeFacts` |
 
 `StemStatus` is `{name, type, state, glyph, reason, pid, pgid, ports: [{name,
-port, auto}], uptime_s, started_at, restarts, restarts_in_window, seeded, degraded, health, error}`
+port, auto}], uptime_s, started_at, restarts, restarts_in_window, seeded, degraded, health, error, env_stale?}`
 plus `warnings` (`[{script, exit, signal, timed_out, tail, at}]`, failed
 `soft_fail` scripts of the current run, omitted when empty; 41), `metrics`
 (`{ts, cpu_pct, rss_bytes, children}`, the latest sample of a running stem; 25) and `env` (what
@@ -349,8 +386,8 @@ connection drops mid-call.
 detached in its own session with stdio appended to the log): take the lock →
 log to `stemsd.log` → bind the socket (0600) → `daemon.started` → load the
 workspace (`workspace.loaded`) → serve. A `shutdown` RPC or SIGTERM/SIGINT/SIGHUP
-all run the same path: `daemon.stopping` → supervisor shutdown hook (`down`,
-deliverable 10) → stop debug processes → close the listener → remove socket
+all run the same path: `daemon.stopping` (`data: {budget_ms}`) → supervisor
+shutdown hook (`down`, bounded by the [shutdown budget](#shutdown-budget)) → stop debug processes → close the listener → remove socket
 and lock → `daemon.stopped` (best effort to subscribers) → exit 0. After a
 `kill -9` the lock stays behind with a dead pid: clients see
 `DAEMON_NOT_RUNNING` and `lock::probe` reports it as stale; the next start

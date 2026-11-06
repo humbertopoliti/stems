@@ -249,7 +249,7 @@ given: then those values (from the `restart` command's shell) replace them.
 ### `stems status [stems…] [--enabled] [--watch [INTERVAL]] [--expect STATE [--timeout D]] [-v]`
 
 `data: { stems: [ { name, type, state, glyph, reason, enabled?, pid, pgid, ports:
-[{name, port, auto}], uptime_s, started_at, restarts, restarts_in_window, seeded, degraded, warnings?, health, error } ],
+[{name, port, auto}], uptime_s, started_at, restarts, restarts_in_window, seeded, degraded, warnings?, health, error, env_stale? } ],
 summary: { healthy, degraded, failed, unhealthy, stopped, unknown, starting, disabled? } }` (`disabled` only when > 0) —
 enabled stems in declaration order, then the disabled ones (state and
 glyph `disabled`, `enabled: false`, `reason` such as `enabled: false in
@@ -271,6 +271,11 @@ the daemon started and `restarts_in_window` those within `restart.window`
 `-v`/`--verbose` every running stem also has `env`: the variables stems set
 for its process (config env, env files, local overrides, `--pass-env`,
 `PORT`, `STEMS_*`), never the inherited daemon environment.
+`env_stale` (omitted when empty) lists the keys of a running stem whose
+value at its start differs from what its config and env files yield now
+(`ENV_STALE`: changed, added or removed since; a restart applies them); the
+human output adds `warning <stem>: ENV_STALE: env changed since it started
+(KEY, …); \`stems restart <stem>\` to apply` under the table.
 
 Human output is a table and a summary line:
 
@@ -345,7 +350,8 @@ Layers, later wins (the same table, with `env_files` details, is in
 2. `PORT` = the stem's first declared host port (fixed or allocated), when it
    declares ports — so `port: auto` reaches the process;
 3. workspace `env`, then the stem's `env`;
-4. `env_files`, in order (they beat `env:`; `KEY=value` lines, `export `
+4. `env_files`, in order (they beat `env:` unless the entry has `override:
+   false`; read again on every start; `KEY=value` lines, `export `
    prefix and matching quotes allowed, `#` comments; a missing required
    file is `ENV_FILE_NOT_FOUND`, an absent `{path, required: false}` entry
    is skipped; grammar and the `ENV_SHADOWED` warning:
@@ -404,7 +410,10 @@ process group ([process-model.md](process-model.md)).
   `STEMS_TUI=0`, `--json` or a non-terminal stdout keep the plain stream.
 * The daemon's own exit path (`stems daemon stop`, SIGTERM/SIGINT/SIGHUP to
   the daemon) stops every running stem in reverse order before it removes
-  its socket and lock, so no stem outlives an orderly daemon exit.
+  its socket and lock, so no stem outlives an orderly daemon exit. It may
+  take as long as its shutdown budget (`daemon.shutdown_timeout`, by default
+  30 s plus the longest stop of each stop layer), and `stems daemon stop`
+  waits that long ([protocol.md](protocol.md#shutdown-budget)).
 
 ## Extension points
 

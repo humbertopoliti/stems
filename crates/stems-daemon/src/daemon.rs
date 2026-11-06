@@ -30,8 +30,6 @@ use crate::state::{DaemonRecord, StateFile, StateStore};
 /// Directory name under the home for a daemon started without a workspace.
 pub const NO_WORKSPACE_DIR: &str = "no-workspace";
 
-/// Deadline for the supervisor's shutdown hook.
-const SUPERVISOR_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(60);
 /// How long connections get to flush after `daemon.stopped`.
 const FLUSH_DEADLINE: Duration = Duration::from_secs(2);
 
@@ -202,6 +200,17 @@ impl Daemon {
         read(&self.supervisor).clone()
     }
 
+    /// How long the orderly shutdown may spend stopping stems
+    /// ([`crate::shutdown::budget`] over the stems running now).
+    pub fn shutdown_budget(&self) -> Duration {
+        let running = self
+            .supervisor()
+            .map(|s| s.running_stems())
+            .unwrap_or_default();
+        let ws = self.resolved();
+        crate::shutdown::budget(ws.as_ref().map(|r| &r.workspace), &running)
+    }
+
     /// Trigger the orderly shutdown path (idempotent).
     pub fn request_shutdown(&self, actor: &str, reason: &str) {
         let mut by = self.shutdown_by.lock().unwrap_or_else(|e| e.into_inner());
@@ -288,7 +297,7 @@ impl Daemon {
     pub fn set_caller_env(&self, env: &BTreeMap<String, String>) {
         let env = env
             .iter()
-            .filter(|(k, _)| !k.starts_with("STEMS_"))
+            .filter(|(k, _)| !stems_core::callerenv::is_stems_injected(k))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         *self.caller_env.lock().unwrap_or_else(|e| e.into_inner()) = Some(env);
@@ -348,6 +357,7 @@ impl Daemon {
     pub async fn run_with(opts: RunOptions, setup: impl FnOnce(&Arc<Daemon>)) -> Result<(), Error> {
         let workspace = opts.workspace.as_deref().map(workspace_root);
         let paths = opts.paths();
+        paths.check_socket_len()?;
         paths
             .ensure_dir()
             .map_err(|e| Error::internal(format!("cannot create {}: {e}", paths.dir.display())))?;
@@ -432,16 +442,21 @@ impl Daemon {
             .unwrap_or_else(|e| e.into_inner())
             .clone()
             .unwrap_or_else(|| (DAEMON_ACTOR.into(), "shutdown".into()));
-        tracing::info!(%actor, %reason, "daemon stopping");
+        let budget = daemon.shutdown_budget();
+        tracing::info!(%actor, %reason, budget_s = budget.as_secs(), "daemon stopping");
         daemon.events.emit(
-            EventDraft::new(EventKind::DAEMON_STOPPING, actor.clone()).reason(reason.clone()),
+            EventDraft::new(EventKind::DAEMON_STOPPING, actor.clone())
+                .reason(reason.clone())
+                .data(json!({ "budget_ms": budget.as_millis() as u64 })),
         );
         if let Some(sup) = daemon.supervisor()
-            && tokio::time::timeout(SUPERVISOR_SHUTDOWN_DEADLINE, sup.shutdown())
-                .await
-                .is_err()
+            && tokio::time::timeout(budget, sup.shutdown()).await.is_err()
         {
-            tracing::error!("supervisor shutdown hook exceeded its deadline");
+            tracing::error!(
+                budget_s = budget.as_secs(),
+                still_running = ?sup.running_stems(),
+                "supervisor shutdown hook exceeded the shutdown budget (daemon.shutdown_timeout)"
+            );
         }
         if let Some(d) = &daemon.debug {
             d.stop_all().await;
@@ -514,8 +529,12 @@ impl Handler for Daemon {
                 to_value(self.load_workspace(&p.path, &ctx.actor)?)
             }
             m if m == Method::SHUTDOWN => {
+                let budget = self.shutdown_budget();
                 self.request_shutdown(&ctx.actor, "shutdown requested");
-                to_value(ShutdownResult { stopping: true })
+                to_value(ShutdownResult {
+                    stopping: true,
+                    budget_ms: Some(budget.as_millis() as u64),
+                })
             }
             m if m == Method::SUBSCRIBE_EVENTS || m == Method::SUBSCRIBE_LOGS => Err(Error::usage(
                 format!("`{m}` is a streaming method handled by the server"),
