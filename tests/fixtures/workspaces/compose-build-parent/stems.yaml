@@ -1,0 +1,26 @@
+# compose-build-parent — a compose stem built with Bake whose build context
+# is the PARENT of the compose file's directory (`context: ..`). Bake's
+# `fs.read` check is relative to deploy/, so this needs the workspace-root
+# default of `allow_read` (no entry is configured here). Needs Docker with
+# compose v2 and buildx: `make e2e-docker`.
+schema_version: 1
+name: compose-build-parent
+
+stems:
+  app:
+    type: compose
+    file: deploy/compose.yml
+    service: app
+    env:
+      APP_PORT: "${stem.self.port}"
+    ports: [{ name: http, port: 18843, container_port: 8080 }]
+    build:
+      services: [app]
+    health:
+      type: http
+      url: "http://127.0.0.1:18843/index.txt"
+      interval: 400ms
+      timeout: 300ms
+      retries: 5
+      start_timeout: 120s
+    stop_grace: 2s

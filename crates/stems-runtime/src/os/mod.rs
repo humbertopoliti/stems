@@ -133,6 +133,42 @@ pub fn process_group(pid: i32) -> Option<i32> {
         .map(Pid::as_raw)
 }
 
+/// Parent pid of `pid` (`None` if there is no such process or it is not
+/// readable; `0` for pid 1's parent on Linux).
+pub fn parent_pid(pid: i32) -> Option<i32> {
+    if pid <= 0 {
+        return None;
+    }
+    imp::parent_pid(pid)
+}
+
+/// Most parent links [`ancestors`] follows.
+pub const MAX_ANCESTRY: usize = 64;
+
+/// The ancestry of `pid`: its parent, grandparent, ... up to (not
+/// including) pid 1, at most [`MAX_ANCESTRY`] steps, using `parent_of` to
+/// look a parent up ([`parent_pid`] for the live system; tests inject a
+/// map). Stops at a missing process or a loop.
+pub fn ancestors_with(pid: i32, parent_of: impl Fn(i32) -> Option<i32>) -> Vec<i32> {
+    let mut out = Vec::new();
+    let mut cur = pid;
+    for _ in 0..MAX_ANCESTRY {
+        match parent_of(cur) {
+            Some(p) if p > 1 && p != pid && !out.contains(&p) => {
+                out.push(p);
+                cur = p;
+            }
+            _ => break,
+        }
+    }
+    out
+}
+
+/// [`ancestors_with`] on the live process table.
+pub fn ancestors(pid: i32) -> Vec<i32> {
+    ancestors_with(pid, parent_pid)
+}
+
 /// TCP ports that any of `pids` is listening on, sorted and de-duplicated.
 pub fn listening_ports(pids: &[i32]) -> Vec<u16> {
     if pids.is_empty() {
@@ -184,6 +220,30 @@ pub(crate) fn port_from_addr(addr: &str) -> Option<u16> {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn ancestors_walk_up_to_init_with_a_bound_and_loop_guard() {
+        let map = std::collections::HashMap::from([(30, 20), (20, 10), (10, 1), (1, 0)]);
+        let parent = |p: i32| map.get(&p).copied();
+        assert_eq!(ancestors_with(30, parent), [20, 10]);
+        assert!(ancestors_with(99, parent).is_empty());
+        // A loop ends.
+        let looped = std::collections::HashMap::from([(5, 6), (6, 5)]);
+        assert_eq!(ancestors_with(5, |p| looped.get(&p).copied()), [6]);
+        // A long chain is bounded.
+        let long = ancestors_with(10_000, |p| Some(p - 1));
+        assert_eq!(long.len(), MAX_ANCESTRY);
+    }
+
+    #[test]
+    fn parent_pid_of_a_child_is_us() {
+        let mut c = spawn_sleep();
+        let me = std::process::id() as i32;
+        assert_eq!(parent_pid(c.id() as i32), Some(me));
+        assert!(ancestors(c.id() as i32).contains(&me));
+        let _ = c.kill();
+        let _ = c.wait();
+    }
 
     fn spawn_sleep() -> std::process::Child {
         std::process::Command::new("sleep")

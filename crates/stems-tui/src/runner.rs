@@ -33,7 +33,7 @@ pub const ENV_PANIC_TEST: &str = "STEMS_TUI_PANIC_TEST";
 /// actions that spawn something (49).
 pub fn caller_env() -> std::collections::BTreeMap<String, String> {
     std::env::vars()
-        .filter(|(k, _)| !k.starts_with("STEMS_"))
+        .filter(|(k, _)| !stems_core::callerenv::is_stems_injected(k))
         .collect()
 }
 

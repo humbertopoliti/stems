@@ -36,6 +36,13 @@
       },
       "default": {}
     },
+    "env_files_override": {
+      "description": "Default `override` of every `env_files` entry (default `true`: a\nfile's value beats `env:`; `false`: keys set in `env:` keep their\nvalue and the files only add the other keys). An entry's own\n`override` wins.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
     "requires": {
       "description": "Tool version requirements, e.g. `node: \">=20\"`, or\n`mytool: { version: \">=1.2\", command: \"mytool -V\", regex: \"v([0-9.]+)\" }`.",
       "type": "object",
@@ -130,6 +137,17 @@
       "anyOf": [
         {
           "$ref": "#/$defs/Notifications"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "daemon": {
+      "description": "The workspace daemon's own settings.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DaemonSettings"
         },
         {
           "type": "null"
@@ -628,6 +646,24 @@
           "type": [
             "string",
             "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "DaemonSettings": {
+      "description": "`daemon:` block: the workspace daemon's own settings.",
+      "type": "object",
+      "properties": {
+        "shutdown_timeout": {
+          "description": "How long the daemon's orderly shutdown (`stems daemon stop`, SIGTERM)\nmay take to stop every running stem before it exits anyway, e.g.\n`90s`; `stems daemon stop` waits this long plus a few seconds.\nDefault: 30s plus, for each stop layer (dependents before their\ndependencies), the longest `pre_stop` timeout + `stop_grace` +\n`post_stop` timeout among its running stems.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
           ]
         }
       },
@@ -1387,20 +1423,20 @@
       ]
     },
     "EnvFile": {
-      "description": "One `env_files:` entry: a path, or `{path, required}`.",
+      "description": "One `env_files:` entry: a path, or `{path, required, override}`.",
       "anyOf": [
         {
           "description": "Path relative to the workspace root; the file must exist.",
           "type": "string"
         },
         {
-          "description": "`{path, required: false}`: skipped when absent.",
+          "description": "`{path, required, override}`: `required: false` skips it when\nabsent; `override: false` lets `env:` keep its keys.",
           "$ref": "#/$defs/EnvFileSpec"
         }
       ]
     },
     "EnvFileSpec": {
-      "description": "`{path, required}` form of an `env_files:` entry.",
+      "description": "`{path, required, override}` form of an `env_files:` entry.",
       "type": "object",
       "properties": {
         "path": {
@@ -1409,6 +1445,13 @@
         },
         "required": {
           "description": "`false`: an absent file is skipped (default `true`: absent is\n`ENV_FILE_NOT_FOUND`).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "override": {
+          "description": "`false`: keys the stem's `env:` (workspace `env` included) sets keep\ntheir `env:` value; the file only adds the other keys. Default: the\nworkspace's `env_files_override` (default `true`: the file wins).",
           "type": [
             "boolean",
             "null"

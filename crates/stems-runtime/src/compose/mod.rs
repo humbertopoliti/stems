@@ -102,6 +102,11 @@ pub struct ComposeSpec {
     /// compose/Bake process only. Ignored by equality and serde.
     #[serde(skip)]
     pub secret_env: crate::docker::SecretEnv,
+    /// The workspace root: granted `fs.read` to Bake by default, so a build
+    /// context anywhere inside the workspace (e.g. `context: ..`) needs no
+    /// `allow_read`. Not serialised.
+    #[serde(skip)]
+    pub workspace_root: Option<PathBuf>,
 }
 
 fn default_build() -> bool {
@@ -159,6 +164,7 @@ impl ComposeSpec {
             prebuilt: false,
             progress: ProgressSink::default(),
             secret_env: crate::docker::SecretEnv::default(),
+            workspace_root: None,
         }
     }
 
@@ -289,6 +295,17 @@ fn grant(allow: &mut BTreeSet<PathBuf>, p: &Path) {
         allow.insert(real);
     }
     allow.insert(p);
+}
+
+/// The starting `--allow fs.read` set of a bake: the user's `allow_read`
+/// entries exactly as written, plus the workspace root (normalised and, when
+/// a symlink makes it differ, canonical: macOS `/tmp` is `/private/tmp`).
+fn bake_allow_set(spec: &ComposeSpec) -> BTreeSet<PathBuf> {
+    let mut allow: BTreeSet<PathBuf> = spec.bake.allow_read.iter().cloned().collect();
+    if let Some(root) = &spec.workspace_root {
+        grant(&mut allow, root);
+    }
+    allow
 }
 
 /// Projects that have an ownership marker in `env_dir`.
@@ -712,7 +729,7 @@ impl ComposeRuntime {
     ) -> Result<Vec<(String, String)>, RuntimeError> {
         let json = self.config_json_text(spec).await?;
         let mut images = Vec::new();
-        let mut allow: BTreeSet<PathBuf> = spec.bake.allow_read.iter().cloned().collect();
+        let mut allow = bake_allow_set(spec);
         for svc in spec.build_services() {
             let cfg = service_config(&json, &spec.project_name, &svc, &spec.file)?;
             let Some(build) = cfg.build else {

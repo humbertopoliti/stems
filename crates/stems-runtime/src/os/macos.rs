@@ -32,6 +32,10 @@ pub(super) fn probe(pid: i32) -> Option<Probe> {
     })
 }
 
+pub(super) fn parent_pid(pid: i32) -> Option<i32> {
+    bsd_info(pid).map(|info| info.pbi_ppid as i32)
+}
+
 pub(super) fn start_time_to_system_time(st: StartTime) -> Option<SystemTime> {
     UNIX_EPOCH.checked_add(Duration::from_millis(st.0))
 }

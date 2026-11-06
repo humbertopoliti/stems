@@ -322,11 +322,11 @@ impl Client {
         Ok(Box::pin(s))
     }
 
-    /// Ask the daemon to shut down (returns once the daemon acknowledged; the
-    /// socket and lock disappear shortly after).
-    pub async fn shutdown(&self) -> Result<(), Error> {
-        let _: ShutdownResult = self.call(Method::SHUTDOWN, json!({})).await?;
-        Ok(())
+    /// Ask the daemon to shut down (returns once the daemon acknowledged,
+    /// with its shutdown budget; the socket and lock disappear once its
+    /// stems are stopped).
+    pub async fn shutdown(&self) -> Result<ShutdownResult, Error> {
+        self.call(Method::SHUTDOWN, json!({})).await
     }
 }
 

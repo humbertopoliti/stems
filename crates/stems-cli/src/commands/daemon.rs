@@ -12,9 +12,18 @@
 //!   socket, lock, lock_state, log, state }` plus `DAEMON_NOT_RUNNING` (exit
 //!   4). `state` is `{ run_id, stems, alive, path }` read from `state.json`
 //!   (`null` without one; deliverable 11).
-//! * `stop`: `data: { stopped: true, pid }`; a stale lock (crashed daemon)
-//!   is cleaned up with `data: { stopped: false, stale_lock_removed: true,
-//!   pid }` (exit 0); nothing at all: `DAEMON_NOT_RUNNING` (exit 4).
+//! * `stop [--timeout <dur>] [--no-wait]`: `data: { stopped: true, pid, via,
+//!   budget_ms }` once the socket and lock are gone. It waits the daemon's
+//!   shutdown budget (the `shutdown` reply's `budget_ms`:
+//!   `daemon.shutdown_timeout`, else derived from the running stems' stop
+//!   graces, [`stems_daemon::shutdown`]) plus [`STOP_SLACK`]; a daemon only
+//!   reachable by SIGTERM gets the budget computed from the config.
+//!   `--timeout` replaces that wait; `--no-wait` returns `data: { stopped:
+//!   false, stopping: true, pid, via, budget_ms }` at once. Still running
+//!   when the wait ends: `DAEMON_STILL_STOPPING` (exit 1; it keeps stopping).
+//!   A stale lock (crashed daemon) is cleaned up with `data: { stopped:
+//!   false, stale_lock_removed: true, pid }` (exit 0); nothing at all:
+//!   `DAEMON_NOT_RUNNING` (exit 4).
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -26,13 +35,17 @@ use stems_core::{Error, ErrorCode, Errors};
 use stems_daemon::lock::{self, LockState};
 use stems_daemon::{Daemon, RunOptions, daemon_args, spawn_detached, wait_for_socket};
 
-use crate::cli::{DaemonArgs, DaemonCommand};
+use crate::cli::{DaemonArgs, DaemonCommand, DaemonStopArgs};
 use crate::client::{self, Target, block_on, connect_to};
 use crate::commands::Ctx;
 use crate::output::CommandOutput;
 
-/// How long `start` waits for the socket and `stop` for socket + lock removal.
+/// How long `start` waits for the socket.
 pub const WAIT: Duration = Duration::from_secs(5);
+
+/// What `stop` waits on top of the daemon's shutdown budget (the reply,
+/// log flush and exit after the stems are stopped).
+pub const STOP_SLACK: Duration = Duration::from_secs(5);
 
 /// Env var enabling the daemon's `_debug.*` RPCs.
 pub const ENV_DEBUG_RPC: &str = "STEMS_DEBUG_RPC";
@@ -42,7 +55,7 @@ pub fn run(ctx: &Ctx, args: &DaemonArgs) -> CommandOutput {
     let r = match &args.action {
         None => return run_daemon(ctx, None, args.foreground, args.log_level.clone()),
         Some(DaemonCommand::Start(a)) => start(ctx, a.foreground, args.log_level.clone()),
-        Some(DaemonCommand::Stop) => stop(ctx),
+        Some(DaemonCommand::Stop(a)) => stop(ctx, a),
         Some(DaemonCommand::Status) => return status(ctx),
     };
     r.unwrap_or_else(CommandOutput::failed)
@@ -218,9 +231,9 @@ fn status(ctx: &Ctx) -> CommandOutput {
     }
 }
 
-/// Poll until `pred` holds or `WAIT` expires.
-fn wait_until(pred: impl Fn() -> bool) -> bool {
-    let deadline = Instant::now() + WAIT;
+/// Poll until `pred` holds or `wait` expires.
+fn wait_until(wait: Duration, pred: impl Fn() -> bool) -> bool {
+    let deadline = Instant::now() + wait;
     loop {
         if pred() {
             return true;
@@ -236,22 +249,77 @@ fn gone(t: &Target) -> bool {
     !t.paths.socket.exists() && !t.paths.lock.exists()
 }
 
-fn stop(ctx: &Ctx) -> Result<CommandOutput, Errors> {
+/// The shutdown budget computed here, for a daemon that did not report one
+/// (reached by SIGTERM, or older): every enabled stem counted as running.
+pub(crate) fn local_budget(ctx: &Ctx) -> Duration {
+    match stems_config::load(ctx.load_options()) {
+        Ok(r) => {
+            let names: Vec<String> = r.workspace.stems().map(|s| s.name.clone()).collect();
+            stems_daemon::shutdown::budget(Some(&r.workspace), &names)
+        }
+        Err(_) => stems_daemon::shutdown::default_budget(None, &["?".to_string()]),
+    }
+}
+
+fn parse_timeout(raw: Option<&str>) -> Result<Option<Duration>, Error> {
+    raw.map(|s| {
+        s.parse::<stems_config::Dur>()
+            .map(stems_config::Dur::as_duration)
+            .map_err(|e| Error::usage(e, "use e.g. `--timeout 120s`"))
+    })
+    .transpose()
+}
+
+fn secs(d: Duration) -> String {
+    let s = d.as_secs_f64();
+    if s.fract() == 0.0 {
+        format!("{s:.0}")
+    } else {
+        format!("{s:.1}")
+    }
+}
+
+/// `DAEMON_STILL_STOPPING`: the wait ended, the daemon is still shutting down.
+pub(crate) fn still_stopping(t: &Target, pid: i32, waited: Duration, budget: Duration) -> Error {
+    Error::new(
+        ErrorCode::DaemonStillStopping,
+        format!(
+            "the daemon (pid {pid}) is still stopping after {}s",
+            secs(waited)
+        ),
+    )
+    .with_hint(format!(
+        "it keeps shutting down in the background (stopping its stems, budget {}s); its log is {}; run `stems daemon stop` again to keep waiting",
+        secs(budget),
+        t.paths.log_path().display()
+    ))
+    .with_details(json!({
+        "pid": pid,
+        "waited_ms": waited.as_millis() as u64,
+        "budget_ms": budget.as_millis() as u64,
+        "log": t.paths.log_path(),
+        "socket": t.paths.socket,
+        "lock": t.paths.lock,
+    }))
+}
+
+fn stop(ctx: &Ctx, args: &DaemonStopArgs) -> Result<CommandOutput, Errors> {
+    let timeout = parse_timeout(args.timeout.as_deref())?;
     let t = client::target(ctx)?;
-    let r: Result<u32, Error> = block_on(async {
+    let r: Result<(u32, Option<u64>), Error> = block_on(async {
         let c = connect_to(&t, lenient(ctx)).await?;
         let pid = c.info().pid;
-        c.shutdown().await?;
-        Ok(pid)
+        let res = c.shutdown().await?;
+        Ok((pid, res.budget_ms))
     });
-    let (pid, via) = match r {
-        Ok(pid) => (pid as i32, "rpc"),
+    let (pid, via, budget) = match r {
+        Ok((pid, budget)) => (pid as i32, "rpc", budget.map(Duration::from_millis)),
         Err(e) => match lock::probe(&t.paths) {
             // A live holder that we cannot talk to (hung, or an incompatible
             // API version): the same orderly path via SIGTERM.
             LockState::Held { pid, .. } => {
                 terminate(pid)?;
-                (pid, "signal")
+                (pid, "signal", None)
             }
             LockState::Stale { pid } => {
                 remove_stale(&t.paths.lock, &t.paths.socket, pid);
@@ -265,24 +333,28 @@ fn stop(ctx: &Ctx) -> Result<CommandOutput, Errors> {
             LockState::Free => return Err(e.into()),
         },
     };
-    if !wait_until(|| gone(&t)) {
-        return Err(Error::new(
-            ErrorCode::Internal,
-            format!(
-                "the daemon (pid {pid}) did not stop within {}s",
-                WAIT.as_secs()
-            ),
-        )
-        .with_hint(format!(
-            "see its log {}; `kill -TERM {pid}` retries the orderly shutdown",
-            t.paths.log_path().display()
-        ))
-        .with_details(json!({ "pid": pid, "socket": t.paths.socket, "lock": t.paths.lock }))
-        .into());
+    let budget = budget.unwrap_or_else(|| local_budget(ctx));
+    let budget_ms = budget.as_millis() as u64;
+    if args.no_wait {
+        return Ok(CommandOutput::data(json!({
+            "stopped": false,
+            "stopping": true,
+            "pid": pid,
+            "via": via,
+            "budget_ms": budget_ms,
+            "log": t.paths.log_path(),
+        })));
     }
-    Ok(CommandOutput::data(
-        json!({ "stopped": true, "pid": pid, "via": via }),
-    ))
+    let wait = timeout.unwrap_or(budget + STOP_SLACK);
+    if !wait_until(wait, || gone(&t)) {
+        return Err(still_stopping(&t, pid, wait, budget).into());
+    }
+    Ok(CommandOutput::data(json!({
+        "stopped": true,
+        "pid": pid,
+        "via": via,
+        "budget_ms": budget_ms,
+    })))
 }
 
 fn terminate(pid: i32) -> Result<(), Error> {

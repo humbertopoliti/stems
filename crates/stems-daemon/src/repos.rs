@@ -354,6 +354,7 @@ pub async fn sync_stem(stem: &Stem, opts: &SyncOptions, ctx: &RepoCtx) -> RepoSy
                 sha: None,
                 message: "local codebase (not managed by stems)".into(),
                 error: None,
+                detached: false,
             };
         }
         None => {
@@ -365,6 +366,7 @@ pub async fn sync_stem(stem: &Stem, opts: &SyncOptions, ctx: &RepoCtx) -> RepoSy
                 sha: None,
                 message: "no codebase".into(),
                 error: None,
+                detached: false,
             };
         }
     };
@@ -377,6 +379,7 @@ pub async fn sync_stem(stem: &Stem, opts: &SyncOptions, ctx: &RepoCtx) -> RepoSy
         sha: None,
         message: String::new(),
         error: None,
+        detached: false,
     };
     let r = if is_populated(&path) {
         if opts.force_fetch {
@@ -414,6 +417,7 @@ pub async fn sync_stem(stem: &Stem, opts: &SyncOptions, ctx: &RepoCtx) -> RepoSy
                 sha: None,
                 message: e.message.clone(),
                 error: Some(e),
+                detached: false,
             }
         }
     }
@@ -963,6 +967,61 @@ async fn head_unreachable(git: &Git<'_>, path: &Path) -> Result<bool, Error> {
     Ok(containing.is_empty())
 }
 
+/// Detached HEAD whose commits no local branch, remote branch or tag has
+/// (an attached HEAD is a branch itself, so never unreachable).
+async fn head_detached_unreachable(git: &Git<'_>, path: &Path) -> Result<bool, Error> {
+    if git
+        .query(path, &["symbolic-ref", "-q", "HEAD"])
+        .await?
+        .is_some_and(|r| !r.is_empty())
+    {
+        return Ok(false);
+    }
+    let containing = git
+        .query(
+            path,
+            &[
+                "for-each-ref",
+                "--contains",
+                "HEAD",
+                "--count=1",
+                "refs/heads",
+                "refs/remotes",
+                "refs/tags",
+            ],
+        )
+        .await?
+        .unwrap_or_default();
+    Ok(containing.is_empty())
+}
+
+/// The remote a local work tree follows: the current branch's upstream
+/// remote, else the only remote, else `origin` when it exists.
+async fn local_remote(git: &Git<'_>, path: &Path) -> Result<Option<String>, Error> {
+    let remotes: Vec<String> = git
+        .query(path, &["remote"])
+        .await?
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    if let Some(b) = git
+        .query(path, &["symbolic-ref", "-q", "--short", "HEAD"])
+        .await?
+        && let Some(r) = git
+            .query(path, &["config", &format!("branch.{b}.remote")])
+            .await?
+        && remotes.contains(&r)
+    {
+        return Ok(Some(r));
+    }
+    Ok(match remotes.as_slice() {
+        [only] => Some(only.clone()),
+        _ if remotes.iter().any(|r| r == "origin") => Some("origin".into()),
+        _ => None,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // checkout
 // ---------------------------------------------------------------------------
@@ -994,20 +1053,20 @@ pub async fn checkout(
         .ok_or_else(|| {
             Error::usage(
                 format!("stem `{name}` has no codebase"),
-                "`stems repos checkout` moves a git codebase (`codebase: { git: <url> }`)",
+                "`stems repos checkout` needs a stem with a codebase",
             )
             .with_details(json!({ "stem": name }))
         })?;
-    let (url, declared, path) = match &stem.codebase {
-        Some(Codebase::Git { url, git_ref, path }) => (url.as_str(), git_ref.clone(), path.clone()),
-        _ => {
-            return Err(Error::usage(
-                format!("the codebase of `{name}` is a local path, not managed by stems"),
-                "check out the ref with git in that directory; `stems repos checkout` moves git codebases (`codebase: { git: <url> }`)",
-            )
-            .with_details(json!({ "stem": name })));
+    let (url, declared, path, local) = match &stem.codebase {
+        Some(Codebase::Git { url, git_ref, path }) => {
+            (url.as_str(), git_ref.clone(), path.clone(), false)
         }
+        Some(Codebase::Local { path }) => ("", None, path.clone(), true),
+        None => unreachable!("select() keeps stems with a codebase"),
     };
+    if local {
+        return checkout_local(name, &path, git_ref, force, ctx).await;
+    }
     if !is_populated(&path) {
         let r = sync_stem(stem, &SyncOptions::default(), ctx).await;
         if let Some(e) = r.error {
@@ -1102,6 +1161,169 @@ pub async fn checkout(
             describe(declared.as_deref())
         ),
         error: None,
+        detached: true,
+    })
+}
+
+/// What `repos checkout` does with a local-path codebase that is a git work
+/// tree: the same dirty-tree refusal and fetch (when a remote exists) as for
+/// a managed clone, but a local branch of that name is switched to (attached)
+/// and nothing is cloned.
+async fn checkout_local(
+    name: &str,
+    path: &Path,
+    git_ref: &str,
+    force: bool,
+    ctx: &RepoCtx,
+) -> Result<RepoSyncResult, Error> {
+    let git = Git { ctx, stem: name };
+    let shown = path.display().to_string();
+    let inside = path.is_dir()
+        && git
+            .query(path, &["rev-parse", "--is-inside-work-tree"])
+            .await?
+            .as_deref()
+            == Some("true");
+    if !inside {
+        return Err(Error::new(
+            ErrorCode::RepoNotGit,
+            format!("the codebase of `{name}` ({shown}) is not a git repository"),
+        )
+        .with_hint(format!(
+            "run `git init` there, or point `stems.{name}.codebase` at a git work tree (or use `codebase: {{ git: <url> }}` to let stems clone it)"
+        ))
+        .with_details(json!({ "stem": name, "path": path, "ref": git_ref })));
+    }
+    let sha0 = git.query(path, &["rev-parse", "HEAD"]).await?;
+    let porcelain = git
+        .query(path, &["status", "--porcelain"])
+        .await?
+        .unwrap_or_default();
+    if !porcelain.is_empty() && !force {
+        let n = porcelain.lines().count();
+        return Err(Error::new(
+            ErrorCode::RepoDirty,
+            format!("the codebase of `{name}` ({shown}) has {n} uncommitted change(s); `{git_ref}` was not checked out"),
+        )
+        .with_hint(format!(
+            "commit, stash or discard them, or rerun with `--force` to carry them over (`stems repos checkout {name} {git_ref} --force`)"
+        ))
+        .with_details(json!({ "stem": name, "path": path, "ref": git_ref, "changes": n })));
+    }
+    // The remote this repository follows: the current branch's upstream
+    // remote, else the only remote, else `origin` when it exists.
+    let remote = local_remote(&git, path).await?;
+    let has_remotes = git
+        .query(path, &["remote"])
+        .await?
+        .is_some_and(|r| !r.is_empty());
+    // Fetch only when there is a remote. Plain `--tags`: no `--force` (it
+    // would overwrite the developer's own tags) and no `--prune`. A failure
+    // (offline, rejected tag update) only matters if the ref is not already
+    // known locally.
+    let mut fetch_warning: Option<Vec<String>> = None;
+    if has_remotes {
+        let mut fetch: Vec<&str> = vec!["fetch", "--tags"];
+        if let Some(r) = remote.as_deref() {
+            fetch.push(r);
+        }
+        let o = git.run(path, &fetch, true).await?;
+        if !o.ok {
+            fetch_warning = Some(o.tail.clone());
+        }
+    }
+    // Commits only on HEAD (no branch, remote branch or tag has them) would
+    // be left to the reflog by a checkout.
+    if !force && sha0.is_some() && head_detached_unreachable(&git, path).await? {
+        return Err(Error::new(
+            ErrorCode::RepoDirty,
+            format!(
+                "HEAD of the codebase of `{name}` ({shown}) has commits on no branch or tag; `{git_ref}` was not checked out"
+            ),
+        )
+        .with_hint(format!(
+            "push them (or create a branch for them) first: after the checkout they would only be reachable from the reflog; or rerun with `--force` (`stems repos checkout {name} {git_ref} --force`)"
+        ))
+        .with_details(json!({ "stem": name, "path": path, "ref": git_ref, "sha": sha0, "unpushed_commits": true })));
+    }
+    let local_branch = format!("refs/heads/{git_ref}");
+    let tag = format!("refs/tags/{git_ref}");
+    let commit = format!("{git_ref}^{{commit}}");
+    let has_local = git
+        .query(path, &["rev-parse", "-q", "--verify", &local_branch])
+        .await?
+        .is_some();
+    let remote_target = match remote.as_deref() {
+        Some(r) => {
+            let rb = format!("refs/remotes/{r}/{git_ref}");
+            git.query(path, &["rev-parse", "-q", "--verify", &rb])
+                .await?
+                .map(|_| format!("{r}/{git_ref}"))
+        }
+        None => None,
+    };
+    let has_tag = git
+        .query(path, &["rev-parse", "-q", "--verify", &tag])
+        .await?
+        .is_some();
+    if let Some(w) = &fetch_warning {
+        let resolves = has_local
+            || remote_target.is_some()
+            || has_tag
+            || git
+                .query(path, &["rev-parse", "-q", "--verify", &commit])
+                .await?
+                .is_some();
+        if !resolves {
+            return Err(git_failed(
+                name,
+                &shown,
+                Some(git_ref),
+                &format!("git fetch (and `{git_ref}` is not known locally)"),
+                w.clone(),
+            ));
+        }
+    }
+    let (args, detached): (Vec<String>, bool) = if has_local {
+        (vec!["checkout".into(), git_ref.into()], false)
+    } else {
+        let target = remote_target.unwrap_or(if has_tag { tag } else { git_ref.to_string() });
+        (vec!["checkout".into(), "--detach".into(), target], true)
+    };
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    let o = git.run(path, &argv, true).await?;
+    if !o.ok {
+        return Err(git_failed(
+            name,
+            &shown,
+            Some(git_ref),
+            &format!("checking out `{git_ref}` (no such branch, tag or commit?)"),
+            o.tail,
+        ));
+    }
+    let sha = git.query(path, &["rev-parse", "HEAD"]).await?;
+    ctx.emit(
+        EventKind::REPO_CHECKED_OUT,
+        name,
+        json!({ "ref": git_ref, "sha": sha, "from": sha0, "path": path, "detached": detached, "fetch_warning": fetch_warning.as_ref().and_then(|t| t.last()) }),
+    );
+    let mut message = if detached {
+        format!("checked out `{git_ref}` (detached)")
+    } else {
+        format!("checked out branch `{git_ref}`")
+    };
+    if fetch_warning.is_some() {
+        message.push_str("; warning: git fetch failed, used what is known locally");
+    }
+    Ok(RepoSyncResult {
+        stem: name.to_string(),
+        path: path.to_path_buf(),
+        action: RepoAction::CheckedOut,
+        git_ref: Some(git_ref.to_string()),
+        sha,
+        message,
+        error: None,
+        detached,
     })
 }
 
@@ -1325,6 +1547,41 @@ mod tests {
         let r = sync_stem(&t, &force, &ctx).await;
         assert_eq!(r.action, RepoAction::SkippedDirty, "{r:?}");
         assert!(r.message.contains("detached HEAD at"), "{}", r.message);
+    }
+
+    #[tokio::test]
+    async fn checkout_local_path() {
+        let d = tempfile::tempdir().unwrap();
+        let d = d.path().canonicalize().unwrap();
+        let ctx = RepoCtx::offline("test");
+        let p = d.join("web");
+        std::fs::create_dir(&p).unwrap();
+        let e = checkout_local("web", &p, "main", false, &ctx)
+            .await
+            .unwrap_err();
+        assert_eq!(e.code, ErrorCode::RepoNotGit);
+        sh(
+            &p,
+            "git init -q -b main && git config user.email t@e.x && git config user.name t \
+             && echo a > a && git add a && git commit -qm a && git tag v1 \
+             && git checkout -q -b other && echo b > b && git add b && git commit -qm b \
+             && git checkout -q main",
+        );
+        let r = checkout_local("web", &p, "other", false, &ctx)
+            .await
+            .unwrap();
+        assert!(!r.detached);
+        assert_eq!(sh(&p, "git symbolic-ref --short HEAD"), "other");
+        let r = checkout_local("web", &p, "v1", false, &ctx).await.unwrap();
+        assert!(r.detached && r.message.contains("(detached)"));
+        std::fs::write(p.join("a"), "dirty").unwrap();
+        let e = checkout_local("web", &p, "other", false, &ctx)
+            .await
+            .unwrap_err();
+        assert_eq!(e.code, ErrorCode::RepoDirty);
+        checkout_local("web", &p, "other", true, &ctx)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

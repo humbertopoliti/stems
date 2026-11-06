@@ -1,6 +1,5 @@
 ---
 source: crates/stems-cli/src/help.rs
-assertion_line: 495
 expression: "features_text(Some(\"repos\"))"
 ---
 Code from git (stems features repos)
@@ -9,8 +8,8 @@ Code from git (stems features repos)
     commands: stems repos sync, stems repos status
     config:   repos_dir, stems.*.codebase
     docs:     docs/repos.md
-  Checking out a ref — `stems repos checkout <stem> <ref>` switches a stem's codebase to a branch,
-    tag or commit.
+  Checking out a ref — `stems repos checkout <stem> <ref>` switches a stem's codebase (cloned or a
+    local git path) to a branch, tag or commit.
     commands: stems repos checkout
     docs:     docs/repos.md
 

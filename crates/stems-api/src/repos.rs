@@ -83,6 +83,9 @@ pub struct RepoSyncResult {
     pub sha: Option<String>,
     /// Human explanation.
     pub message: String,
+    /// `repos checkout` left HEAD detached.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub detached: bool,
     /// The error of a `failed` sync.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<Value>")]

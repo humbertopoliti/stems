@@ -147,8 +147,28 @@ you asked for and the new `sha`; event `repo.checked_out` (`data` also has
 Nothing is recorded: `repos status` shows `drift: true`, `repos sync` and
 `up --sync` leave the tree alone (`moved`) until `repos sync --reset`. A
 running stem keeps running from the files it has: restart it to pick up
-the new checkout. Local codebases (a path) are refused with `USAGE`: use
-git there yourself.
+the new checkout. 
+### Local-path codebases
+
+A codebase that is a plain path (`codebase: ../web`) is checked out too, if
+the directory is a git work tree; nothing is cloned. A local branch of that
+name is switched to (attached); otherwise `origin/<branch>`, a tag or a
+commit is checked out detached (`detached: true` in `data`, "(detached)" in
+the text output). `origin/<branch>` means the remote the repository follows:
+the current branch's upstream remote, else the only remote, else `origin`;
+with none of those the remote-branch lookup is skipped. Uncommitted changes
+are refused with `REPO_DIRTY` unless `--force`. A detached HEAD whose commits
+no local branch, remote branch or tag has is refused too (`REPO_DIRTY`,
+`details.unpushed_commits`) unless `--force`, since the checkout would leave
+them reachable only from the reflog; an attached HEAD is never refused for
+this (local branches are yours). The repository is fetched only when it has
+a remote, with a plain `git fetch --tags` (never `--force` or `--prune`: your
+own tags and branches are not rewritten). A failed fetch (offline, a tag the
+remote moved) is only a warning, appended to the message and recorded as
+`fetch_warning` in the `repo.checked_out` event, when the ref resolves
+locally; it is an error (`GIT_CLONE_FAILED`) only when it does not. A directory
+that is not a git repository fails with `REPO_NOT_GIT` (exit 1).
+`repos sync --reset` stays managed-only (a local path is `skipped_local`).
 
 ## Codebase paths in one place
 
@@ -197,6 +217,7 @@ The output of the git commands that change something (`clone`, `fetch`,
 | `GIT_CLONE_FAILED` | clone, fetch or checkout failed; `details: { stem, url, ref, tail }` (last lines of git's stderr) | 1 |
 | `GIT_NOT_INSTALLED` | `git` is not on `PATH` | 1 |
 | `REPO_DIRTY` | `repos checkout` without `--force` on a tree with uncommitted changes (`details: { stem, path, ref, changes }`) or with commits on HEAD that no remote has (`details: { stem, path, ref, sha, unpushed_commits: true }`) | 1 |
+| `REPO_NOT_GIT` | `repos checkout` on a local codebase that is not a git work tree (`details: { stem, path, ref }`) | 1 |
 | `CODEBASE_NOT_FOUND` | a *local* codebase path does not exist (`validate`) | 2 |
 | `SCHEMA_INVALID` | `codebase.git` is not a URL (`validate`), path `stems.<s>.codebase.git` | 2 |
 

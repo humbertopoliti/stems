@@ -528,6 +528,7 @@ impl StemCell {
                 super::outputs::redact_env_with(core, stem, &mut env, Some(names));
                 env
             }),
+            env_stale: Vec::new(),
             outputs: super::outputs::shown(core, &stem.name),
             watch: core.watch.summary(stem),
             variant: stem.variant.clone(),
@@ -634,6 +635,9 @@ async fn start(
     cell.info().grace = stem.stop_grace.as_duration();
     // A user start: fresh restart window and backoff (22).
     cell.info().restart.begin(ws, stem, call);
+    // `ENV_SHADOWED`, once per user start: logged, and on the start's
+    // result (`UpResult.warnings`).
+    super::env::warn_shadowed(core, &ws.workspace.root, stem);
     // A git codebase whose managed clone is missing is cloned first (20).
     let repo_ctx = crate::repos::RepoCtx::for_core(core, actor);
     if let Err(e) =

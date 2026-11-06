@@ -99,9 +99,11 @@ pub fn errors(root: &Path, stem: &Stem) -> Vec<Error> {
 
 /// `ENV_SHADOWED` warnings for `stem`: an env file sets a key that the
 /// stem's `env:` (workspace `env` included) or an earlier env file sets
-/// to a different value. Keys set by `stems.local.yaml` are skipped (the
-/// local value wins over every file anyway); unreadable files are skipped
-/// (they are [`errors`]).
+/// to a different value. The message says which side won: the file
+/// (default), or `env:` for an entry with `override: false`
+/// (`details.winner`: `file` or `env`). Keys set by `stems.local.yaml` are
+/// skipped (the local value wins over every file anyway); unreadable files
+/// are skipped (they are [`errors`]).
 pub fn shadow_warnings(root: &Path, stem: &Stem) -> Vec<Error> {
     // key -> (value, where it was set: "env" or a file shown relative to root)
     let mut seen: std::collections::BTreeMap<String, (String, String)> = stem
@@ -110,9 +112,10 @@ pub fn shadow_warnings(root: &Path, stem: &Stem) -> Vec<Error> {
         .filter(|(k, _)| !stem.local_env.contains_key(*k))
         .map(|(k, v)| (k.clone(), (v.clone(), "env".to_string())))
         .collect();
+    let name = &stem.name;
     let mut out = Vec::new();
     for (i, f) in stem.env_files.iter().enumerate() {
-        let Ok(Some(pairs)) = read(root, &stem.name, i, f) else {
+        let Ok(Some(pairs)) = read(root, name, i, f) else {
             continue;
         };
         let file = shown(root, &f.path);
@@ -120,36 +123,60 @@ pub fn shadow_warnings(root: &Path, stem: &Stem) -> Vec<Error> {
             if stem.local_env.contains_key(&k) {
                 continue;
             }
+            // `override: false`: a key `env:` sets is not taken from the file.
+            let kept = !f.override_env && stem.env.contains_key(&k);
             if let Some((old, from)) = seen.get(&k)
                 && *old != v
                 && *from != file
             {
-                let set_in = if from == "env" {
-                    format!("`stems.{}.env`", stem.name)
+                let (message, hint, winner) = if kept {
+                    let message = if from == "env" {
+                        format!(
+                            "env: {k} of `{name}` keeps its value; {file}'s {k} is ignored (override: false)"
+                        )
+                    } else {
+                        format!(
+                            "{file}'s {k} of `{name}` is ignored (override: false, `env:` sets it); the value from {from} is used"
+                        )
+                    };
+                    (
+                        message,
+                        "remove the key from one of them, or drop `override: false` from the entry to let the file win".to_string(),
+                        "env",
+                    )
+                } else if from == "env" {
+                    (
+                        format!(
+                            "`{k}` of `{name}` from {file} shadows env: {k} (`stems.{name}.env`)"
+                        ),
+                        format!(
+                            "remove one, set `override: false` on the entry (`- {{ path: {file}, override: false }}`) to keep the env: value, or move the value into stems.local.yaml if it is a local override"
+                        ),
+                        "file",
+                    )
                 } else {
-                    from.clone()
+                    (
+                        format!("`{k}` of `{name}` from {file} shadows the value set in {from}"),
+                        "remove one, or move the value into stems.local.yaml if it is a local override".to_string(),
+                        "file",
+                    )
                 };
                 out.push(
-                    Error::new(
-                        ErrorCode::EnvShadowed,
-                        format!(
-                            "`{k}` of `{}` from {file} shadows the value set in {set_in}",
-                            stem.name
-                        ),
-                    )
-                    .with_path(entry_path(&stem.name, i))
-                    .with_hint(
-                        "remove one, or move the value into stems.local.yaml if it is a local override",
-                    )
-                    .with_details(json!({
-                        "stem": stem.name,
-                        "key": k,
-                        "file": file,
-                        "shadows": from,
-                    })),
+                    Error::new(ErrorCode::EnvShadowed, message)
+                        .with_path(entry_path(name, i))
+                        .with_hint(hint)
+                        .with_details(json!({
+                            "stem": name,
+                            "key": k,
+                            "file": file,
+                            "shadows": from,
+                            "winner": winner,
+                        })),
                 );
             }
-            seen.insert(k, (v, file.clone()));
+            if !kept {
+                seen.insert(k, (v, file.clone()));
+            }
         }
     }
     out
@@ -183,6 +210,7 @@ mod tests {
         EnvFile {
             path: path.to_path_buf(),
             required,
+            override_env: true,
         }
     }
 
@@ -269,7 +297,67 @@ mod tests {
         assert_eq!(w[0].code, ErrorCode::EnvShadowed);
         assert_eq!(
             w[0].message,
-            "`A` of `api` from one.env shadows the value set in `stems.api.env`"
+            "`A` of `api` from one.env shadows env: A (`stems.api.env`)"
         );
+        assert_eq!(w[0].details["winner"], "file");
+        assert!(w[0].hint.as_deref().unwrap().contains("override: false"));
+    }
+
+    fn load(root: &Path, yaml: &str) -> stems_config::Workspace {
+        std::fs::write(root.join("stems.yaml"), yaml).unwrap();
+        stems_config::load(stems_config::LoadOptions {
+            workspace: Some(root.to_path_buf()),
+            cwd: root.to_path_buf(),
+            env: Default::default(),
+            skip_local: true,
+        })
+        .unwrap()
+        .workspace
+    }
+
+    #[test]
+    fn override_false_keeps_env_and_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = &dir.path().canonicalize().unwrap();
+        std::fs::write(root.join(".env"), "PORT=3000\nEXTRA=x\n").unwrap();
+        let ws = load(
+            root,
+            "schema_version: 1\nname: t\nstems:\n  api:\n    type: process\n    command: x\n    env: { PORT: '8080' }\n    env_files: [{ path: .env, override: false }]\n",
+        );
+        let stem = ws.stem("api").unwrap();
+        assert!(!stem.env_files[0].override_env);
+        let w = shadow_warnings(&ws.root, stem);
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].code, ErrorCode::EnvShadowed);
+        assert_eq!(
+            w[0].message,
+            "env: PORT of `api` keeps its value; .env's PORT is ignored (override: false)"
+        );
+        assert_eq!(w[0].details["winner"], "env");
+    }
+
+    #[test]
+    fn workspace_default_and_entry_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = &dir.path().canonicalize().unwrap();
+        std::fs::write(root.join("a.env"), "K=a\n").unwrap();
+        std::fs::write(root.join("b.env"), "K=b\n").unwrap();
+        let ws = load(
+            root,
+            "schema_version: 1\nname: t\nenv_files_override: false\nstems:\n  api:\n    type: process\n    command: x\n    env: { K: env }\n    env_files: [a.env, { path: b.env, override: true }]\n",
+        );
+        let stem = ws.stem("api").unwrap();
+        let flags: Vec<bool> = stem.env_files.iter().map(|f| f.override_env).collect();
+        assert_eq!(flags, vec![false, true]);
+        let w = shadow_warnings(&ws.root, stem);
+        let winners: Vec<&str> = w
+            .iter()
+            .map(|e| e.details["winner"].as_str().unwrap())
+            .collect();
+        assert_eq!(winners, vec!["env", "file"]);
+        // Serialised back: the short form unless a flag is off.
+        let json = serde_json::to_value(&stem.env_files).unwrap();
+        assert_eq!(json[0]["override"], false);
+        assert!(json[1].is_string());
     }
 }

@@ -137,6 +137,7 @@ pub(crate) fn resolve_workspace(
 ) -> Result<Workspace, Vec<Diagnostic>> {
     let root = ctx.root;
     let ws_env = scalars(&raw.env);
+    let env_files_override = raw.env_files_override.unwrap_or(d::ENV_FILES_OVERRIDE);
     let mut fatal = Vec::new();
 
     let scripts = raw
@@ -151,7 +152,7 @@ pub(crate) fn resolve_workspace(
     let mut stems = IndexMap::new();
     for (name, rs) in &raw.stems {
         let p = ConfigPath::root().key("stems").key(name);
-        match resolve_stem(name, rs, &ws_env, &p, ctx) {
+        match resolve_stem(name, rs, &ws_env, env_files_override, &p, ctx) {
             Ok(s) => {
                 stems.insert(name.clone(), s);
             }
@@ -218,6 +219,9 @@ pub(crate) fn resolve_workspace(
             },
         },
         notifications: resolve_notifications(raw.notifications.as_ref()),
+        daemon: DaemonSettings {
+            shutdown_timeout: raw.daemon.as_ref().and_then(|d| d.shutdown_timeout),
+        },
         secrets: raw.secrets.clone(),
         redaction: raw
             .redaction
@@ -359,6 +363,7 @@ fn resolve_stem(
     name: &str,
     rs: &RawStem,
     ws_env: &IndexMap<String, String>,
+    env_files_override: bool,
     p: &ConfigPath,
     ctx: &mut Ctx<'_>,
 ) -> Result<Stem, Box<Diagnostic>> {
@@ -632,6 +637,7 @@ fn resolve_stem(
             .map(|f| EnvFile {
                 path: ctx.path(root, f.path()),
                 required: f.required(),
+                override_env: f.override_env().unwrap_or(env_files_override),
             })
             .collect(),
         ports,

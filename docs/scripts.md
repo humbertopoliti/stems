@@ -109,7 +109,7 @@ records its stamp).
 
 A stem script gets the stem's resolved environment
 ([lifecycle.md](lifecycle.md#a-stems-environment-fr-st-4): the environment
-of the `stems` command that ran it, minus `STEMS_*`, then `PORT`, workspace
+of the `stems` command that ran it, minus the `STEMS_*` variables stems injects (the CLI's own settings pass through, `STEMS_HOME`, `STEMS_PROFILE`, `STEMS_LOG`, `STEMS_NO_COLOR`, `STEMS_ASCII`, `STEMS_DAEMON_LOG`, `STEMS_NOTIFICATIONS`, `STEMS_DEBUG_RPC`, `STEMS_UI_CONFIG`, `STEMS_DOCKER_CLI`, `STEMS_FAKE_VERSION`, `STEMS_FAKE_INSTALL_METHOD` and the exact `STEMS_TUI`, `STEMS_TUI_FORCE`, `STEMS_TUI_SCRIPT`, `STEMS_TUI_SIZE`, `STEMS_TUI_FRAMES_OUT`, `STEMS_TUI_PANIC_TEST`; nothing else, so a stem named `tui` does not leak `STEMS_TUI_PORT`), so a script running `stems status` or `stems compose …` uses the caller's home), then `PORT`, workspace
 and stem `env`, `env_files`, `stems.local.yaml`, `--pass-env`) plus:
 
 | Variable | Value |
@@ -127,7 +127,7 @@ and stem `env`, `env_files`, `stems.local.yaml`, `--pass-env`) plus:
 | `STEMS_<DEP>_OUTPUT_<X>` | each evaluated output `X` of each dependency (`shop-api`'s `TOKEN` → `STEMS_SHOP_API_OUTPUT_TOKEN`; see [config.md](config.md#outputs-fr-st-6)) |
 | `PORT` | the stem's own primary host port (when it declares ports) |
 
-Workspace scripts get the caller's environment (minus `STEMS_*`), workspace
+Workspace scripts get the caller's environment (minus the injected `STEMS_*`; `STEMS_HOME` etc. pass through), workspace
 `env`, `--pass-env`, `STEMS_WORKSPACE`, `STEMS_RUN_ID`, `STEMS_SCRIPT` and
 `STEMS_STATE_DIR` = `$STEMS_HOME/<ws-hash>/workspace/`.
 

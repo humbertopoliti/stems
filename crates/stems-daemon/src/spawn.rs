@@ -1,7 +1,7 @@
 //! Starting a detached daemon from the CLI and waiting for its socket.
 
 use std::ffi::OsString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -32,6 +32,7 @@ pub fn spawn_detached(binary: &Path, args: &[OsString], paths: &DaemonPaths) -> 
     use std::os::unix::fs::OpenOptionsExt;
     use std::os::unix::process::CommandExt;
 
+    paths.check_socket_len()?;
     paths.ensure_dir().map_err(|e| {
         spawn_err(
             binary,
@@ -48,6 +49,9 @@ pub fn spawn_detached(binary: &Path, args: &[OsString], paths: &DaemonPaths) -> 
         .mode(0o600)
         .open(&log_path)
         .map_err(|e| spawn_err(binary, format!("cannot open {}: {e}", log_path.display())))?;
+    if let (Ok(meta), Ok(mut m)) = (log.metadata(), spawn_offsets().lock()) {
+        m.insert(log_path.clone(), meta.len());
+    }
     let log2 = log
         .try_clone()
         .map_err(|e| spawn_err(binary, e.to_string()))?;
@@ -87,9 +91,52 @@ fn spawn_err(binary: &Path, msg: String) -> Error {
         .with_details(json!({ "binary": binary }))
 }
 
+/// Log length at the last [`spawn_detached`] per log file: the log is opened
+/// in append mode, so only bytes after this offset were written by the daemon
+/// just spawned.
+fn spawn_offsets() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, u64>> {
+    static OFFSETS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, u64>>> =
+        std::sync::OnceLock::new();
+    OFFSETS.get_or_init(Default::default)
+}
+
+/// The last line of `log` after byte `from` (at most 8 KB of it) that looks
+/// like an error, else its last line. `None` when nothing was written there.
+fn last_error_line(log: &Path, from: u64) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(log).ok()?;
+    let len = f.metadata().ok()?.len();
+    // A truncated or rotated log restarts at 0.
+    let from = if from > len { 0 } else { from };
+    f.seek(SeekFrom::Start(len.saturating_sub(8192).max(from)))
+        .ok()?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf);
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let pick = lines
+        .iter()
+        .rev()
+        .find(|l| {
+            let l = l.to_ascii_lowercase();
+            l.contains("error") || l.contains("cannot") || l.contains("failed")
+        })
+        .or(lines.last())?;
+    Some(pick.chars().take(300).collect())
+}
+
 /// Wait until something accepts connections on the daemon socket.
 /// `DAEMON_NOT_RUNNING` (naming the log file) on timeout.
 pub async fn wait_for_socket(paths: &DaemonPaths, timeout: Duration) -> Result<(), Error> {
+    let from = spawn_offsets()
+        .lock()
+        .ok()
+        .and_then(|m| m.get(&paths.log_path()).copied())
+        .unwrap_or(0);
     let deadline = Instant::now() + timeout;
     let mut delay = Duration::from_millis(5);
     loop {
@@ -105,7 +152,10 @@ pub async fn wait_for_socket(paths: &DaemonPaths, timeout: Duration) -> Result<(
                     timeout.as_millis()
                 ),
             )
-            .with_hint(format!("see the daemon log: {}", log.display()))
+            .with_hint(match last_error_line(&log, from) {
+                Some(l) => format!("the daemon log ({}) ends with: {l}", log.display()),
+                None => format!("the daemon wrote nothing to its log ({})", log.display()),
+            })
             .with_details(json!({ "socket": paths.socket, "log": log })));
         }
         tokio::time::sleep(delay).await;

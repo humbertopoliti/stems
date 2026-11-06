@@ -195,8 +195,9 @@ A **process** stem runs your code from its repository:
 - `${stem.postgres.port}` and `${stem.self.port}` keep ports in one place:
   change a port once and everything that uses it follows.
 - `env_files` load `KEY=value` files from the integration repo; their
-  values beat `env:` (`stems validate` warns `ENV_SHADOWED` when they
-  differ) and `stems.local.yaml` beats them. Mark a file that may be absent
+  values beat `env:` (`stems validate` and `stems up` warn `ENV_SHADOWED`
+  when they differ; `{ path: .env, override: false }` lets `env:` win) and
+  `stems.local.yaml` beats them. Mark a file that may be absent
   `{ path: env/api.local.env, required: false }`. See
   [config.md](config.md#environment-fr-st-4).
 - `stop_grace` is how long a stop waits after SIGTERM before SIGKILL, and

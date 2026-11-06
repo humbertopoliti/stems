@@ -79,6 +79,11 @@ pub struct RawWorkspace {
     /// Environment applied to every stem (stem `env` wins).
     #[serde(default)]
     pub env: IndexMap<String, Scalar>,
+    /// Default `override` of every `env_files` entry (default `true`: a
+    /// file's value beats `env:`; `false`: keys set in `env:` keep their
+    /// value and the files only add the other keys). An entry's own
+    /// `override` wins.
+    pub env_files_override: Option<bool>,
     /// Tool version requirements, e.g. `node: ">=20"`, or
     /// `mytool: { version: ">=1.2", command: "mytool -V", regex: "v([0-9.]+)" }`.
     #[serde(default)]
@@ -107,6 +112,8 @@ pub struct RawWorkspace {
     pub config: Option<RawConfigSettings>,
     /// Desktop notifications when stems fail for good (34).
     pub notifications: Option<RawNotifications>,
+    /// The workspace daemon's own settings.
+    pub daemon: Option<RawDaemonSettings>,
     /// Env names whose values are secret (47): redacted in `stems show`,
     /// `stems env`, `status -v`, the MCP server and `logs --export`, and
     /// scrubbed from log lines. Adds to the built-in name patterns; an entry
@@ -237,6 +244,20 @@ pub struct RawReload {
     /// Apply changes on their own: `false` (wait for `stems config apply`),
     /// `true` (what needs no restart) or `all` (everything).
     pub auto_apply: Option<AutoApply>,
+}
+
+/// `daemon:` block: the workspace daemon's own settings.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "DaemonSettings")]
+pub struct RawDaemonSettings {
+    /// How long the daemon's orderly shutdown (`stems daemon stop`, SIGTERM)
+    /// may take to stop every running stem before it exits anyway, e.g.
+    /// `90s`; `stems daemon stop` waits this long plus a few seconds.
+    /// Default: 30s plus, for each stop layer (dependents before their
+    /// dependencies), the longest `pre_stop` timeout + `stop_grace` +
+    /// `post_stop` timeout among its running stems.
+    pub shutdown_timeout: Option<Dur>,
 }
 
 /// `notifications:` block (34): one desktop notification when stems end up
@@ -390,18 +411,19 @@ pub struct RawStem {
     pub inject_env: Option<bool>,
 }
 
-/// One `env_files:` entry: a path, or `{path, required}`.
+/// One `env_files:` entry: a path, or `{path, required, override}`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(untagged)]
 #[schemars(rename = "EnvFile")]
 pub enum RawEnvFile {
     /// Path relative to the workspace root; the file must exist.
     Path(String),
-    /// `{path, required: false}`: skipped when absent.
+    /// `{path, required, override}`: `required: false` skips it when
+    /// absent; `override: false` lets `env:` keep its keys.
     Spec(RawEnvFileSpec),
 }
 
-/// `{path, required}` form of an `env_files:` entry.
+/// `{path, required, override}` form of an `env_files:` entry.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(rename = "EnvFileSpec")]
@@ -411,6 +433,11 @@ pub struct RawEnvFileSpec {
     /// `false`: an absent file is skipped (default `true`: absent is
     /// `ENV_FILE_NOT_FOUND`).
     pub required: Option<bool>,
+    /// `false`: keys the stem's `env:` (workspace `env` included) sets keep
+    /// their `env:` value; the file only adds the other keys. Default: the
+    /// workspace's `env_files_override` (default `true`: the file wins).
+    #[serde(rename = "override")]
+    pub override_env: Option<bool>,
 }
 
 impl RawEnvFile {
@@ -426,6 +453,13 @@ impl RawEnvFile {
         match self {
             Self::Path(_) => true,
             Self::Spec(s) => s.required.unwrap_or(true),
+        }
+    }
+    /// The entry's own `override`, if set.
+    pub fn override_env(&self) -> Option<bool> {
+        match self {
+            Self::Path(_) => None,
+            Self::Spec(s) => s.override_env,
         }
     }
 }

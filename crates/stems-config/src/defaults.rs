@@ -10,6 +10,8 @@ use crate::types::{
 pub const SCHEMA_VERSION: u32 = 1;
 /// `strict_profiles`.
 pub const STRICT_PROFILES: bool = false;
+/// `env_files_override`: an env file's value beats `env:`.
+pub const ENV_FILES_OVERRIDE: bool = true;
 /// `agent.allow_destructive`.
 pub const AGENT_ALLOW_DESTRUCTIVE: bool = false;
 /// `logs.max_size`.
@@ -146,6 +148,7 @@ pub fn defaults_table() -> Vec<(&'static str, String)> {
         ("schema_version", SCHEMA_VERSION.to_string()),
         ("name", "<name of the workspace root directory>".into()),
         ("strict_profiles", STRICT_PROFILES.to_string()),
+        ("env_files_override", ENV_FILES_OVERRIDE.to_string()),
         (
             "agent.allow_destructive",
             AGENT_ALLOW_DESTRUCTIVE.to_string(),
@@ -165,9 +168,18 @@ pub fn defaults_table() -> Vec<(&'static str, String)> {
             "notifications.command",
             "<none: terminal-notifier / osascript / notify-send on PATH>".into(),
         ),
+        (
+            "daemon.shutdown_timeout",
+            "30s + per stop layer the longest pre_stop timeout + stop_grace + post_stop timeout of its running stems".into(),
+        ),
         ("repos_dir", REPOS_DIR.into()),
         ("stems.<n>.enabled", STEM_ENABLED.to_string()),
         ("stems.<n>.stop_grace", t(STOP_GRACE)),
+        ("stems.<n>.env_files[].required", "true".into()),
+        (
+            "stems.<n>.env_files[].override",
+            "<env_files_override>".into(),
+        ),
         ("stems.<n>.ports[i].name", port_name(0).replace('0', "<i>")),
         (
             "stems.<n>.ports[i].container_port",

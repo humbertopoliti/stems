@@ -2,9 +2,12 @@
 //! workspace's declared ports that the state file does not know about.
 //!
 //! * Processes: every TCP listener on a port declared by an enabled
-//!   `process` stem (fixed ports, plus `auto` ports recorded in state) whose
-//!   process group is not a recorded stem's and which is not the daemon (or
-//!   the caller) itself.
+//!   `process` stem (fixed ports, plus `auto` ports recorded in state) that
+//!   does not belong to a recorded stem ([`belongs_to_stem`]: neither it nor
+//!   any ancestor up to pid 1, nor their process groups, is a recorded
+//!   stem's pid or process group, so a dev server a launcher script moved
+//!   into its own group with `setsid` is still its stem's child) and which
+//!   is not the daemon (or the caller) itself.
 //! * Containers: [`scan_containers`] (14/15): labelled containers and
 //!   containers of stems-owned compose projects, when Docker is reachable.
 //!
@@ -108,22 +111,57 @@ fn declared_ports(ws: &Workspace, state: Option<&StateFile>) -> Vec<(String, u16
     out.into_iter().collect()
 }
 
+/// Whether `pid` belongs to a recorded stem: `pid`, an ancestor of it
+/// (parent chain up to pid 1, [`os::MAX_ANCESTRY`] steps), or the process
+/// group of either is in `known` (the recorded stems' pids and pgids).
+/// `parent_of` / `group_of` look the process table up ([`os::parent_pid`],
+/// [`os::process_group`]; tests inject maps).
+pub fn belongs_to_stem(
+    pid: i32,
+    known: &BTreeSet<i32>,
+    parent_of: impl Fn(i32) -> Option<i32>,
+    group_of: impl Fn(i32) -> Option<i32>,
+) -> bool {
+    let ours = |p: i32| known.contains(&p) || group_of(p).is_some_and(|g| known.contains(&g));
+    ours(pid) || os::ancestors_with(pid, parent_of).into_iter().any(ours)
+}
+
+/// Pids and process groups of the recorded stems whose leader is still the
+/// process that was recorded: alive with the recorded start time. After a
+/// daemon crash a recorded pid may have been reused by an unrelated
+/// long-lived process (login shell, tmux, IDE), and ancestry matching would
+/// then hide every listener under it; such records contribute nothing.
+/// Containers record no process; pids 0 and 1 never count. `alive` is
+/// [`os::is_alive`] (tests inject a map).
+fn known_pids(
+    state: Option<&StateFile>,
+    alive: impl Fn(i32, stems_runtime::StartTime) -> bool,
+) -> BTreeSet<i32> {
+    state
+        .map(|f| {
+            f.stems
+                .values()
+                .filter(|r| r.pid > 1 && alive(r.pid, r.start_time))
+                .flat_map(|r| [r.pgid, r.pid])
+                .filter(|p| *p > 1)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Process orphans of `ws` given the recorded `state`. `ignore` lists pids
 /// that are never orphans (the daemon, the caller).
 pub fn scan(ws: &Workspace, state: Option<&StateFile>, ignore: &[i32]) -> Vec<Orphan> {
-    let known_groups: BTreeSet<i32> = state
-        .map(|f| f.stems.values().flat_map(|r| [r.pgid, r.pid]).collect())
-        .unwrap_or_default();
+    let known_groups = known_pids(state, os::is_alive);
     let mut out: Vec<Orphan> = Vec::new();
     for (stem, port) in declared_ports(ws, state) {
         for l in os::listeners_on_port(port) {
-            if ignore.contains(&l.pid) || known_groups.contains(&l.pid) {
+            if ignore.contains(&l.pid)
+                || belongs_to_stem(l.pid, &known_groups, os::parent_pid, os::process_group)
+            {
                 continue;
             }
             let pgid = os::process_group(l.pid);
-            if pgid.is_some_and(|g| known_groups.contains(&g)) {
-                continue;
-            }
             if out
                 .iter()
                 .any(|o| o.pid == Some(l.pid) && o.port == Some(port))
@@ -272,6 +310,81 @@ mod tests {
 
     fn sig(s: &str) -> StartSignature {
         signature_of(s).unwrap()
+    }
+
+    #[test]
+    fn a_child_in_its_own_process_group_belongs_to_its_stem() {
+        // Stem `web`: launcher pid/pgid 100 (its record), which started a
+        // dev server 200 that called setsid (pgid 200), which forked a
+        // worker 300 (pgid 200) that listens. The daemon is 50.
+        let parents = std::collections::HashMap::from([
+            (300, 200),
+            (200, 100),
+            (100, 50),
+            (50, 1),
+            (900, 1),
+            (950, 900),
+        ]);
+        let groups = std::collections::HashMap::from([
+            (300, 200),
+            (200, 200),
+            (100, 100),
+            (50, 50),
+            (900, 900),
+            (950, 900),
+        ]);
+        let parent = |p: i32| parents.get(&p).copied();
+        let group = |p: i32| groups.get(&p).copied();
+        let known: BTreeSet<i32> = [100].into_iter().collect();
+        assert!(belongs_to_stem(300, &known, parent, group));
+        assert!(belongs_to_stem(200, &known, parent, group));
+        assert!(belongs_to_stem(100, &known, parent, group));
+        // Unrelated processes (and the daemon itself) are not the stem's.
+        assert!(!belongs_to_stem(950, &known, parent, group));
+        assert!(!belongs_to_stem(50, &known, parent, group));
+        // A member of a recorded group whose leader is gone.
+        let known: BTreeSet<i32> = [900].into_iter().collect();
+        assert!(belongs_to_stem(950, &known, parent, group));
+        assert!(!belongs_to_stem(300, &BTreeSet::new(), parent, group));
+    }
+
+    #[test]
+    fn records_with_a_reused_or_dead_pid_contribute_nothing() {
+        use crate::state::{StateFile, StemRecord};
+        use stems_core::StemState;
+        use stems_runtime::StartTime;
+        let rec = |pid: i32, st: u64| StemRecord {
+            pid,
+            pgid: pid,
+            start_time: StartTime(st),
+            container_id: None,
+            ports: Vec::new(),
+            overlays: Vec::new(),
+            state: StemState::Healthy,
+            started_at: chrono::Utc::now(),
+            log_file: None,
+        };
+        let mut f = StateFile::new(
+            "01J8ZQ7Y6M5X4W3V2T1S0R9Q8P",
+            crate::state::DaemonRecord {
+                pid: 50,
+                start_time: 1,
+            },
+        );
+        f.stems.insert("ok".into(), rec(100, 10));
+        // pid 200 was reused by a process that started later.
+        f.stems.insert("reused".into(), rec(200, 20));
+        f.stems.insert("dead".into(), rec(300, 30));
+        // Live processes: pid -> start time.
+        let live = std::collections::HashMap::from([(100, 10), (200, 99)]);
+        let alive = |pid: i32, st: StartTime| live.get(&pid) == Some(&st.0);
+        let known = known_pids(Some(&f), alive);
+        assert_eq!(known, [100].into_iter().collect::<BTreeSet<i32>>());
+        assert!(known_pids(None, alive).is_empty());
+        // The reused pid is a shell above a real orphan: not the stem's.
+        let parent = |p: i32| (p == 400).then_some(200);
+        let group = |p: i32| Some(p);
+        assert!(!belongs_to_stem(400, &known, parent, group));
     }
 
     #[test]

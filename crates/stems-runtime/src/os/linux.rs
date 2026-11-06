@@ -45,6 +45,10 @@ fn read_stat(pid: i32) -> Option<Stat> {
     parse_stat(&fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
 }
 
+pub(super) fn parent_pid(pid: i32) -> Option<i32> {
+    read_stat(pid).map(|s| s.ppid)
+}
+
 fn clk_tck() -> u64 {
     static V: OnceLock<u64> = OnceLock::new();
     // SAFETY: sysconf has no preconditions.

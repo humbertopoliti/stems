@@ -5,6 +5,7 @@ expression: rows
 schema_version                                1
 name                                          <name of the workspace root directory>
 strict_profiles                               false
+env_files_override                            true
 agent.allow_destructive                       false
 agent.allowed_tools                           [] (all tools)
 agent.denied_tools                            []
@@ -18,9 +19,12 @@ notifications.enabled                         true
 notifications.debounce                        2s
 notifications.cooldown                        30s
 notifications.command                         <none: terminal-notifier / osascript / notify-send on PATH>
+daemon.shutdown_timeout                       30s + per stop layer the longest pre_stop timeout + stop_grace + post_stop timeout of its running stems
 repos_dir                                     .stems/repos
 stems.<n>.enabled                             true
 stems.<n>.stop_grace                          10s
+stems.<n>.env_files[].required                true
+stems.<n>.env_files[].override                <env_files_override>
 stems.<n>.ports[i].name                       port<i>
 stems.<n>.ports[i].container_port             docker/compose: the host port; process: none
 stems.<n>.cwd (process)                       <codebase, else workspace root>

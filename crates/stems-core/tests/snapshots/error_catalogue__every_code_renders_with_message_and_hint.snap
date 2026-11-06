@@ -186,10 +186,14 @@ ENV_FILE_NOT_FOUND: env file env/shop-api.local.env of `shop-api` does not exist
   at stems.yaml:14:5 (stems.shop-api.env_files[1])
   hint: create it, or mark it optional: `- { path: env/shop-api.local.env, required: false }`
 
-# exit 2 — an `env_files` entry sets a key that the stem's `env:` or an earlier env file sets to a different value; the file wins (a warning)
-ENV_SHADOWED: `API_URL` of `shop-api` from env/shop-api.env shadows the value set in `stems.shop-api.env`
+# exit 2 — an `env_files` entry sets a key that the stem's `env:` or an earlier env file sets to a different value; the file wins unless the entry has `override: false` (a warning)
+ENV_SHADOWED: `API_URL` of `shop-api` from env/shop-api.env shadows env: API_URL (`stems.shop-api.env`)
   at stems.yaml:13:5 (stems.shop-api.env_files[0])
-  hint: remove one, or move the value into stems.local.yaml if it is a local override
+  hint: remove one, set `override: false` on the entry (`- { path: env/shop-api.env, override: false }`) to keep the env: value, or move the value into stems.local.yaml if it is a local override
+
+# exit 2 — a running stem got an environment that differs from what its config and env files yield now (a key added, changed or removed); it keeps it until restarted (a warning)
+ENV_STALE: `shop-api` runs with an environment that differs from its config now: API_URL, LEGACY_FLAG (changed, added or removed since it started)
+  hint: restart it to apply: `stems restart shop-api`
 
 # exit 2 — a stem's `requires:` entry reads its range `from:` a file of a git codebase that is not cloned yet, so it is checked after `up` clones it (a warning)
 REQUIRES_NOT_CHECKED: `node` of `shop-web` is not checked: its range comes from .nvmrc in a git codebase that is not cloned yet
@@ -249,6 +253,10 @@ GIT_CLONE_FAILED: cloning git@github.com:acme/shop-api.git failed: permission de
 REPO_DIRTY: the codebase of `shop-api` has 2 uncommitted change(s); not checked out
   hint: commit, stash or discard them, or rerun with `--force` to carry them over
 
+# exit 1 — `stems repos checkout` needs a git work tree and the codebase directory is not one
+REPO_NOT_GIT: the codebase of `web` (/ws/web) is not a git repository
+  hint: run `git init` there, or check out the ref yourself
+
 # exit 1 — `stems status --expect <state>`: some stems are not in that state (`data.mismatch`)
 STATUS_MISMATCH: 1 of 2 stems is not healthy: shop-api (starting)
   hint: wait for it with `--timeout <duration>` (e.g. `--timeout 30s`)
@@ -265,6 +273,10 @@ UPGRADE_FAILED: `brew upgrade stems` exited with status 1
 CHECK_FAILED: check `registry-login` failed: not logged in to ghcr.io
   hint: run `docker login ghcr.io`
 
+# exit 1 — the daemon is still stopping its stems when `stems daemon stop` stopped waiting
+DAEMON_STILL_STOPPING: the daemon (pid 4242) is still stopping after 95s
+  hint: it keeps shutting down in the background (stopping its stems); its log is /home/dev/.local/state/stems/3f2a9c1e/stemsd.log; run `stems daemon stop` again to keep waiting
+
 # exit 1 — the command is not implemented yet in this build
 NOT_IMPLEMENTED: `stems graph` is not implemented until deliverable 23
   hint: upgrade stems, or use a command that is available (`stems --help`)
@@ -280,6 +292,10 @@ ORPHANS_FOUND: 2 processes from a previous run are still alive (ports 18080, 180
 # exit 4 — the stems daemon for this workspace is not running
 DAEMON_NOT_RUNNING: no stems daemon is running for this workspace
   hint: start one with `stems up` (or `stems daemon start`)
+
+# exit 4 — the daemon socket path is longer than a Unix socket allows
+SOCKET_PATH_TOO_LONG: the daemon socket path /very/long/stems-home/0123456789ab/stemsd.sock is 120 bytes, over the 104-byte Unix socket limit (STEMS_HOME is too long)
+  hint: set a shorter STEMS_HOME (or pass --home), e.g. STEMS_HOME=/tmp/stems
 
 # exit 4 — the running daemon is a different stems version than this client
 DAEMON_VERSION_MISMATCH: the daemon is stems 0.0.1 but this client is 0.1.0

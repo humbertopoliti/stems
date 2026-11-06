@@ -54,6 +54,11 @@ pub trait SupervisorHooks: Send + Sync {
     /// before the socket and lock are removed (run `down` here).
     async fn shutdown(&self);
 
+    /// Names of the stems currently running (for the shutdown budget).
+    fn running_stems(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// Called once at startup, after the workspace loaded and before the
     /// socket serves requests, with the previous run's state file (crash
     /// recovery, deliverable 11).

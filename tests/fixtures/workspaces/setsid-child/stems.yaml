@@ -1,0 +1,24 @@
+# setsid-child — fixture for recovery/orphans-child.feature: `web` is a
+# launcher script whose dev server calls setsid(), so the listener on web's
+# port is in its own process group (and session), not the stem's. It is
+# still web's child and never an orphan. The launcher forwards SIGTERM so
+# nothing outlives `down`. `worker` is a second stem to `up` on its own.
+schema_version: 1
+name: setsid-child
+
+stems:
+  web:
+    type: process
+    ports: [{ name: http, port: 18611 }]
+    health: { type: tcp, interval: 200ms, timeout: 150ms, retries: 5, start_timeout: 10s }
+    stop_grace: 2s
+    scripts:
+      start: |
+        python3 -c 'import os; os.setsid(); os.execvp("python3", ["python3", "-m", "http.server", os.environ["PORT"], "--bind", "127.0.0.1"])' &
+        child=$!
+        trap 'kill $child; wait $child; exit 0' TERM
+        wait
+  worker:
+    type: process
+    command: "while true; do sleep 0.2; done"
+    stop_grace: 1s

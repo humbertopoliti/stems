@@ -14,6 +14,13 @@ pub const ENV_HOME: &str = "STEMS_HOME";
 /// Env var overriding the daemon log path.
 pub const ENV_DAEMON_LOG: &str = "STEMS_DAEMON_LOG";
 
+/// `sizeof(sockaddr_un.sun_path)`: 104 on macOS, 108 elsewhere.
+#[cfg(target_os = "macos")]
+pub const SOCKET_PATH_LIMIT: usize = 104;
+/// `sizeof(sockaddr_un.sun_path)`: 104 on macOS, 108 elsewhere.
+#[cfg(not(target_os = "macos"))]
+pub const SOCKET_PATH_LIMIT: usize = 108;
+
 /// File names inside a workspace's daemon directory.
 pub const SOCKET_FILE: &str = "stemsd.sock";
 /// Lock file name.
@@ -68,6 +75,27 @@ impl DaemonPaths {
     /// its rotations (deliverable 12, `docs/logs.md`).
     pub fn logs_dir(&self) -> PathBuf {
         self.dir.join(crate::logs::LOGS_DIR)
+    }
+
+    /// Fail with `SOCKET_PATH_TOO_LONG` when the socket path cannot fit in a
+    /// `sockaddr_un` (104 bytes on macOS, 108 on Linux, NUL included).
+    pub fn check_socket_len(&self) -> Result<(), stems_core::Error> {
+        let len = self.socket.as_os_str().as_bytes().len();
+        if len < SOCKET_PATH_LIMIT {
+            return Ok(());
+        }
+        Err(stems_core::Error::new(
+            stems_core::ErrorCode::SocketPathTooLong,
+            format!(
+                "the daemon socket path {} is {len} bytes, over the {}-byte Unix socket limit (STEMS_HOME is too long)",
+                self.socket.display(),
+                SOCKET_PATH_LIMIT - 1
+            ),
+        )
+        .with_hint("set a shorter STEMS_HOME (or pass --home), e.g. STEMS_HOME=/tmp/stems")
+        .with_details(serde_json::json!({
+            "socket": self.socket, "length": len, "limit": SOCKET_PATH_LIMIT - 1,
+        })))
     }
 
     /// Create `dir` (mode 0700) if missing.
@@ -182,5 +210,19 @@ mod tests {
     #[test]
     fn default_home_is_absolute() {
         assert!(default_home().is_absolute());
+    }
+}
+
+#[cfg(test)]
+mod socket_len_tests {
+    use super::*;
+
+    #[test]
+    fn short_home_ok_long_home_rejected() {
+        assert!(DaemonPaths::in_dir("/tmp/s/abc").check_socket_len().is_ok());
+        let long = format!("/tmp/{}", "x".repeat(120));
+        let e = DaemonPaths::in_dir(long).check_socket_len().unwrap_err();
+        assert_eq!(e.code, stems_core::ErrorCode::SocketPathTooLong);
+        assert!(e.message.contains("STEMS_HOME"));
     }
 }

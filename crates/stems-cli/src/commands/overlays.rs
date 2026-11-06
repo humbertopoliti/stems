@@ -110,7 +110,7 @@ fn render_locally(
     let mut env: HashMap<String, String> = ctx
         .env
         .iter()
-        .filter(|(k, _)| !k.starts_with("STEMS_"))
+        .filter(|(k, _)| !stems_core::callerenv::is_stems_injected(k))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     env.extend(own);

@@ -779,3 +779,36 @@ async fn compose_live_roundtrip() {
         .output();
     assert!(!net.status.success(), "the project network was left behind");
 }
+
+// --- bake `fs.read` defaults ---------------------------------------------------
+
+#[test]
+fn bake_allow_defaults_to_the_workspace_root_plus_exact_user_paths() {
+    let mut spec = baked();
+    spec.workspace_root = Some("/work/shop/./".into());
+    let allow: Vec<_> = super::bake_allow_set(&spec).into_iter().collect();
+    // Sorted, deterministic: the root (normalised) and the user's entry as written.
+    assert_eq!(
+        allow,
+        [PathBuf::from("/work/infra"), PathBuf::from("/work/shop")]
+    );
+    // No root, no default.
+    spec.workspace_root = None;
+    let allow: Vec<_> = super::bake_allow_set(&spec).into_iter().collect();
+    assert_eq!(allow, [PathBuf::from("/work/infra")]);
+}
+
+#[cfg(unix)]
+#[test]
+fn bake_allow_grants_both_the_symlinked_and_the_canonical_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let real = std::fs::canonicalize(dir.path()).unwrap().join("real");
+    std::fs::create_dir(&real).unwrap();
+    let link = real.parent().unwrap().join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let mut spec = baked();
+    spec.bake.allow_read.clear();
+    spec.workspace_root = Some(link.clone());
+    let allow: Vec<_> = super::bake_allow_set(&spec).into_iter().collect();
+    assert_eq!(allow, [link, real], "sorted: link < real");
+}

@@ -198,7 +198,10 @@ error_codes! {
         "a required `env_files` entry does not exist (mark it `{path, required: false}` if it is optional)";
     /// An env file overrides a value set by `env:` or an earlier env file (a warning).
     EnvShadowed = "ENV_SHADOWED", CONFIG,
-        "an `env_files` entry sets a key that the stem's `env:` or an earlier env file sets to a different value; the file wins (a warning)";
+        "an `env_files` entry sets a key that the stem's `env:` or an earlier env file sets to a different value; the file wins unless the entry has `override: false` (a warning)";
+    /// A running stem's environment differs from its config (a warning).
+    EnvStale = "ENV_STALE", CONFIG,
+        "a running stem got an environment that differs from what its config and env files yield now (a key added, changed or removed); it keeps it until restarted (a warning)";
     /// A `requires: {from}` entry of a git codebase not cloned yet (a warning).
     RequiresNotChecked = "REQUIRES_NOT_CHECKED", CONFIG,
         "a stem's `requires:` entry reads its range `from:` a file of a git codebase that is not cloned yet, so it is checked after `up` clones it (a warning)";
@@ -241,6 +244,9 @@ error_codes! {
     /// `repos checkout` refused a codebase with uncommitted changes.
     RepoDirty = "REPO_DIRTY", RUNTIME,
         "`stems repos checkout` refused a git codebase with uncommitted changes (`--force` checks out anyway, carrying them over)";
+    /// `repos checkout` on a local codebase that is not a git work tree.
+    RepoNotGit = "REPO_NOT_GIT", RUNTIME,
+        "`stems repos checkout` needs a git work tree and the codebase directory is not one";
     /// `status --expect`: some stems are not in the expected state.
     StatusMismatch = "STATUS_MISMATCH", RUNTIME,
         "`stems status --expect <state>`: some stems are not in that state (`data.mismatch`)";
@@ -253,6 +259,9 @@ error_codes! {
     /// A user-defined `checks:` entry with `severity: fail` failed (`stems up`).
     CheckFailed = "CHECK_FAILED", RUNTIME,
         "a user-defined `checks:` entry (severity `fail`) failed, so `stems up` started nothing";
+    /// `stems daemon stop` gave up waiting; the daemon is still shutting down.
+    DaemonStillStopping = "DAEMON_STILL_STOPPING", RUNTIME,
+        "the daemon is still stopping its stems when `stems daemon stop` stopped waiting";
     /// Command exists but its deliverable has not landed.
     NotImplemented = "NOT_IMPLEMENTED", RUNTIME,
         "the command is not implemented yet in this build";
@@ -267,6 +276,9 @@ error_codes! {
     /// No daemon.
     DaemonNotRunning = "DAEMON_NOT_RUNNING", DAEMON,
         "the stems daemon for this workspace is not running";
+    /// STEMS_HOME is so long the daemon's Unix socket path cannot bind.
+    SocketPathTooLong = "SOCKET_PATH_TOO_LONG", DAEMON,
+        "the daemon socket path is longer than a Unix socket allows";
     /// Client/daemon version skew.
     DaemonVersionMismatch = "DAEMON_VERSION_MISMATCH", DAEMON,
         "the running daemon is a different stems version than this client";
@@ -677,6 +689,7 @@ mod tests {
             (AlreadyInitialised, 1),
             (OrphansFound, 3),
             (DaemonNotRunning, 4),
+            (SocketPathTooLong, 4),
             (DaemonVersionMismatch, 4),
         ] {
             assert_eq!(c.exit_code(), e, "{c}");

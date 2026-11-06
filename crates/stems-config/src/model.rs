@@ -66,6 +66,9 @@ pub struct Workspace {
     /// Desktop notification settings (34). Omitted from the JSON while default.
     #[serde(default, skip_serializing_if = "NotificationSettings::is_default")]
     pub notifications: NotificationSettings,
+    /// The daemon's own settings. Omitted from the JSON while default.
+    #[serde(default, skip_serializing_if = "DaemonSettings::is_default")]
+    pub daemon: DaemonSettings,
     /// Secret env names (47): `NAME` adds, `!NAME` excepts. Omitted while empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secrets: Vec<String>,
@@ -186,6 +189,22 @@ pub struct ReloadSettings {
     /// What the daemon applies on its own when the config changes.
     #[serde(default)]
     pub auto_apply: AutoApply,
+}
+
+/// `daemon:` settings.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DaemonSettings {
+    /// `daemon.shutdown_timeout`; `None`: derived from the running stems'
+    /// stop budgets (see `stems_daemon::shutdown_budget`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shutdown_timeout: Option<Dur>,
+}
+
+impl DaemonSettings {
+    /// Every value is the default.
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// `notifications:` settings (34): one desktop notification when stems end
@@ -845,8 +864,11 @@ pub struct DockerHealthcheck {
     pub disable: bool,
 }
 
-/// Compose settings.
+/// Compose settings. Serialised with `build` as a bool for the bool form and
+/// as the object (`services`, `before_setup`, `secrets`, `allow_read`) for the
+/// object form, as configured.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(from = "ComposeSpecWire", into = "ComposeSpecWire")]
 pub struct ComposeSpec {
     /// Compose file (absolute); `None` is a validation error (06).
     pub file: Option<PathBuf>,
@@ -859,30 +881,90 @@ pub struct ComposeSpec {
     /// Rebuild the service's image on every start (`compose up --build`).
     pub build: bool,
     /// The object form of `build:` (44): services, `before_setup`,
-    /// secrets, `allow_read`. Absent for the bool form.
-    #[serde(default, skip_serializing_if = "ComposeBuild::is_plain")]
+    /// secrets, `allow_read`. Plain for the bool form.
     pub build_options: ComposeBuild,
     /// Put the stem's env into the container too (an `env_file:` override).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub inject_env: bool,
 }
 
+/// `build:` on the wire: a bool, or the object form.
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum ComposeBuildWire {
+    Flag(bool),
+    Options(ComposeBuild),
+}
+
+#[derive(Serialize, Deserialize)]
+struct ComposeSpecWire {
+    file: Option<PathBuf>,
+    service: String,
+    project_name: String,
+    adopt: bool,
+    build: ComposeBuildWire,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    inject_env: bool,
+}
+
+impl From<ComposeSpec> for ComposeSpecWire {
+    fn from(c: ComposeSpec) -> Self {
+        let build = if c.build && !c.build_options.is_plain() {
+            ComposeBuildWire::Options(c.build_options)
+        } else {
+            ComposeBuildWire::Flag(c.build)
+        };
+        Self {
+            file: c.file,
+            service: c.service,
+            project_name: c.project_name,
+            adopt: c.adopt,
+            build,
+            inject_env: c.inject_env,
+        }
+    }
+}
+
+impl From<ComposeSpecWire> for ComposeSpec {
+    fn from(w: ComposeSpecWire) -> Self {
+        let (build, build_options) = match w.build {
+            ComposeBuildWire::Flag(b) => (b, ComposeBuild::default()),
+            ComposeBuildWire::Options(o) => (true, o),
+        };
+        Self {
+            file: w.file,
+            service: w.service,
+            project_name: w.project_name,
+            adopt: w.adopt,
+            build,
+            build_options,
+            inject_env: w.inject_env,
+        }
+    }
+}
+
 /// One resolved `env_files:` entry. Serialised as the plain path unless
-/// `required` is false (then `{path, required: false}`).
+/// `required` or `override` is false (then `{path, required: false,
+/// override: false}`, the defaults left out).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EnvFile {
     /// Absolute path.
     pub path: PathBuf,
     /// `false`: an absent file is skipped.
     pub required: bool,
+    /// `override` (the entry's, else the workspace's `env_files_override`):
+    /// `true` (default) the file's value beats `env:`; `false` keys set in
+    /// `env:` keep their value, the file only adds the other keys.
+    pub override_env: bool,
 }
 
 impl EnvFile {
-    /// A required env file.
+    /// A required env file that overrides `env:`.
     pub fn required(path: impl Into<PathBuf>) -> Self {
         Self {
             path: path.into(),
             required: true,
+            override_env: true,
         }
     }
 }
@@ -890,12 +972,17 @@ impl EnvFile {
 impl Serialize for EnvFile {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
-        if self.required {
+        if self.required && self.override_env {
             return self.path.serialize(s);
         }
-        let mut m = s.serialize_map(Some(2))?;
+        let mut m = s.serialize_map(None)?;
         m.serialize_entry("path", &self.path)?;
-        m.serialize_entry("required", &false)?;
+        if !self.required {
+            m.serialize_entry("required", &false)?;
+        }
+        if !self.override_env {
+            m.serialize_entry("override", &false)?;
+        }
         m.end()
     }
 }
@@ -910,17 +997,24 @@ impl<'de> Deserialize<'de> for EnvFile {
                 path: PathBuf,
                 #[serde(default = "yes")]
                 required: bool,
+                #[serde(default = "yes", rename = "override")]
+                override_env: bool,
             },
         }
         fn yes() -> bool {
             true
         }
         Ok(match Form::deserialize(d)? {
-            Form::Path(path) => Self {
+            Form::Path(path) => Self::required(path),
+            Form::Spec {
                 path,
-                required: true,
+                required,
+                override_env,
+            } => Self {
+                path,
+                required,
+                override_env,
             },
-            Form::Spec { path, required } => Self { path, required },
         })
     }
 }

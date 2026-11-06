@@ -21,7 +21,7 @@ pub struct StemEnvParams {
 }
 
 /// `stem_env` result.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct StemEnvResult {
     /// The stem.
     pub stem: String,
@@ -46,4 +46,11 @@ pub struct StemEnvResult {
     /// port that is not allocated, an output not evaluated): kept literally.
     #[serde(default)]
     pub unresolved: Vec<String>,
+    /// Warnings: `ENV_STALE` when the stem runs with an environment that
+    /// differs from what its config and env files yield now (`env` is the
+    /// config's; the running process keeps its own until restarted).
+    /// Omitted when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(with = "Vec<serde_json::Value>")]
+    pub warnings: Vec<stems_core::Error>,
 }

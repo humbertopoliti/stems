@@ -3,9 +3,11 @@
 //!
 //! Same context as `stems exec` ([`super::exec::context`]: the daemon's
 //! `stem_env`, else the config). `data: {stem, env, cwd, container,
-//! unresolved}`; dotenv (default) and shell formats are printed raw (no
-//! envelope unless `--json`). `--all` puts the caller's environment (minus
-//! `STEMS_*`) under the stem's. Secret outputs, and the values of secret
+//! unresolved, warnings}` (`ENV_STALE` when a running stem got another
+//! environment than its config yields now); dotenv (default) and shell formats are printed raw (no
+//! envelope unless `--json`). `--all` puts the caller's environment (minus the
+//! injected `STEMS_*`; CLI settings such as `STEMS_HOME`, `STEMS_PROFILE`, `STEMS_LOG`
+//! pass through, see `stems_core::callerenv`) under the stem's. Secret outputs, and the values of secret
 //! names (47: [`stems_core::redact::Redactor`], `docs/config.md#secrets`),
 //! are `<redacted>` unless `--reveal` in human mode on a terminal (like
 //! `stems outputs`).
@@ -86,6 +88,7 @@ pub fn run(ctx: &Ctx, args: &EnvArgs, mode: Mode) -> CommandOutput {
         "cwd": r.cwd,
         "container": r.container,
         "unresolved": r.unresolved,
+        "warnings": r.warnings,
     }));
     if args.format == EnvFormat::Json {
         let text = serde_json::to_string_pretty(&out.envelope()).unwrap_or_default();
@@ -95,6 +98,13 @@ pub fn run(ctx: &Ctx, args: &EnvArgs, mode: Mode) -> CommandOutput {
         && let Some(w) = unresolved_warning(&r)
     {
         eprint!("{w}");
+    }
+    // `ENV_STALE` (a running stem got another environment): the values
+    // printed are the config's, not the running process's.
+    if !ctx.global.json {
+        for w in &r.warnings {
+            eprintln!("warning: {}: {}", w.code, w.message);
+        }
     }
     out.with_raw(render(&env, args.format == EnvFormat::Shell))
 }

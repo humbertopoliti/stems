@@ -89,10 +89,20 @@ the runtime does. `--service` appends the stem's `service` as the last
 argument. A stem that is not `type: compose` is a `USAGE` error (exit 2).
 `--json` prints `{stem, argv, exit}` after the command.
 
-Like `stems exec` it never starts a daemon: with a daemon the live env is used;
-without one stems computes it from the config (auto ports and outputs stay
-unresolved) and writes the env file (and override) itself when missing or
-stale. The daemon serialises its own compose calls per project; a long
+Like `stems exec` it never starts a daemon: with a daemon the env is the
+config's as it is now (env files re-read) with the daemon's ports, outputs
+and `--pass-env`; without one stems computes it from the config (auto ports
+and outputs stay unresolved). Either way it regenerates the env file (and
+override) whenever they differ from that env, so a key removed from an env
+file never reaches compose through a file an earlier start wrote. One
+exception: for a running stem whose env still has unresolved values (a
+dependency restarting or down, see [exec.md](exec.md)), the files on disk
+(its start's) are kept, so a `${stem...}` placeholder never reaches a
+container that `up -d` recreates. A
+running container keeps the environment it was created with:
+`stems compose` prints an `ENV_STALE` warning on stderr when it differs, and
+`stems restart <stem>` (or `stems compose <stem> -- up -d`, which recreates
+the service from the regenerated files) applies it. The daemon serialises its own compose calls per project; a long
 `stems compose` while stems restarts the same stem may hit compose's own
 project lock (compose retries).
 
@@ -164,10 +174,17 @@ stems:
 - **`allow_read`** becomes `--allow fs.read=<path>` (Bake enforces the
   `fs.read` entitlement; stems sets `BUILDX_BAKE_ENTITLEMENTS_FS=1` for the
   Bake process, so an environment that turned the checks off does not
-  leak in). Each service's context, its Dockerfile's directory and the
-  secret files are granted automatically (normalised, plus their
-  symlink-resolved form); `allow_read` is for the rest, with the same
-  validation as docker stems.
+  leak in). Bake resolves paths from the compose file's directory, so a
+  service whose `build.context` is a parent of it (`context: ..`) would be
+  refused without a grant. Therefore the **workspace root is granted by
+  default**: any context inside the workspace, parents of the compose file
+  included, needs no configuration. Each service's context, its Dockerfile's
+  directory and the secret files are granted too (normalised, plus their
+  symlink-resolved form; the workspace root likewise, so a symlinked root
+  such as macOS `/tmp` works). `allow_read` is for what lies **outside the
+  workspace root** (a sibling checkout, a file under `$HOME`): exact absolute
+  paths, no globs, no implicit parents, with the same validation as docker
+  stems. The flags are emitted sorted, so the command is deterministic.
 - The stem env is the Bake process's environment (plus
   `COMPOSE_PROJECT_NAME`), so the files interpolate like `compose up`'s.
   Build output lines are `docker.build {stem, line}` events; a failure is
@@ -310,6 +327,13 @@ services:
   are injected too (host paths and host ports: they describe the host).
 - `docker compose up` has no `-e`; the override file is how "pass the
   env with `-e`" is delivered.
+- Both files are rewritten on every start and every `stems compose`, from
+  the env files as they are then: removing a key from an env file removes
+  it from the next container. The running container keeps its environment
+  until it is recreated; `stems env <stem>` and `stems status` say so
+  (`ENV_STALE`, see [exec.md](exec.md); dependency ports and outputs
+  never count). While the stem runs, `stems compose` does not rewrite them
+  with a value that is unresolved at that moment.
 - The stale-image check, `doctor` and adoption after a daemon restart use
   the same `-f` pair and the same env (built like a real start, minus
   `--pass-env`).
