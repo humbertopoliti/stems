@@ -421,17 +421,14 @@ pub fn spawn_fs_watcher_mode(
             }
         }
     };
+    let config = notify_debouncer_full::Config::default()
+        .with_timeout(FS_DEBOUNCE)
+        .with_notify_config(notify::Config::default());
     let mut debouncer = notify_debouncer_full::new_debouncer_opt::<
         _,
         notify::RecommendedWatcher,
         notify_debouncer_full::NoCache,
-    >(
-        FS_DEBOUNCE,
-        None,
-        handler,
-        notify_debouncer_full::NoCache,
-        notify::Config::default(),
-    )
+    >(config, handler, notify_debouncer_full::NoCache)
     .map_err(|e| Error::internal(format!("cannot start a file watcher: {e}")))?;
     let mut seen: Vec<&PathBuf> = Vec::new();
     for d in dirs {
