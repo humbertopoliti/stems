@@ -45,7 +45,7 @@ tempfile = "3.27.0"
 thiserror = "2.0.21"
 tracing = "0.1.44"
 tokio = { version = "1.53.1", features = ["full"] }
-nix = { version = "0.31.3", features = ["signal", "process", "fs"] }
+nix = { version = "0.32.0", features = ["signal", "process", "fs"] }
 libproc = "0.14.11"
 libc = "0.2.189"
 async-trait = "0.1.92"
